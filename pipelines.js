@@ -107,6 +107,7 @@ export async function runPipelineStream(config, pipelineName, input, res, reqAbo
 
   try {
     const iterator = llamaChatStream(
+      config,
       {
         ...input,
         model: lastStage.model,

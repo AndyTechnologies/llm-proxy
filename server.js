@@ -215,6 +215,7 @@ const entries = {
             try {
 
               const iterator = llamaChatStream(
+                config,
                 {
                   ...chatInput,
                   model: lastStage.model,
