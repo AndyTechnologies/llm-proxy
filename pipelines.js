@@ -97,7 +97,7 @@ export async function runPipelineStream(config, pipelineName, input, res, reqAbo
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
 
-  //let upstreamFinished = false;
+  let finishReasonRecibido = false;
 
   reqAbortSignal.addEventListener("abort", () => {
     if (!res.writableEnded) {
