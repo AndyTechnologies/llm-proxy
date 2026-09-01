@@ -59,20 +59,25 @@ export function sanitizePayloadForLlamaCpp(payload) {
     if (payload.stop) clean.stop = payload.stop;
     
     // Normalizar roles developer -> system
-    /*
     if (Array.isArray(clean.messages)) {
-      clean.messages = clean.messages.map(msg => {
-        if (msg.role === "developer") {
-          return { ...msg, role: "system" };
+      clean.messages = clean.messages.map((msg) => {
+        let next = { ...msg };
+        if (next.role === "developer") next.role = "system";
+        if (Array.isArray(next.content)) {
+          const textParts = next.content
+            .map((p) =>
+              typeof p === "string"
+                ? p
+                : p && p.type === "text" && typeof p.text === "string"
+                  ? p.text
+                  : null
+            )
+            .filter((t) => t !== null);
+          next.content = textParts.join("\n"); // "" for empty/no-text arrays
         }
-        if (Array.isArray(msg.content)) {
-          const textParts = msg.content.filter(p => p.type === "text").map(p => p.text).join("\n");
-          return { ...msg, content: textParts };
-        }
-        return msg;
+        return next;
       });
     }
-    */
     // NO copiar estos campos (causan error de gramática):
     // - tools (genera gramáticas GBNF complejas)
     // - tool_choice
