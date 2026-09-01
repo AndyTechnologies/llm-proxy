@@ -96,15 +96,15 @@ const entries = {
       
           // AbortSignal ligado al cierre de la conexión del cliente.
           const reqAbortController = new AbortController();
-      
+
           let closed = false;
           closed;
-          
-          req.on("close", () => {
-            closed = true;
-            reqAbortController.abort();
-          });
-      
+
+          // La señal de abort NO debe ligarse a `req.on("close")`: ese evento se
+          // dispara cuando el body se termina de leer (tras express.json()),
+          // no cuando el cliente se desconecta. Eso abortaba la señal de la etapa
+          // final en streaming y producía AbortError siempre. Solo `res.on("close")`
+          // detecta el corte real de la conexión con el cliente.
           res.on("close", () => {
             closed = true;
             reqAbortController.abort();
@@ -156,7 +156,9 @@ const entries = {
       
           const reqAbortController = new AbortController();
       
-          req.on("close", () => reqAbortController.abort());
+          // No ligar al `req.on("close")`: se dispara al leer el body, no al cortar
+          // el cliente (ver bug en /v1/chat/completions). Solo `res.on("close")`
+          // indica la desconexión real.
           res.on("close", () => reqAbortController.abort());
       
           if (wantsStream) {
