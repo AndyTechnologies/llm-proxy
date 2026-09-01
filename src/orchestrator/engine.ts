@@ -150,6 +150,7 @@ export async function runChain(
   originalPayload: Record<string, unknown>,
   res: Response,
   signal: AbortSignal,
+  query?: string,
 ): Promise<void> {
   const steps = chain.steps;
   const displayName = chain.displayName ?? chain.name;
@@ -181,6 +182,12 @@ export async function runChain(
       messages,
       stream: isLast ? originalPayload.stream : false,
     };
+
+    // Preserve the original request query (e.g. `?autoload=false`) so the
+    // provider appends it to the upstream URL on every chain step.
+    if (query) {
+      payload.__gatewayQuery = query;
+    }
 
     console.log(
       `[engine] chain "${displayName}" step ${i + 1}/${steps.length}: ` +

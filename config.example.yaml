@@ -135,7 +135,26 @@ chains:
         type: refine
         model: Llama3.2-3B-Instruct
 
-# Example: chain with conditional routing
+# Example: conditional routing (coverage for pipeline-orchestration scenarios)
+#   fallback-demo — on_429 fallback when the primary step returns HTTP 429:
+#     - name: primary
+#       type: generate
+#       model: SmolLM3-3B
+#       on_429: fallback
+#     - name: fallback
+#       type: generate
+#       model: Phi-4-Mini-Instruct
+#
+#   tool-demo — tool_calls routing when the response carries tool_calls:
+#     - name: planner
+#       type: generate
+#       model: Llama3.2-3B-Instruct
+#       tool_calls_route: tool_executor
+#     - name: tool_executor
+#       type: refine
+#       model: Phi-4-Mini-Instruct
+
+# Example: chain with conditional routing (commented reference)
 #   tool-orchestrator:
 #     displayName: "Tool Orchestrator"
 #     provider: llama-server

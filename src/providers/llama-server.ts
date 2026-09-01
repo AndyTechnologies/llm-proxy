@@ -57,6 +57,25 @@ export class LlamaServerProvider implements Provider {
     return this.getBaseUrl();
   }
 
+  /**
+   * Build the upstream chat completions URL, optionally preserving the query
+   * string from the client request. The original request's query params (e.g.
+   * `?autoload=false`) must survive the chain path — passthrough preserves
+   * them, so chain steps must too (backend-management spec, per-request
+   * autoload override).
+   *
+   * The query is carried on the internal reserved key `__gatewayQuery`, which
+   * `sanitizePayloadForLlamaCpp` drops before the body is serialized, so it is
+   * never sent to the backend as a payload field — it only shapes the URL.
+   */
+  private buildUrl(request: Record<string, unknown>): string {
+    const query = request.__gatewayQuery;
+    if (typeof query === "string" && query.length > 0) {
+      return `${this.baseUrl}/v1/chat/completions?${query}`;
+    }
+    return `${this.baseUrl}/v1/chat/completions`;
+  }
+
   async chat(
     request: Record<string, unknown>,
     /* eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept in signature parity with Provider */
@@ -69,7 +88,10 @@ export class LlamaServerProvider implements Provider {
 
     const timeoutMs = this.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+    const url = this.buildUrl(request);
+    console.log(`[provider] POST ${url}`);
+
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(sanitized),
@@ -111,9 +133,12 @@ export class LlamaServerProvider implements Provider {
     signal.addEventListener("abort", onAbort, { once: true });
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
+    const url = this.buildUrl(request);
+    console.log(`[provider] POST ${url} [STREAM]`);
+
     let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+      res = await fetch(this.buildUrl(request), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sanitized),

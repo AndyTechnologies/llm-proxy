@@ -143,6 +143,51 @@ export function createPassthroughProxy(
       return;
     }
 
+    // ── Cleanup: release the timeout and the res-close listener. Defined
+    // before use (error path below runs before any streaming setup). ──
+    const cleanup = () => {
+      clearTimeout(timeout);
+      res.removeListener("close", onClientClose);
+    };
+
+    // ── Normalize upstream error responses (gateway-api normalized errors) ──
+    // Non-2xx upstream bodies are forwarded verbatim today (the llama-server
+    // 400 on unknown real models is OpenAI-shaped but non-canonical: numeric
+    // code, no param). Normalize every non-2xx passthrough response to the
+    // canonical OpenAI `{error:{message,type,param,code}}` envelope here.
+    if (!upstream.ok) {
+      cleanup();
+      const body = await upstream.text();
+      let message = body.slice(0, 500);
+      try {
+        const parsed = JSON.parse(body) as {
+          error?: { message?: unknown };
+        };
+        if (typeof parsed?.error?.message === "string") {
+          message = parsed.error.message;
+        }
+      } catch {
+        // Non-JSON upstream body — use the raw text.
+      }
+
+      const errorType =
+        upstream.status === 429
+          ? "rate_limit_error"
+          : upstream.status >= 500
+            ? "server_error"
+            : "invalid_request_error";
+
+      res.status(upstream.status).json({
+        error: {
+          message,
+          type: errorType,
+          param: null,
+          code: null,
+        },
+      });
+      return;
+    }
+
     // ── Forward status + non-hop-by-hop headers ──
     res.status(upstream.status);
     for (const [name, value] of upstream.headers) {
@@ -150,11 +195,6 @@ export function createPassthroughProxy(
       if (HOP_BY_HOP.has(lower) || lower === "content-length") continue;
       res.setHeader(name, value);
     }
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      res.removeListener("close", onClientClose);
-    };
 
     if (!upstream.body) {
       cleanup();

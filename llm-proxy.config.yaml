@@ -108,3 +108,37 @@ chains:
       - name: refine-llama
         type: refine
         model: Llama3.2-3B-Instruct
+
+  # Conditional-routing examples (coverage for pipeline-orchestration:
+  # on_429 fallback + tool_calls routing).
+  fallback-demo:
+    displayName: "Fallback Demo"
+    provider: llama-server
+    steps:
+      # Primary step: on_429 routes to the fallback step below when the
+      # upstream returns HTTP 429.
+      - name: primary
+        type: generate
+        model: SmolLM3-3B
+        on_429: fallback
+      # Fallback step (executed instead of aborting on a 429).
+      - name: fallback
+        type: generate
+        model: Phi-4-Mini-Instruct
+
+  tool-demo:
+    displayName: "Tool Demo"
+    provider: llama-server
+    steps:
+      # Planner step: when the response carries a non-empty tool_calls array,
+      # the engine routes to tool_executor instead of the sequential next step.
+      # Verified: Llama3.2-3B-Instruct emits tool_calls for the tools request
+      # (Qwen2.5-Coder-3B-Instruct on this backend build ignores tools).
+      - name: planner
+        type: generate
+        model: Llama3.2-3B-Instruct
+        tool_calls_route: tool_executor
+      # Tool executor step: refines the tool result into the final answer.
+      - name: tool_executor
+        type: refine
+        model: Phi-4-Mini-Instruct
