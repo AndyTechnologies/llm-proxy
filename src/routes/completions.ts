@@ -6,25 +6,30 @@
  * then dispatches to chain or provider using the same logic as chat.ts.
  *
  * For passthrough (non-chain) requests, the payload is forwarded to the
- * http-proxy-middleware which handles the conversion upstream.
+ * backend via the passthrough forwarder, which re-serializes the parsed
+ * body and streams the upstream response back (see middleware/proxy.ts).
  */
 import type { Request, Response } from "express";
 import { completionRequestSchema } from "../types/zod.js";
-import type { LlamaServerConfig } from "../config/schema.js";
 import { createPassthroughProxy } from "../middleware/proxy.js";
 import type { ChainMap, ProviderMap } from "../orchestrator/engine.js";
 import { runChain } from "../orchestrator/engine.js";
+import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface CompletionsRouteDeps {
   chains: ChainMap;
   providers: ProviderMap;
-  llamaServer: LlamaServerConfig;
+  manager: LlamaServeManager;
+  requestTimeoutMs: number;
 }
 
 const CHAIN_PREFIX = "gateway/";
 
 export function createCompletionsHandler(deps: CompletionsRouteDeps) {
-  const passthroughProxy = createPassthroughProxy(deps.llamaServer);
+  const passthroughProxy = createPassthroughProxy(
+    () => deps.manager.status().baseUrl,
+    deps.requestTimeoutMs,
+  );
 
   return async (req: Request, res: Response): Promise<void> => {
     // ── Zod validation ──

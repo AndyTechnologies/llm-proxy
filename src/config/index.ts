@@ -18,8 +18,9 @@ export function loadGatewayConfig(configPath?: string): GatewayConfig {
   const raw = loadRawConfig(file);
   const parsed = configSchema.parse(raw);
 
-  // Normalize chains: default provider for any step that omits it.
-  for (const chain of Object.values(parsed.chains)) {
+  // Inject chain name from the record key and normalize default provider.
+  for (const [name, chain] of Object.entries(parsed.chains)) {
+    chain.name = name;
     const defaultProvider = chain.provider ?? chain.defaultProvider ?? "llama-server";
     for (const step of chain.steps) {
       if (!step.provider) {

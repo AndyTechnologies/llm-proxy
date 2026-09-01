@@ -4,10 +4,45 @@ server:
   corsOrigins: "*"
   jsonLimit: 10mb
 
-llamaServer:
+# Managed llama-server backend — spawned and supervised by llm-proxy.
+llama:
+  binary: llama
   host: 127.0.0.1
   port: 8080
+  autoStart: true
+  startupTimeoutMs: 30000
+  stopTimeoutMs: 5000
   requestTimeoutMs: 300000
+  modelsDir: /home/andy/Models
+  autoload: true
+  router:
+    ctx: 8192
+    n: 2048
+    nGpuLayers: -1
+    flashAttn: true
+    cacheTypeK: q4_0
+    cacheTypeV: q4_0
+    batch: 2048
+    ubatch: 512
+    tools: all
+    parallel: 1
+  models:
+    SmolLM3-3B:
+      file: SmolLM3-3B-Q4_K_M.gguf
+      ctx: 65536
+      temp: 0.1
+    Llama3.2-3B-Instruct:
+      file: Llama-3.2-3B-Instruct-Q4_K_M.gguf
+      ctx: 102400
+      temp: 0.1
+    Qwen2.5-Coder-3B-Instruct:
+      file: Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf
+      ctx: 32768
+      temp: 0.6
+    Phi-4-Mini-Instruct:
+      file: Phi-4-Mini-Instruct-Q4_K_M.gguf
+      ctx: 32768
+      temp: 0.1
 
 defaultChain: orchestrator
 

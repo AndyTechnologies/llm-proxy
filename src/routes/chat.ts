@@ -15,19 +15,23 @@ import type { Request, Response } from "express";
 import { chatCompletionRequestSchema } from "../types/zod.js";
 import { runChain, type ChainMap, type ProviderMap } from "../orchestrator/engine.js";
 import { createPassthroughProxy } from "../middleware/proxy.js";
-import type { LlamaServerConfig } from "../config/schema.js";
+import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface ChatRouteDeps {
   chains: ChainMap;
   providers: ProviderMap;
-  llamaServer: LlamaServerConfig;
+  manager: LlamaServeManager;
+  requestTimeoutMs: number;
 }
 
 /** Prefix that marks a model name as a chain invocation. */
 const CHAIN_PREFIX = "gateway/";
 
 export function createChatHandler(deps: ChatRouteDeps) {
-  const passthroughProxy = createPassthroughProxy(deps.llamaServer);
+  const passthroughProxy = createPassthroughProxy(
+    () => deps.manager.status().baseUrl,
+    deps.requestTimeoutMs,
+  );
 
   return async (req: Request, res: Response): Promise<void> => {
     // ── Zod validation (gateway-security spec) ──

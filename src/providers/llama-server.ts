@@ -1,15 +1,17 @@
 /**
  * llama-server provider adapter.
  *
- * Talks to a native llama server (llama.cpp blueprint) at the configured
- * :8080 address, exposing the OpenAI-compatible /v1/chat/completions endpoint.
+ * Talks to a native llama server (llama.cpp blueprint) at the managed
+ * backend address, exposing the OpenAI-compatible /v1/chat/completions endpoint.
  *
- * WHY an adapter (architectural decision): the llama-server/llama-swap API
- * surface is the top compatibility risk in this rewrite. Encapsulating every
+ * The baseUrl is now DYNAMIC — sourced from the manager's status after
+ * the backend process starts. The port may be ephemeral (config port: 0).
+ *
+ * WHY an adapter (architectural decision): the llama-server API surface
+ * is the top compatibility risk in this rewrite. Encapsulating every
  * network call + payload normalization behind the Provider interface means a
  * future backend swap touches exactly one file, never the routes or engine.
  */
-import type { LlamaServerConfig } from "../config/schema.js";
 import type { Provider } from "./types.js";
 import {
   sanitizePayloadForLlamaCpp,
@@ -17,7 +19,10 @@ import {
 } from "../utils/sanitize.js";
 
 export interface LlamaServerOptions {
-  config: LlamaServerConfig;
+  /** Dynamic baseUrl getter — reads from manager after start. */
+  getBaseUrl: () => string;
+  /** Per-request timeout (from config llama.requestTimeoutMs). */
+  requestTimeoutMs: number;
 }
 
 /** Default per-request timeout fallthrough (llama-server can be slow). */
@@ -40,14 +45,16 @@ function normalizeOutboundPayload(
 
 export class LlamaServerProvider implements Provider {
   readonly name = "llama-server";
-  private readonly config: LlamaServerConfig;
+  private readonly getBaseUrl: () => string;
+  private readonly requestTimeoutMs: number;
 
   constructor(options: LlamaServerOptions) {
-    this.config = options.config;
+    this.getBaseUrl = options.getBaseUrl;
+    this.requestTimeoutMs = options.requestTimeoutMs;
   }
 
   get baseUrl(): string {
-    return `http://${this.config.host}:${this.config.port}`;
+    return this.getBaseUrl();
   }
 
   async chat(
@@ -60,7 +67,7 @@ export class LlamaServerProvider implements Provider {
       stream: false,
     });
 
-    const timeoutMs = this.config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = this.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: "POST",
@@ -95,7 +102,7 @@ export class LlamaServerProvider implements Provider {
       stream: true,
     });
 
-    const timeoutMs = this.config.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = this.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     // Combine the client-disconnect signal with the request timeout. We want
     // BOTH: abort when the client goes away AND abort after a hard timeout.
@@ -167,9 +174,9 @@ export class LlamaServerProvider implements Provider {
 
 /** Factory to keep construction uniform with future providers. */
 export function makeLlamaServerProvider(
-  config: LlamaServerConfig,
+  options: LlamaServerOptions,
 ): Provider {
-  return new LlamaServerProvider({ config });
+  return new LlamaServerProvider(options);
 }
 
 /** Convenience re-export used by other modules that need finiteNumber too. */

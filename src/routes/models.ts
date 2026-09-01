@@ -1,22 +1,24 @@
 /**
  * GET /v1/models route handler.
  *
- * Returns the list of available models: real models from the llama-server
- * backend PLUS virtual chain models. Virtual models use the `gateway/<name>`
- * id pattern and are tagged with `owned_by: "gateway"` (virtual-model-routing
- * spec Req 3).
+ * Returns the list of available models: real models from the managed
+ * llama-server backend PLUS virtual chain models. Virtual models use the
+ * `gateway/<name>` id pattern and are tagged with `owned_by: "gateway"`
+ * (virtual-model-routing spec Req 3).
  *
- * Real model discovery hits the backend's /v1/models endpoint; if it fails,
- * we return only virtual models so the gateway stays usable.
+ * Real models come from the manager's registered model list (the config's
+ * llama.models keys), which map 1:1 to the preset INI sections. The
+ * gateway no longer needs to hit the backend's /v1/models endpoint because
+ * the manager owns the model registry.
  */
 import type { Request, Response } from "express";
 import type { ModelInfo, ModelListResponse } from "../types/openai.js";
 import type { ParsedChain } from "../orchestrator/parser.js";
-import type { LlamaServerConfig } from "../config/schema.js";
+import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface ModelsRouteDeps {
   chains: Map<string, ParsedChain>;
-  llamaServer: LlamaServerConfig;
+  manager: LlamaServeManager;
 }
 
 export function createModelsHandler(deps: ModelsRouteDeps) {
@@ -35,29 +37,15 @@ export function createModelsHandler(deps: ModelsRouteDeps) {
       });
     }
 
-    // ── Real models from llama-server backend ──
-    try {
-      const target = `http://${deps.llamaServer.host}:${deps.llamaServer.port}`;
-      const response = await fetch(`${target}/v1/models`, {
-        signal: AbortSignal.timeout(5000),
+    // ── Real models from the managed backend ──
+    const backendStatus = deps.manager.status();
+    for (const modelId of backendStatus.models) {
+      data.push({
+        id: modelId,
+        object: "model",
+        created: now,
+        owned_by: "llama-server",
       });
-
-      if (response.ok) {
-        const body = (await response.json()) as { data?: Array<{ id: string }> };
-        if (Array.isArray(body.data)) {
-          for (const m of body.data) {
-            data.push({
-              id: m.id,
-              object: "model",
-              created: now,
-              owned_by: "llama-server",
-            });
-          }
-        }
-      }
-    } catch {
-      // Backend may not be running — return virtual models only.
-      console.warn("[models] could not reach llama-server for model list");
     }
 
     const response: ModelListResponse = { object: "list", data };

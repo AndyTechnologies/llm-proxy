@@ -2,9 +2,11 @@
 /**
  * Gateway entry point.
  *
- * Boots config → parse chains → create providers → mount Express app → listen.
- * No llama-swap process management (dropped in the rewrite). Graceful shutdown
- * on SIGINT/SIGTERM with forced connection close after a timeout.
+ * Boots config → validate backend → spawn llama-server → parse chains →
+ * create providers → mount Express app → listen.
+ *
+ * The managed backend MUST be ready (start()) BEFORE app.listen() so traffic
+ * never hits an unready upstream. Shutdown stops the backend before exiting.
  *
  * This is the TS replacement for the old index.js + server.js pair.
  */
@@ -12,21 +14,40 @@ import { loadGatewayConfig } from "./config/index.js";
 import { parseChains } from "./orchestrator/parser.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
 import { createApp } from "./server.js";
+import { createLlamaServeManager } from "./backend/manager.js";
 
 // ── Config ──
 const config = loadGatewayConfig();
 console.log(`[gateway] config loaded: ${Object.keys(config.chains).length} chains`);
+
+// ── Backend manager ──
+const manager = createLlamaServeManager({ config: config.llama });
+
+try {
+  await manager.start();
+} catch (err) {
+  console.error(
+    `[gateway] FATAL: backend failed to start — ${(err as Error).message}`,
+  );
+  process.exit(1);
+}
 
 // ── Parse chains (fails fast on invalid config) ──
 const chains = parseChains(config);
 
 // ── Providers ──
 const providers = new Map([
-  ["llama-server", makeLlamaServerProvider(config.llamaServer)],
+  [
+    "llama-server",
+    makeLlamaServerProvider({
+      getBaseUrl: () => manager.status().baseUrl,
+      requestTimeoutMs: config.llama.requestTimeoutMs,
+    }),
+  ],
 ]);
 
 // ── Express app ──
-const app = createApp({ config, chains, providers });
+const app = createApp({ config, chains, providers, manager });
 
 // ── Listen ──
 const server = app.listen(config.server.port, config.server.host, () => {
@@ -36,6 +57,7 @@ const server = app.listen(config.server.port, config.server.host, () => {
   console.log(
     `[gateway] virtual models: ${[...chains.keys()].map((n) => `gateway/${n}`).join(", ")}`,
   );
+  console.log(`[gateway] backend: ${manager.status().baseUrl}`);
 });
 
 // ── Graceful shutdown ──
@@ -56,6 +78,7 @@ async function shutdown(reason: string): Promise<void> {
     server.close(() => resolve());
   });
 
+  await manager.stop();
   process.exit(0);
 }
 
