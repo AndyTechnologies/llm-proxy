@@ -1,0 +1,56 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Node.js modern (ESM, "type":"module"), Express 5, cors, js-yaml.
+  Architecture: LLM proxy orchestrating multi-model pipelines toward llama-swap/llama.cpp;
+    OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, /v1/models).
+  Testing: No test runner configured; no test framework installed. Runtime verification
+    via manual smoke tests. Linter: eslint (lint/format scripts).
+  Style: ESM modules; JS only (no type checker / TS); eslint enforces semi + no-unused-vars.
+
+strict_tdd: false
+
+testing:
+  strict_tdd: false
+  projects:
+    - path: .
+      stack: Node.js ESM (Express 5)
+      test_command: null
+      framework: null
+      test_layers:
+        unit: false
+        integration: false
+        e2e: false
+      coverage: null
+      quality:
+        linter: "eslint ."
+        type_checker: null
+        formatter: "eslint --fix . (via lint config)"
+  note: >
+    No explicit workspace-level test command exists. strict_tdd set to false.
+    Downstream apply/verify execution requires a workspace-wide command once a
+    test runner is introduced.
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    guidelines:
+      - Follow existing code patterns (ESM, Express 5)
+    tdd: false
+    test_command: ""
+  verify:
+    test_command: ""
+    build_command: "node --check <file> (or node index.js)"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

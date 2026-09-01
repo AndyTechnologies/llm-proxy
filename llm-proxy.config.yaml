@@ -1,0 +1,68 @@
+server:
+  host: 127.0.0.1
+  port: 8090
+  corsOrigins: "*"
+  jsonLimit: 100mb
+
+llamaSwap:
+  binary: /home/andy/.local/bin/llama-swap
+  config: /home/andy/Models/config.yaml
+  host: 127.0.0.1
+  port: 8080
+
+  # Si tu versión de llama-swap usa otros flags, edita args.
+  args:
+    - "-config"
+    - "{config}"
+    - "-listen"
+    - "{host}:{port}"
+
+  autoStart: true
+  startupTimeoutMs: 60000
+  stopTimeoutMs: 15000
+  requestTimeoutMs: 300000
+
+defaultPipeline: orchestrator
+
+pipelines: 
+  orchestrator:
+    displayName: "Orchestrator"
+    stages:
+      - model: SmolLM3-3B
+        mode: generate
+      - model: Qwen2.5-Coder-3B-Instruct
+        mode: refine
+      - model: Phi-4-Mini-Instruct
+        mode: refine
+      - model: Llama3.2-3B-Instruct
+        mode: refine
+      
+  thinker:
+    displayName: "Thinker"
+    stages:
+      - model: Phi-4-Mini-Instruct
+        mode: refine
+      - model: Llama3.2-3B-Instruct
+        mode: generate
+  coder:
+    displayName: "Coder"
+    stages:
+      - model: Qwen2.5-Coder-3B-Instruct
+        mode: generate
+      - model: Phi-4-Mini-Instruct
+        mode: refine
+      - model: Qwen2.5-Coder-3B-Instruct
+        mode: refine
+      - model: Llama3.2-3B-Instruct
+        mode: refine
+  verifier:
+    displayName: "Judge"
+    stages:
+      - model: SmolLM3-3B
+        mode: generate
+      - model: Qwen2.5-Coder-3B-Instruct
+        mode: refine
+      - model: Phi-4-Mini-Instruct
+        mode: refine
+      - model: Llama3.2-3B-Instruct
+        mode: refine

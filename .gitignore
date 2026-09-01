@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+file.log
+
+# Codegraph index (machine-generated, per-worktree)
+.codegraph/
+
+# Runtime / OS
+.DS_Store
+*.pid

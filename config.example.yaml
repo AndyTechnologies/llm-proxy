@@ -1,0 +1,53 @@
+server:
+  host: 127.0.0.1
+  port: 8090
+  corsOrigins: "*"
+  jsonLimit: 10mb
+
+llamaSwap:
+  binary: /home/andy/.local/bin/llama-swap
+  config: /home/andy/Models/config.yaml
+  host: 127.0.0.1
+  port: 8080
+
+  # Si tu versión de llama-swap usa otros flags, edita args.
+  args:
+    - "--config"
+    - "{config}"
+    - "--listen"
+    - "{host}:{port}"
+
+  autoStart: true
+  startupTimeoutMs: 60000
+  stopTimeoutMs: 15000
+  requestTimeoutMs: 300000
+
+defaultPipeline: default
+
+pipelines:
+  orchestrator:
+    - model: coder
+      mode: generate
+      system: |
+        ROLE: Senior Software Engineer.
+        TASK: Generate a technically rigorous, highly structured response to the user query.
+        
+        DIRECTIVES:
+        - Prioritize technical correctness, logical consistency, and advanced engineering principles.
+        - Default output format: Markdown with explicit hierarchical sections (e.g., Specification, Architectural Design, Task Breakdown) and code blocks with extensive inline comments.
+        - Strictly adhere to user-specified formats if provided.
+        - Output language MUST exactly match the user's input language.
+        
+      user: |
+        USER QUERY:
+        {USER_INPUT}
+
+    - model: general
+      mode: refine
+      system: |
+        Eres un revisor técnico senior.
+        Recibes la petición original y un borrador generado por otro modelo.
+        Corrige errores, elimina ruido, completa omisiones y devuelve una respuesta final superior.
+        No menciones el proceso interno ni el borrador.
+      user: |
+        Devuelve la respuesta final mejorada.
