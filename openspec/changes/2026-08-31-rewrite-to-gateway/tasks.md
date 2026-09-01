@@ -36,20 +36,20 @@ Chain strategy: stacked-to-main
 
 ## Phase 2: Core Implementation
 
-- [ ] 2.1 Create `src/middleware/auth.ts`: optional Bearer from `BEARER_TOKEN`; 401 `{error:{message,type:"authentication_error"}}` when set
-- [ ] 2.2 Create `src/middleware/proxy.ts`: http-proxy-middleware for `/v1/*` → `config.llamaServer`; target from config only (SSRF guard); zod strips unknown URL fields
-- [ ] 2.3 Create `src/middleware/errors.ts`: global handler normalizes to OpenAI shape `{error:{message,type,param,code}}`; guard `res.headersSent`; invariant: exact ONE terminal chunk, no duplicate error payload after finish
-- [ ] 2.4 Create `src/server.ts`: mount `app.use(helmet())` (gateway-security Req 1), auth, proxy/errors, routes
-- [ ] 2.5 Create `src/orchestrator/parser.ts`: parse chain config → Step[]; resolve providers; refuse invalid chains at startup
-- [ ] 2.6 Create `src/orchestrator/engine.ts`: sequential runner; context refeed between steps; `on_429` fallback; `tool_calls_route`; stream only last step via `res.pipe()`; abort on `res.on('close')` (NOT req)
-- [ ] 2.7 Create `src/utils/ids.ts`/`sanitize.ts`/`extract.ts`: TS ports of `utils/micro.js` (makeCompletionId, extractContent, finiteNumber)
+- [x] 2.1 Create `src/middleware/auth.ts`: optional Bearer from `BEARER_TOKEN`; 401 `{error:{message,type:"authentication_error"}}` when set
+- [x] 2.2 Create `src/middleware/proxy.ts`: http-proxy-middleware for `/v1/*` → `config.llamaServer`; target from config only (SSRF guard); zod strips unknown URL fields
+- [x] 2.3 Create `src/middleware/errors.ts`: global handler normalizes to OpenAI shape `{error:{message,type,param,code}}`; guard `res.headersSent`; invariant: exact ONE terminal chunk, no duplicate error payload after finish
+- [x] 2.4 Create `src/server.ts`: mount `app.use(helmet())` (gateway-security Req 1), auth, proxy/errors, routes
+- [x] 2.5 Create `src/orchestrator/parser.ts`: parse chain config → Step[]; resolve providers; refuse invalid chains at startup
+- [x] 2.6 Create `src/orchestrator/engine.ts`: sequential runner; context refeed between steps; `on_429` fallback; `tool_calls_route`; stream only last step via `res.pipe()`; abort on `res.on('close')` (NOT req)
+- [x] 2.7 Create `src/utils/ids.ts`/`sanitize.ts`/`extract.ts`: TS ports of `utils/micro.js` (makeCompletionId, extractContent, finiteNumber)
 
 ## Phase 3: Integration / Routing
 
-- [ ] 3.1 Create `src/routes/chat.ts` + `completions.ts`: normalize payload, resolve model; route provider vs `gateway/<chain>` / `X-Chain-ID`; stream via `res.pipe()` + `[DONE]`
-- [ ] 3.2 Create `src/routes/models.ts`: GET `/v1/models` lists real models + virtual chains, entries `id: "gateway/<chain>"` with `owned_by: "gateway"` (virtual-model-routing Req 3)
-- [ ] 3.3 Create `src/routes/health.ts` + `src/index.ts`: boot config→app→listen; SIGINT/TERM shutdown; no llama-swap
-- [ ] 3.4 Wire engine + proxy + routing: invoke chain via `model` prefix `gateway/<name>` or `X-Chain-ID`; unknown → 404 `{error}`
+- [x] 3.1 Create `src/routes/chat.ts` + `completions.ts`: normalize payload, resolve model; route provider vs `gateway/<chain>` / `X-Chain-ID`; stream via `res.pipe()` + `[DONE]`
+- [x] 3.2 Create `src/routes/models.ts`: GET `/v1/models` lists real models + virtual chains, entries `id: "gateway/<chain>"` with `owned_by: "gateway"` (virtual-model-routing Req 3)
+- [x] 3.3 Create `src/routes/health.ts` + `src/index.ts`: boot config→app→listen; SIGINT/TERM shutdown; no llama-swap
+- [x] 3.4 Wire engine + proxy + routing: invoke chain via `model` prefix `gateway/<name>` or `X-Chain-ID`; unknown → 404 `{error}`
 - [ ] 3.5 Migrate 4 pipelines (`orchestrator`, `thinker`, `coder`, `verifier`) in `llm-proxy.config.yaml` to chain schema (steps w/ `on_429`, `tool_calls_route`, `passthrough`) preserving multi-stage reasoning
 
 ## Phase 4: Testing / Verification
