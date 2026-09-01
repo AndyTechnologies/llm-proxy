@@ -16,6 +16,8 @@ Minimal, self-contained point fixes across `pipelines.js` and `utils/micro.js`, 
 | | (b) `finiteNumber(value, fallback, min, max)` | handles NaN/Infinity/null/"" and clamps | selected |
 | Bug 2 — restoration | (a) exact commented block | misses plain-string parts in arrays | **extend to string parts + empty-array graceful** |
 | | (b) extended normalization | still non-regression, covers spec scenario | selected |
+| Bug 5 — `llamaChatStream` arg order | (a) pass payload as config (current) | `config.llamaSwap` undefined → `TypeError .host`, streaming always fails | **pass resolved `config` as first argument** |
+| | (b) pass `config` first, payload second | correct binding, streaming reaches backend | selected (discovered in runtime verify) |
 
 ### Decision: Bug 1 — local boolean
 
@@ -33,6 +35,11 @@ Minimal, self-contained point fixes across `pipelines.js` and `utils/micro.js`, 
 
 **Choice**: Add `finiteNumber(value, fallback, min, max)` in `utils/micro.js`; apply to `temperature`, `top_p`, `max_tokens`, `max_completion_tokens`.
 **Rationale**: `Math.max(0, Math.min(2, Number("abc")))` yields `NaN` because NaN comparisons are falsey and propagate. The helper pre-guards `null`/`""`/`undefined` and `!Number.isFinite(n)` (covers NaN/±Infinity) before clamping, so every path returns a finite default-then-clamp value.
+
+### Decision: Bug 5 — pass `config` to `llamaChatStream`
+
+**Choice**: In `runPipelineStream` (`pipelines.js:~109`) and the `v1/completions` route (`server.js:~217`), call `llamaChatStream(config, payload, abortSignal)`, passing the resolved `config` as the first argument.
+**Rationale**: `llamaChatStream`'s signature is `(config, payload, abortSignal)`. Both streaming call sites passed the request payload as the first argument (the config position) and dropped `config`. Because the payload has no `.llamaSwap`, `config.llamaSwap.host` threw `TypeError` on **every** streaming request. Discovered during runtime verification (Bug 5, not in the original 4-bug diagnosis); the non-streaming path (`llamaChatNotStream`) already passes `config` correctly, so the bug was isolated to streaming call sites. Fix keeps `config` resolution at the call site and preserves the abort signal as the third argument.
 
 ## Data Flow
 

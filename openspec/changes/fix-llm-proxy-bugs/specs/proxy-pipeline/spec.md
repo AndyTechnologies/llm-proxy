@@ -66,6 +66,17 @@ On an error thrown mid-stream, the pipeline MUST NOT emit both a terminal chunk 
 - WHEN the payload is sanitized for llama.cpp
 - THEN the outbound values are finite numeric defaults, never `NaN`
 
+### Invariant: Streaming passes the resolved config to the client
+
+`llamaChatStream(config, payload, abortSignal)` MUST be called with the resolved `config` as its first argument from every streaming call site. Passing the request payload in the config position makes `config.llamaSwap` undefined, so reading `.host` throws `TypeError: Cannot read properties of undefined (reading 'host')` and streaming fails on every request.
+
+#### Scenario: Streaming call passes config first
+
+- GIVEN a streaming chat completion through a pipeline
+- WHEN the final-stage stream is opened via `llamaChatStream`
+- THEN the resolved `config` is the first argument, so `config.llamaSwap.host` is readable
+- AND streaming reaches the backend instead of throwing `TypeError` on `.host`
+
 ## Rules Applied
 
 - Given/When/Then scenarios and RFC 2119 keywords per `openspec/config.yaml rules.specs`.
