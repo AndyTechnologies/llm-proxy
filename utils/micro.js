@@ -14,6 +14,13 @@ export function makeCompletionId() {
   return `chatcmpl-${crypto.randomBytes(12).toString("hex")}`;
 }
 
+export function finiteNumber(value, fallback, min, max) {
+  if (value === null || value === "" || value === undefined) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback; // NaN, ±Infinity
+  return Math.min(max, Math.max(min, n));
+}
+
 export function asyncHandler(fn) {
   return (req, res, next) => {
     Promise.resolve(fn(req, res, next)).catch(next);
@@ -50,11 +57,11 @@ export function sanitizePayloadForLlamaCpp(payload) {
     if (payload.model) clean.model = payload.model;
     if (payload.messages) clean.messages = payload.messages;
     if (payload.stream !== undefined) clean.stream = payload.stream;
-    if (payload.temperature !== undefined) clean.temperature = Math.max(0, Math.min(2, Number(payload.temperature)));
-    if (payload.top_p !== undefined) clean.top_p = Math.max(0, Math.min(1, Number(payload.top_p)));
-    if (payload.max_tokens !== undefined) clean.max_tokens = Math.max(1, Math.min(8192, Number(payload.max_tokens)));
+    if (payload.temperature !== undefined) clean.temperature = finiteNumber(payload.temperature, 0.7, 0, 2);
+    if (payload.top_p !== undefined) clean.top_p = finiteNumber(payload.top_p, 1, 0, 1);
+    if (payload.max_tokens !== undefined) clean.max_tokens = finiteNumber(payload.max_tokens, 2048, 1, 8192);
     if (payload.max_completion_tokens !== undefined) {
-      clean.max_tokens = Math.max(1, Math.min(8192, Number(payload.max_completion_tokens)));
+      clean.max_tokens = finiteNumber(payload.max_completion_tokens, 2048, 1, 8192);
     }
     if (payload.stop) clean.stop = payload.stop;
     
