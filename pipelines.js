@@ -187,10 +187,11 @@ export async function runPipelineStream(config, pipelineName, input, res, reqAbo
     }
   } catch (err) {
     if (!res.writableEnded) {
-      // Intentar enviar chunk final incluso en error
-      enviarChunkFinal();
-      
-      const errorPayload = {
+      console.error(`[orchestrator] Error en streaming: ${err}`);
+
+      // Un solo chunk terminal que lleva el error en banda (finish_reason: null,
+      // NO finish_reason:"stop", NO fake). Seguido de [DONE] y res.end().
+      const errorChunk = {
         id: completionId,
         object: "chat.completion.chunk",
         created,
@@ -207,7 +208,7 @@ export async function runPipelineStream(config, pipelineName, input, res, reqAbo
         ],
       };
 
-      res.write(`data: ${JSON.stringify(errorPayload)}\n\n`);
+      res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
       res.write(`data: [DONE]\n\n`);
       res.end();
     }
