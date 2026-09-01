@@ -13,6 +13,10 @@ llama:
   startupTimeoutMs: 30000
   stopTimeoutMs: 5000
   requestTimeoutMs: 300000
+  healthPollIntervalMs: 1000
+  portParseTimeoutMs: 5000
+  backoffCapMs: 30000
+  maxRestartAttempts: 5
   modelsDir: /home/andy/Models
   autoload: true
   router:

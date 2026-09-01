@@ -138,7 +138,7 @@ export class LlamaServerProvider implements Provider {
 
     let res: Response;
     try {
-      res = await fetch(this.buildUrl(request), {
+      res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sanitized),

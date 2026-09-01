@@ -52,6 +52,13 @@ export const llamaConfigSchema = z.object({
   startupTimeoutMs: z.number().int().positive().default(30000),
   stopTimeoutMs: z.number().int().positive().default(5000),
   requestTimeoutMs: z.number().int().positive().default(300000),
+  // Timing knobs for the supervised backend lifecycle (previously hardcoded).
+  healthPollIntervalMs: z.coerce.number().int().positive().default(1000),
+  portParseTimeoutMs: z.coerce.number().int().positive().default(5000),
+  backoffCapMs: z.coerce.number().int().positive().default(30000),
+  // Fail-fast restart cap: unexpected exits beyond this stop retrying and set
+  // state:"error". 0 = unlimited retries (legacy behavior).
+  maxRestartAttempts: z.coerce.number().int().min(0).default(5),
   modelsDir: z.string().default("~/Models"),
   autoload: z.boolean().default(true),
   router: routerConfigSchema.default({}),
