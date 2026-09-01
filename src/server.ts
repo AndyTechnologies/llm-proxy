@@ -18,6 +18,7 @@ import helmet from "helmet";
 import type { GatewayConfig } from "./config/schema.js";
 import type { ParsedChain } from "./orchestrator/parser.js";
 import type { Provider } from "./providers/types.js";
+import type { LlamaServeManager } from "./backend/manager.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { errorHandler } from "./middleware/errors.js";
 import { createChatHandler } from "./routes/chat.js";
@@ -29,6 +30,7 @@ export interface ServerDeps {
   config: GatewayConfig;
   chains: Map<string, ParsedChain>;
   providers: Map<string, Provider>;
+  manager: LlamaServeManager;
 }
 
 export function createApp(deps: ServerDeps): express.Express {
@@ -63,20 +65,23 @@ export function createApp(deps: ServerDeps): express.Express {
   const chatHandler = createChatHandler({
     chains: deps.chains,
     providers: deps.providers,
-    llamaServer: deps.config.llamaServer,
+    manager: deps.manager,
+    requestTimeoutMs: deps.config.llama.requestTimeoutMs,
   });
   const completionsHandler = createCompletionsHandler({
     chains: deps.chains,
     providers: deps.providers,
-    llamaServer: deps.config.llamaServer,
+    manager: deps.manager,
+    requestTimeoutMs: deps.config.llama.requestTimeoutMs,
   });
   const modelsHandler = createModelsHandler({
     chains: deps.chains,
-    llamaServer: deps.config.llamaServer,
+    manager: deps.manager,
   });
   const healthHandler = createHealthHandler({
     config: deps.config,
     chains: deps.chains,
+    manager: deps.manager,
   });
 
   app.get("/health", healthHandler);

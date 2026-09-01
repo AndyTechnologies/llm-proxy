@@ -4,7 +4,7 @@ import { defineConfig } from "eslint/config";
 export default defineConfig([
 	// matches all files ending with .js
 	{
-		files: ["**/*.js"],
+		files: ["**/*.js","**/*.ts"],
 		rules: {
 			semi: "error",
 			"no-unused-vars": "error",

@@ -11,3 +11,9 @@ file.log
 # Runtime / OS
 .DS_Store
 *.pid
+
+# Generated preset files (llama-server --models-preset)
+.llm-proxy/
+
+# Build output
+dist/

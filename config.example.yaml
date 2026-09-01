@@ -10,12 +10,53 @@ server:
   corsOrigins: "*"
   jsonLimit: 10mb
 
-# llama-server backend — the native llama.cpp server (NOT llama-swap).
-# The gateway proxies to this address; the server must be running separately.
-llamaServer:
+# Managed llama-server backend — spawned and supervised by llm-proxy.
+# The gateway owns the full lifecycle: spawn, health-check, restart, shutdown.
+llama:
+  # Path to the llama-server binary. Resolved via PATH if not absolute.
+  binary: llama
   host: 127.0.0.1
+  # 0 = dynamic ephemeral port (read from process output)
   port: 8080
+  autoStart: true
+  startupTimeoutMs: 30000
+  stopTimeoutMs: 5000
   requestTimeoutMs: 300000
+  # Directory containing GGUF model files (relative file paths resolve here).
+  modelsDir: /home/andy/Models
+  # false → --no-models-autoload (models loaded on-demand only)
+  autoload: true
+  # Global router args (llama.cpp serve flags).
+  router:
+    ctx: 8192
+    n: 2048
+    nGpuLayers: -1
+    flashAttn: true
+    cacheTypeK: q4_0
+    cacheTypeV: q4_0
+    batch: 2048
+    ubatch: 512
+    tools: all
+    parallel: 1
+  # Model registry — each key is the friendly id used by chains (step.model).
+  # A preset INI is generated from this on every start.
+  models:
+    SmolLM3-3B:
+      file: SmolLM3-3B-Q4_K_M.gguf
+      ctx: 65536
+      temp: 0.1
+    Llama3.2-3B-Instruct:
+      file: Llama-3.2-3B-Instruct-Q4_K_M.gguf
+      ctx: 102400
+      temp: 0.1
+    Qwen2.5-Coder-3B-Instruct:
+      file: Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf
+      ctx: 32768
+      temp: 0.6
+    Phi-4-Mini-Instruct:
+      file: Phi-4-Mini-Instruct-Q4_K_M.gguf
+      ctx: 32768
+      temp: 0.1
 
 # Default chain invoked when no X-Chain-ID header is provided.
 defaultChain: orchestrator
@@ -94,7 +135,26 @@ chains:
         type: refine
         model: Llama3.2-3B-Instruct
 
-# Example: chain with conditional routing
+# Example: conditional routing (coverage for pipeline-orchestration scenarios)
+#   fallback-demo — on_429 fallback when the primary step returns HTTP 429:
+#     - name: primary
+#       type: generate
+#       model: SmolLM3-3B
+#       on_429: fallback
+#     - name: fallback
+#       type: generate
+#       model: Phi-4-Mini-Instruct
+#
+#   tool-demo — tool_calls routing when the response carries tool_calls:
+#     - name: planner
+#       type: generate
+#       model: Llama3.2-3B-Instruct
+#       tool_calls_route: tool_executor
+#     - name: tool_executor
+#       type: refine
+#       model: Phi-4-Mini-Instruct
+
+# Example: chain with conditional routing (commented reference)
 #   tool-orchestrator:
 #     displayName: "Tool Orchestrator"
 #     provider: llama-server

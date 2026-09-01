@@ -4,10 +4,45 @@ server:
   corsOrigins: "*"
   jsonLimit: 10mb
 
-llamaServer:
+# Managed llama-server backend — spawned and supervised by llm-proxy.
+llama:
+  binary: llama
   host: 127.0.0.1
   port: 8080
+  autoStart: true
+  startupTimeoutMs: 30000
+  stopTimeoutMs: 5000
   requestTimeoutMs: 300000
+  modelsDir: /home/andy/Models
+  autoload: true
+  router:
+    ctx: 8192
+    n: 2048
+    nGpuLayers: -1
+    flashAttn: true
+    cacheTypeK: q4_0
+    cacheTypeV: q4_0
+    batch: 2048
+    ubatch: 512
+    tools: all
+    parallel: 1
+  models:
+    SmolLM3-3B:
+      file: SmolLM3-3B-Q4_K_M.gguf
+      ctx: 65536
+      temp: 0.1
+    Llama3.2-3B-Instruct:
+      file: Llama-3.2-3B-Instruct-Q4_K_M.gguf
+      ctx: 102400
+      temp: 0.1
+    Qwen2.5-Coder-3B-Instruct:
+      file: Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf
+      ctx: 32768
+      temp: 0.6
+    Phi-4-Mini-Instruct:
+      file: Phi-4-Mini-Instruct-Q4_K_M.gguf
+      ctx: 32768
+      temp: 0.1
 
 defaultChain: orchestrator
 
@@ -73,3 +108,37 @@ chains:
       - name: refine-llama
         type: refine
         model: Llama3.2-3B-Instruct
+
+  # Conditional-routing examples (coverage for pipeline-orchestration:
+  # on_429 fallback + tool_calls routing).
+  fallback-demo:
+    displayName: "Fallback Demo"
+    provider: llama-server
+    steps:
+      # Primary step: on_429 routes to the fallback step below when the
+      # upstream returns HTTP 429.
+      - name: primary
+        type: generate
+        model: SmolLM3-3B
+        on_429: fallback
+      # Fallback step (executed instead of aborting on a 429).
+      - name: fallback
+        type: generate
+        model: Phi-4-Mini-Instruct
+
+  tool-demo:
+    displayName: "Tool Demo"
+    provider: llama-server
+    steps:
+      # Planner step: when the response carries a non-empty tool_calls array,
+      # the engine routes to tool_executor instead of the sequential next step.
+      # Verified: Llama3.2-3B-Instruct emits tool_calls for the tools request
+      # (Qwen2.5-Coder-3B-Instruct on this backend build ignores tools).
+      - name: planner
+        type: generate
+        model: Llama3.2-3B-Instruct
+        tool_calls_route: tool_executor
+      # Tool executor step: refines the tool result into the final answer.
+      - name: tool_executor
+        type: refine
+        model: Phi-4-Mini-Instruct
