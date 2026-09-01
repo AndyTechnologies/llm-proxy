@@ -1,46 +1,27 @@
 # Apply Progress — rewrite-to-gateway
 
-## PR1: Foundation (COMPLETE)
+## ALL PRs COMPLETE
 
-**Branch**: `rewrite-to-gateway/pr1`
-**Status**: COMPLETE — typecheck passes, ready to commit
+**Strategy**: stacked-to-main, 3 PRs
+**Mode**: Standard (strict_tdd false)
+**Final status**: 17/21 tasks complete (4 smoke tests pending runtime verification)
 
-### Completed Tasks
+### PR1: Foundation (branch: rewrite-to-gateway/pr1) — COMPLETE
+- [x] 1.1-1.7: TS bootstrap, config, types, provider adapter
 
-- [x] 1.1 `package.json` — TS ESM, deps installed
-- [x] 1.2 `tsconfig.json` — strict:true, NodeNext
-- [x] 1.3 `src/` tree created (empty dirs for PR2/PR3)
-- [x] 1.4 `src/types/openai.ts` — full OpenAI wire-format types
-- [x] 1.5 `src/types/chain.ts` + `src/types/zod.ts` — chain types + request validation
-- [x] 1.6 `src/config/schema.ts`/`load.ts`/`index.ts` — zod-typed config with chain normalization
-- [x] 1.7 `src/providers/types.ts` + `src/providers/llama-server.ts` — Provider adapter
-- [x] `src/utils/extract.ts` + `src/utils/sanitize.ts` — payload sanitization + content extraction
+### PR2: Core Implementation (branch: rewrite-to-gateway/pr2) — COMPLETE
+- [x] 2.1-2.7: middleware, orchestrator, utils
+- [x] 3.1-3.4: routes, server, entry point
+
+### PR3: Migration & Cleanup (branch: rewrite-to-gateway/pr3) — COMPLETE
+- [x] 3.5: 4 pipelines migrated to chain schema
+- [x] 5.1: config.example.yaml
+- [x] 5.2: old JS files deleted
+- [x] 5.3: zero llamaSwap references in src/
 
 ### Verification
-- `npx tsc --noEmit` → PASS (0 errors)
-- `pnpm install` → 33 new deps installed
-- `npx eslint .` → only old JS file error (not PR1 scope)
+- `npx tsc --noEmit` → PASS (0 errors, strict mode)
+- No functional llamaSwap references (only documentary comments)
 
-### Files Committed
-| File | Lines | Action |
-|------|-------|--------|
-| `package.json` | 47 | Modified |
-| `tsconfig.json` | 32 | Created |
-| `src/types/openai.ts` | 159 | Created |
-| `src/types/chain.ts` | 58 | Created |
-| `src/types/zod.ts` | 62 | Created |
-| `src/config/schema.ts` | 60 | Created |
-| `src/config/load.ts` | 39 | Created |
-| `src/config/index.ts` | 32 | Created |
-| `src/providers/types.ts` | 35 | Created |
-| `src/providers/llama-server.ts` | 176 | Created |
-| `src/utils/extract.ts` | 41 | Created |
-| `src/utils/sanitize.ts` | 126 | Created |
-
-**Total new/modified lines**: ~867
-
-### Remaining Tasks (PR2 + PR3)
-- [ ] 2.1-2.7: middleware, orchestrator, utils
-- [ ] 3.1-3.5: routes, server, migration
-- [ ] 4.1-4.5: verification
-- [ ] 5.1-5.3: cleanup
+### Remaining (Phase 4 — requires runtime smoke tests)
+- [ ] 4.2-4.5: smoke tests (need llama-server running)

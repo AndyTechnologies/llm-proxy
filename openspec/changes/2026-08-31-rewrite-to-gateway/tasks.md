@@ -50,11 +50,11 @@ Chain strategy: stacked-to-main
 - [x] 3.2 Create `src/routes/models.ts`: GET `/v1/models` lists real models + virtual chains, entries `id: "gateway/<chain>"` with `owned_by: "gateway"` (virtual-model-routing Req 3)
 - [x] 3.3 Create `src/routes/health.ts` + `src/index.ts`: boot config→app→listen; SIGINT/TERM shutdown; no llama-swap
 - [x] 3.4 Wire engine + proxy + routing: invoke chain via `model` prefix `gateway/<name>` or `X-Chain-ID`; unknown → 404 `{error}`
-- [ ] 3.5 Migrate 4 pipelines (`orchestrator`, `thinker`, `coder`, `verifier`) in `llm-proxy.config.yaml` to chain schema (steps w/ `on_429`, `tool_calls_route`, `passthrough`) preserving multi-stage reasoning
+- [x] 3.5 Migrate 4 pipelines (`orchestrator`, `thinker`, `coder`, `verifier`) in `llm-proxy.config.yaml` to chain schema (steps w/ `on_429`, `tool_calls_route`, `passthrough`) preserving multi-stage reasoning
 
 ## Phase 4: Testing / Verification
 
-- [ ] 4.1 Verify `npx tsc --noEmit` passes strict TS
+- [x] 4.1 Verify `npx tsc --noEmit` passes strict TS
 - [ ] 4.2 Smoke: 3 endpoints stream clean, `[DONE]` terminated; finish_reason assigned (no ReferenceError — proxy-pipeline)
 - [ ] 4.3 Smoke: unknown chain → 404; validation error → 400; server error → 500 OpenAI shape
 - [ ] 4.4 Smoke: `gateway/thinker` and `X-Chain-ID` both invoke chain
@@ -62,6 +62,6 @@ Chain strategy: stacked-to-main
 
 ## Phase 5: Cleanup / Documentation
 
-- [ ] 5.1 Create reference chain example config (`config.example.yaml` or JSON sample)
-- [ ] 5.2 Delete `index.js`, `server.js`, `pipelines.js`, `prompts.js`, `llama-swap/`, `utils/`; remove `cors` dep
-- [ ] 5.3 Confirm zero references to `llamaSwap`/llama-swap binary across `src/` + config; update README/scripts
+- [x] 5.1 Create reference chain example config (`config.example.yaml` or JSON sample)
+- [x] 5.2 Delete `index.js`, `server.js`, `pipelines.js`, `prompts.js`, `llama-swap/`, `utils/`; remove `cors` dep
+- [x] 5.3 Confirm zero references to `llamaSwap`/llama-swap binary across `src/` + config; update README/scripts
