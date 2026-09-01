@@ -3,8 +3,8 @@
  *
  * Runs chain steps sequentially with:
  *  - Context refeed: each step receives the previous step's full response
- *  - 429 fallback: when a step returns HTTP 429, the engine reroutes to
- *    the step named by `on_429`
+ *  - 429 fallback: when a step raises HTTP 429 (the provider adapter throws
+ *    with err.status=429), the engine reroutes to the step named by `on_429`
  *  - tool_calls routing: when a response contains tool_calls, the engine
  *    reroutes to the step named by `tool_calls_route`
  *  - Streaming: only the LAST step streams to the client via `res.pipe()`
@@ -217,23 +217,6 @@ export async function runChain(
         lastResponse: response,
         lastContent: extractContent(response),
       };
-
-      // ── 429 fallback routing ──
-      const statusCode = (response as Record<string, unknown>).status as
-        | number
-        | undefined;
-      if (statusCode === 429 && step.on_429) {
-        const fallbackIdx = steps.findIndex(
-          (s) => (s.name ?? `step-${steps.indexOf(s)}`) === step.on_429,
-        );
-        if (fallbackIdx >= 0) {
-          console.log(
-            `[engine] 429 on step ${i}, falling back to "${step.on_429}"`,
-          );
-          i = fallbackIdx - 1; // -1 because the for-loop will i++ next.
-          continue;
-        }
-      }
 
       // ── tool_calls routing ──
       if (step.tool_calls_route && hasToolCalls(response)) {

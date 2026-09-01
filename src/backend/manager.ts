@@ -2,8 +2,9 @@
  * LlamaServeManager — lifecycle manager for the managed llama-server process.
  *
  * Spawns `llama serve` in router mode, waits for readiness via health-check
- * polling, supervises with exponential-backoff restart on unexpected exit,
- * and performs graceful shutdown (SIGTERM → timeout → SIGKILL).
+ * polling, supervises with exponential-backoff restart on unexpected exit
+ * (bounded by config.maxRestartAttempts, fail-fast when exceeded), and
+ * performs graceful shutdown (SIGTERM → timeout → SIGKILL).
  *
  * The manager is the single source of truth for:
  *  - Whether the backend is running (status().state)
@@ -34,11 +35,8 @@ export interface ManagerDeps {
   logger?: (msg: string) => void;
 }
 
-/** Default values for restart backoff. */
+/** Initial restart backoff; growth and cap come from config (healthPoll/backoffCap). */
 const BACKOFF_INITIAL_MS = 1000;
-const BACKOFF_CAP_MS = 30_000;
-const HEALTH_POLL_INTERVAL_MS = 1000;
-const PORT_PARSE_TIMEOUT_MS = 5000;
 
 export class LlamaServeManager {
   private readonly config: LlamaConfig;
@@ -49,6 +47,10 @@ export class LlamaServeManager {
   private backoffMs = BACKOFF_INITIAL_MS;
   private port: number;
   private _status: BackendStatus;
+  /** Bounded stderr tail (last 4KB) for fail-fast diagnostics. */
+  private lastStderr = "";
+  /** Unexpected-exit restart cycles since boot; capped by maxRestartAttempts. */
+  private restartCount = 0;
 
   constructor(deps: ManagerDeps) {
     this.config = deps.config;
@@ -164,16 +166,32 @@ export class LlamaServeManager {
 
     this.child.stderr?.on("data", (chunk: Buffer) => {
       process.stderr.write(chunk);
+      this.captureStderr(chunk.toString());
     });
 
     // Supervised restart on unexpected exit
     this.child.on("exit", (code, signal) => {
       if (this.intentionallyStopped) return;
-      if (this._status.state === "starting") return; // handled by timeout
+      if (this._status.state === "starting") return; // startup death handled by waitForReady
       this.log(
         `[manager] backend exited unexpectedly (code=${code}, signal=${signal})`,
       );
       this._status = { ...this._status, state: "error" };
+
+      // Fail-fast restart cap: after maxRestartAttempts unexpected exits, stop
+      // retrying and surface a clear error instead of crash-looping forever.
+      const maxAttempts = this.config.maxRestartAttempts;
+      if (maxAttempts > 0 && this.restartCount >= maxAttempts) {
+        this.log(
+          `[manager] backend failed to stay up after ${this.restartCount} attempts — check port/config conflicts`,
+        );
+        this.log(
+          `[manager] last stderr:\n${this.lastStderr.trim() || "(no stderr captured)"}`,
+        );
+        return;
+      }
+
+      this.restartCount++;
       this.scheduleRestart();
     });
 
@@ -242,10 +260,10 @@ export class LlamaServeManager {
 
     // Wait briefly for port detection from stdout
     if (this.port === 0) {
-      await new Promise((r) => setTimeout(r, PORT_PARSE_TIMEOUT_MS));
+      await new Promise((r) => setTimeout(r, this.config.portParseTimeoutMs));
       if (this.port === 0) {
         throw new Error(
-          `[backend] could not detect dynamic port from llama-server stdout within ${PORT_PARSE_TIMEOUT_MS}ms\n` +
+          `[backend] could not detect dynamic port from llama-server stdout within ${this.config.portParseTimeoutMs}ms\n` +
             `  Fix: set llama.port to a fixed value (e.g. 8080) or check llama-server output`,
         );
       }
@@ -254,40 +272,75 @@ export class LlamaServeManager {
     const pollUrl = `http://${this.config.host}:${this.port}`;
 
     while (Date.now() < deadline) {
-      // Process died before readiness
-      if (!this.child || this.child.exitCode !== null) {
-        throw new Error(
-          `[backend] llama-server exited before becoming ready (exit code: ${this.child?.exitCode})\n` +
-            `  Fix: check the binary path, CUDA availability, and model files`,
-        );
+      // Process died before readiness — fail fast (never wait for the deadline
+      // while the child is already dead).
+      if (this.childDead()) {
+        throw this.earlyExitError("before becoming ready");
       }
 
+      let healthy = false;
       try {
         const res = await fetch(`${pollUrl}/health`, {
           signal: AbortSignal.timeout(2000),
         });
-        if (res.ok) {
-          this._status = {
-            ...this._status,
-            state: "running",
-            baseUrl: pollUrl,
-          };
-          this.backoffMs = BACKOFF_INITIAL_MS; // reset backoff on success
-          return;
-        }
+        healthy = res.ok;
       } catch {
         // Not ready yet — continue polling
       }
 
-      await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL_MS));
+      if (healthy) {
+        // CRITICAL (port-collision guard): a 200 on the health poll may come
+        // from a FOREIGN process squatting on our port while our own child
+        // crash-loops on EADDRINUSE. Only declare ready when OUR child is
+        // demonstrably alive at this instant — otherwise we false-ready and
+        // the exit handler would restart a child that can never bind.
+        if (this.childDead()) {
+          throw this.earlyExitError(
+            "after health check succeeded (possible port conflict)",
+          );
+        }
+        this._status = {
+          ...this._status,
+          state: "running",
+          baseUrl: pollUrl,
+        };
+        this.backoffMs = BACKOFF_INITIAL_MS; // reset backoff on success
+        return;
+      }
+
+      await new Promise((r) => setTimeout(r, this.config.healthPollIntervalMs));
     }
 
     // Timeout — kill the process
     this.child?.kill("SIGKILL");
     throw new Error(
       `[backend] llama-server did not become ready within ${this.config.startupTimeoutMs}ms\n` +
+        `  last stderr:\n${this.lastStderr.trim() || "(no stderr captured)"}\n` +
         `  Fix: increase llama.startupTimeoutMs, check CUDA, or verify model files exist`,
     );
+  }
+
+  /** True when the spawned child is no longer a live process. */
+  private childDead(): boolean {
+    return !this.child || this.child.exitCode !== null || this.child.killed;
+  }
+
+  /** Fail-fast error for a child that died before/while becoming ready. */
+  private earlyExitError(where: string): Error {
+    const code = this.child?.exitCode ?? "n/a";
+    const signal = this.child?.signalCode ?? "n/a";
+    const stderr = this.lastStderr.trim() || "(no stderr captured)";
+    return new Error(
+      `[backend] llama-server exited ${where} (code=${code}, signal=${signal})\n` +
+        `  last stderr:\n${stderr}\n` +
+        `  Fix: check for a port conflict (another process on port ${this.port}), the binary path, CUDA availability, and model files`,
+    );
+  }
+
+  /** Bound the stderr tail so diagnostics never grow unbounded. */
+  private captureStderr(text: string): void {
+    const MAX_STDERR_BYTES = 4096;
+    this.lastStderr = (this.lastStderr + text).slice(-MAX_STDERR_BYTES);
   }
 
   private scheduleRestart(): void {
@@ -301,8 +354,8 @@ export class LlamaServeManager {
       });
     }, this.backoffMs);
 
-    // Exponential backoff: 1s → 2s → 4s → 8s → … → cap 30s
-    this.backoffMs = Math.min(this.backoffMs * 2, BACKOFF_CAP_MS);
+    // Exponential backoff: 1s → 2s → 4s → 8s → … → cap backoffCapMs
+    this.backoffMs = Math.min(this.backoffMs * 2, this.config.backoffCapMs);
   }
 }
 

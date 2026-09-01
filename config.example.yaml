@@ -22,6 +22,13 @@ llama:
   startupTimeoutMs: 30000
   stopTimeoutMs: 5000
   requestTimeoutMs: 300000
+  # Backend lifecycle timing knobs (ms).
+  healthPollIntervalMs: 1000
+  portParseTimeoutMs: 5000
+  backoffCapMs: 30000
+  # Fail-fast restart cap: stop retrying after this many unexpected exits
+  # (state:"error"); 0 = unlimited retries.
+  maxRestartAttempts: 5
   # Directory containing GGUF model files (relative file paths resolve here).
   modelsDir: /home/andy/Models
   # false → --no-models-autoload (models loaded on-demand only)
