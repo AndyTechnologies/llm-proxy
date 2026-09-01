@@ -1,53 +1,109 @@
+# Gateway Configuration Example
+#
+# Copy this file to llm-proxy.config.yaml and adjust to your environment.
+# Supported formats: YAML (.yaml, .yml) and JSON (.json).
+# The CONFIG_FILE env var overrides the default path.
+
 server:
   host: 127.0.0.1
   port: 8090
   corsOrigins: "*"
   jsonLimit: 10mb
 
-llamaSwap:
-  binary: /home/andy/.local/bin/llama-swap
-  config: /home/andy/Models/config.yaml
+# llama-server backend — the native llama.cpp server (NOT llama-swap).
+# The gateway proxies to this address; the server must be running separately.
+llamaServer:
   host: 127.0.0.1
   port: 8080
-
-  # Si tu versión de llama-swap usa otros flags, edita args.
-  args:
-    - "--config"
-    - "{config}"
-    - "--listen"
-    - "{host}:{port}"
-
-  autoStart: true
-  startupTimeoutMs: 60000
-  stopTimeoutMs: 15000
   requestTimeoutMs: 300000
 
-defaultPipeline: default
+# Default chain invoked when no X-Chain-ID header is provided.
+defaultChain: orchestrator
 
-pipelines:
+# Chain definitions — virtual models invocable via "gateway/<name>" or X-Chain-ID.
+# Each chain is an ordered list of steps executed sequentially.
+#
+# Step types:
+#   generate  — seed with original user messages (optionally prepend system/assistant).
+#   refine    — refeed previous step's output for verification/improvement.
+#   passthrough — forward request to provider without transformation.
+#
+# Conditional routing:
+#   on_429           — step name to execute when this step returns HTTP 429.
+#   tool_calls_route — step name to execute when response contains tool_calls.
+chains:
   orchestrator:
-    - model: coder
-      mode: generate
-      system: |
-        ROLE: Senior Software Engineer.
-        TASK: Generate a technically rigorous, highly structured response to the user query.
-        
-        DIRECTIVES:
-        - Prioritize technical correctness, logical consistency, and advanced engineering principles.
-        - Default output format: Markdown with explicit hierarchical sections (e.g., Specification, Architectural Design, Task Breakdown) and code blocks with extensive inline comments.
-        - Strictly adhere to user-specified formats if provided.
-        - Output language MUST exactly match the user's input language.
-        
-      user: |
-        USER QUERY:
-        {USER_INPUT}
+    displayName: "Orchestrator"
+    provider: llama-server
+    steps:
+      - name: generate
+        type: generate
+        model: SmolLM3-3B
+      - name: refine-coder
+        type: refine
+        model: Qwen2.5-Coder-3B-Instruct
+      - name: refine-phi
+        type: refine
+        model: Phi-4-Mini-Instruct
+      - name: refine-llama
+        type: refine
+        model: Llama3.2-3B-Instruct
 
-    - model: general
-      mode: refine
-      system: |
-        Eres un revisor técnico senior.
-        Recibes la petición original y un borrador generado por otro modelo.
-        Corrige errores, elimina ruido, completa omisiones y devuelve una respuesta final superior.
-        No menciones el proceso interno ni el borrador.
-      user: |
-        Devuelve la respuesta final mejorada.
+  thinker:
+    displayName: "Thinker"
+    provider: llama-server
+    steps:
+      - name: refine
+        type: refine
+        model: Phi-4-Mini-Instruct
+      - name: generate
+        type: generate
+        model: Llama3.2-3B-Instruct
+
+  coder:
+    displayName: "Coder"
+    provider: llama-server
+    steps:
+      - name: generate
+        type: generate
+        model: Qwen2.5-Coder-3B-Instruct
+      - name: refine-phi
+        type: refine
+        model: Phi-4-Mini-Instruct
+      - name: refine-coder
+        type: refine
+        model: Qwen2.5-Coder-3B-Instruct
+      - name: refine-llama
+        type: refine
+        model: Llama3.2-3B-Instruct
+
+  verifier:
+    displayName: "Judge"
+    provider: llama-server
+    steps:
+      - name: generate
+        type: generate
+        model: SmolLM3-3B
+      - name: refine-coder
+        type: refine
+        model: Qwen2.5-Coder-3B-Instruct
+      - name: refine-phi
+        type: refine
+        model: Phi-4-Mini-Instruct
+      - name: refine-llama
+        type: refine
+        model: Llama3.2-3B-Instruct
+
+# Example: chain with conditional routing
+#   tool-orchestrator:
+#     displayName: "Tool Orchestrator"
+#     provider: llama-server
+#     steps:
+#       - name: planner
+#         type: generate
+#         model: Qwen2.5-Coder-3B-Instruct
+#         tool_calls_route: tool_executor
+#       - name: tool_executor
+#         type: refine
+#         model: Phi-4-Mini-Instruct
+#         on_429: planner
