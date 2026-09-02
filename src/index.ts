@@ -18,6 +18,7 @@ import { makeLlamaServerProvider } from "./providers/llama-server.js";
 import { createApp } from "./server.js";
 import { createLlamaServeManager } from "./backend/manager.js";
 import { logJson } from "./utils/logger.js";
+import { shutdown } from "./shutdown.js";
 
 // ── Structured JSON logging (S3.1 — health-endpoints Req 4) ──
 // Startup, shutdown, and fatal-error lines are emitted as single-line JSON
@@ -85,44 +86,34 @@ log(
 log("info", "backend", { baseUrl: manager.status().baseUrl });
 
 // ── Graceful shutdown ──
+// `shutdown` lives in src/shutdown.ts (pure, side-effect-free, importable by
+// tests). Idempotency is enforced HERE at the signal-handler call-site via the
+// module-level `shuttingDown` guard — running the full drain twice from the
+// very real repeated signals (SIGTERM + SIGINT) would double-stop the backend.
 let shuttingDown = false;
 
-async function shutdown(reason: string): Promise<void> {
+process.on("SIGINT", () => {
   if (shuttingDown) return;
   shuttingDown = true;
-
-  log("info", "shutting down", { reason });
-
-  // Bounded drain (health-endpoints Req 5): stop accepting new connections
-  // and drain in-flight requests gracefully; if a connection outlives the
-  // window (3s), force-close it so shutdown always completes with no orphans.
-  const forceClose = setTimeout(() => {
-    server.stop(true);
-  }, 3000);
-  forceClose.unref();
-
-  await server.stop(false);
-  clearTimeout(forceClose);
-
-  await manager.stop();
-  log("info", "shutdown complete", { reason });
-  process.exit(0);
-}
-
-process.on("SIGINT", () => {
-  void shutdown("SIGINT");
+  void shutdown("SIGINT", server, manager, log, process.exit as (code?: number) => never);
 });
 
 process.on("SIGTERM", () => {
-  void shutdown("SIGTERM");
+  if (shuttingDown) return;
+  shuttingDown = true;
+  void shutdown("SIGTERM", server, manager, log, process.exit as (code?: number) => never);
 });
 
 process.on("unhandledRejection", (reason) => {
   log("error", "unhandledRejection", { reason: String(reason) });
-  void shutdown("unhandledRejection");
+  if (shuttingDown) return;
+  shuttingDown = true;
+  void shutdown("unhandledRejection", server, manager, log, process.exit as (code?: number) => never);
 });
 
 process.on("uncaughtException", (err) => {
   log("fatal", "uncaughtException", { message: (err as Error).message });
-  void shutdown("uncaughtException");
+  if (shuttingDown) return;
+  shuttingDown = true;
+  void shutdown("uncaughtException", server, manager, log, process.exit as (code?: number) => never);
 });
