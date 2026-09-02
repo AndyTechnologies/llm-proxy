@@ -25,8 +25,8 @@ This report REPLACES the previous canonical FAIL (51/55, evidence-incomplete for
 **Evidence tiers used**:
 - **typecheck** — `pnpm typecheck` (tsc --noEmit strict), exit 0, 0 errors. Output hash `sha256:8366207267355d3e3d5bf3bf6e8c94c5f93f6078c34f08973fa2b38cdda6cc92`.
 - **build** — `pnpm build` (tsc → dist/), exit 0. Output hash `sha256:5ac71a99decf5b92dbfe798066cbe8ea317395f8f764f5a8879fd3511ca99454`.
-- **runtime** — live observable wire behavior against the managed backend (`llama serve` router mode, `/home/andy/.local/bin/llama`, models in `/home/andy/Models`) and against a controlled fake llama-server stub (`/tmp/opencode/verify/fake-llama.mjs`) for impossible-to-produce-in-production branches (429, upstream 500, invalid JSON, mid-stream socket drop).
-- **harness** — `/tmp/opencode/on429-harness.mjs` drives the real dist engine (`runChain`) with stub providers: 3/3 branch cases passed.
+- **runtime** — live observable wire behavior against the managed backend (`llama serve` router mode, `llama` on PATH, models in `~/Models`) and against a controlled fake llama-server stub (`$TMP/opencode/verify/fake-llama.mjs`) for impossible-to-produce-in-production branches (429, upstream 500, invalid JSON, mid-stream socket drop).
+- **harness** — `$TMP/opencode/on429-harness.mjs` drives the real dist engine (`runChain`) with stub providers: 3/3 branch cases passed.
 - **invariant** — deterministic code semantics verified by source inspection, only where a runtime probe cannot exist (none left for spec scenarios).
 
 Evidence digest `sha256:4950b11f…e3f3` over: `/tmp/opencode/gateway-final.log` (live gateway + backend logs), `/tmp/opencode/verify/on429-harness.log`, and 12 evidence captures in `/tmp/opencode/verify/evidences/` (01-01 fallback-429, 02 upstream-500, 03 bad-json, 04 pass-stream, 05 tool-fallback, 06 sanitize, 07 failstream, 08 404-chain, 09 404-model, 10 engine-logs, 11 stub-wire, 12 echo-body).

@@ -64,7 +64,7 @@ Approach 1 (runtime-swap first), verified per slice:
 
 ## Dependencies
 
-- Bun v1.4.0 (/home/andy/.bun/bin/bun); external llama-server + GGUF + presets for smoke parity.
+- Bun v1.4.0 (on PATH); external llama-server + GGUF + presets for smoke parity.
 
 ## Success Criteria
 

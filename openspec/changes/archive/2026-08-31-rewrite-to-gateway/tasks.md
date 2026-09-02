@@ -25,7 +25,7 @@ Nota ampliación: backend-management (nuevos `src/backend/*`, config `llama`, bo
 | 1 | TS bootstrap + config + types + provider adapter | PR 1 | `npx tsc --noEmit` | `npm run dev` → GET /health | revert path, no routes mounted yet |
 | 2 | Middleware security/errors + engine/parser + routes | PR 2 | `npx tsc --noEmit` + curl 3 endpoints | curl SSE `/v1/chat/completions` vs llama-server :8080 | revert routes; no pipeline migration yet |
 | 3 | Migration of 4 pipelines + example config + cleanup JS | PR 3 | `npx tsc --noEmit` + smoke chains | curl `gateway/thinker` SSE | revert config + delete old JS |
-| 4 | Backend management: config + validation + preset + manager + boot | PR 4 | `pnpm typecheck` + `pnpm build` | `pnpm dev` → curl SSE `gateway/thinker` contra backend gestionado (binario verificado `/home/andy/.local/bin/llama`) | revert sección `llama` + `src/backend/`; `autoStart:false` conserva modo externo |
+| 4 | Backend management: config + validation + preset + manager + boot | PR 4 | `pnpm typecheck` + `pnpm build` | `pnpm dev` → curl SSE `gateway/thinker` contra backend gestionado (binario verificado en PATH) | revert sección `llama` + `src/backend/`; `autoStart:false` conserva modo externo |
 
 ## Phase 1: Foundation / Infrastructure
 
@@ -78,9 +78,9 @@ Nota ampliación: backend-management (nuevos `src/backend/*`, config `llama`, bo
 - [x] 6.5 `src/index.ts` boot: create manager, `await manager.start()` BEFORE `app.listen()` (readiness gate); failure → clear message + `process.exit(1)`; shutdown adds `await manager.stop()` before exit. (Req 5,6)
 - [x] 6.6 `src/providers/llama-server.ts`: `baseUrl` from `manager.status().baseUrl` (dynamic port) instead of static `llamaServer.host:port`; real-model list from `manager.status().models` for `/v1/models`; `chat()`/`chatStream()` preserved. (Req 4,10)
 - [x] 6.7 `src/routes/health.ts`: extend response with `backend: manager.status()` → {state, pid, models}; drop static `llamaServer` URL field. (Req 7)
-- [x] 6.8 Migrate `llm-proxy.config.yaml` + `config.example.yaml`: replace `llamaServer` with `llama` section (binary `/home/andy/.local/bin/llama`, host 127.0.0.1, port 8080, modelsDir `/home/andy/Models`, autoload true, router: nGpuLayers -1, flashAttn on, cacheTypeK/V q4_0, batch 2048, ubatch 512, tools all, parallel 1); 4 models with ctx/temp from old `llama-swap.config.yaml` (SmolLM3-3B 65536/0.1, Llama3.2-3B-Instruct 102400/0.1, Qwen2.5-Coder-3B-Instruct 32768/0.6, Phi-4-Mini-Instruct 32768/0.1) + their GGUF `file` names; add `.llm-proxy/` to `.gitignore`. (Req 9)
+- [x] 6.8 Migrate `llm-proxy.config.yaml` + `config.example.yaml`: replace `llamaServer` with `llama` section (binary `llama` on PATH, host 127.0.0.1, port 8080, modelsDir `~/Models`, autoload true, router: nGpuLayers -1, flashAttn on, cacheTypeK/V q4_0, batch 2048, ubatch 512, tools all, parallel 1); 4 models with ctx/temp from old `llama-swap.config.yaml` (SmolLM3-3B 65536/0.1, Llama3.2-3B-Instruct 102400/0.1, Qwen2.5-Coder-3B-Instruct 32768/0.6, Phi-4-Mini-Instruct 32768/0.1) + their GGUF `file` names; add `.llm-proxy/` to `.gitignore`. (Req 9)
 - [x] 6.9 Verify: `pnpm typecheck` (tsc strict) and `pnpm build` pass after the expansion.
-- [x] 6.10 Smoke boot + fail-fast: `autoStart:true` → manager spawns `llama serve` router mode, readiness gate passes before listen; bad binary path / missing GGUF / never-ready → actionable error + exit(1), no listen (unblocks 4.2–4.5, now executable — binary verified at `/home/andy/.local/bin/llama`). (Req 5,8)
+- [x] 6.10 Smoke boot + fail-fast: `autoStart:true` → manager spawns `llama serve` router mode, readiness gate passes before listen; bad binary path / missing GGUF / never-ready → actionable error + exit(1), no listen (unblocks 4.2–4.5, now executable — binary verified on PATH). (Req 5,8)
 - [x] 6.11 Smoke streaming: SSE clean with `[DONE]` + finish_reason via managed backend. (unblocks 4.2)
 - [x] 6.12 Smoke errors: unknown chain → 404, validation → 400, server error → 500, OpenAI `{error}` shape. (unblocks 4.3)
 - [x] 6.13 Smoke chains: `gateway/thinker` and `X-Chain-ID` both invoke chain against managed router. (unblocks 4.4)

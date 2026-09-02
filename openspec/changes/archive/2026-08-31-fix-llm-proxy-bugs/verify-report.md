@@ -50,7 +50,7 @@ node --check utils/micro.js -> exit 0
 - **Bug 5**: after the fix, streaming reaches the final stage (`Etapa final 2/2 (stream): Llama3.2`) and attempts the real backend call — the previous `TypeError: Cannot read properties of undefined (reading 'host')` is **gone** (arg order now correct).
 - **Bug 1**: no `ReferenceError` during streaming (stream progressed through the pipeline to the final stage).
 
-**Runtime caveat (environmental, not code)**: `Llama3.2-3B-Instruct` (final stage of every repo pipeline) does not load its backend: "upstream command exited prematurely", reproducible directly against llama-swap. Diagnosis: the production `llama-swap` config (`/home/andy/Models/config.yaml`) sets `hctx: 102400` (100K context) for Llama3.2 with `--n-gpu-layers 99`, exceeding the 6GB VRAM; `Phi-4-Mini-Instruct` (stage 1) loads fine (`mctx: 32768`). Because every pipeline ends in Llama3.2, a full streaming response with final-stage content could not be obtained. This is a model/backend config issue, out of scope for the proxy-code change `fix-llm-proxy-bugs`.
+**Runtime caveat (environmental, not code)**: `Llama3.2-3B-Instruct` (final stage of every repo pipeline) does not load its backend: "upstream command exited prematurely", reproducible directly against llama-swap. Diagnosis: the production `llama-swap` config (`$LLAMA_SWAP_CONFIG` / `~/Models/config.yaml`) sets `hctx: 102400` (100K context) for Llama3.2 with `--n-gpu-layers 99`, exceeding the 6GB VRAM; `Phi-4-Mini-Instruct` (stage 1) loads fine (`mctx: 32768`). Because every pipeline ends in Llama3.2, a full streaming response with final-stage content could not be obtained. This is a model/backend config issue, out of scope for the proxy-code change `fix-llm-proxy-bugs`.
 
 ### Spec Compliance Matrix
 | Requirement | Scenario | Evidence | Result |
@@ -86,10 +86,10 @@ node --check utils/micro.js -> exit 0
 ### Issues Found
 **CRITICAL**: None
 **WARNING**:
-- Full final-stage streaming content could not be captured because `Llama3.2-3B-Instruct`'s backend fails to load on this machine (100K context config vs 6GB VRAM). This is an environmental/config matter (`/home/andy/Models/config.yaml`), **not** a proxy-code defect. All proxy behavior was verified at the unit + live-path level.
+- Full final-stage streaming content could not be captured because `Llama3.2-3B-Instruct`'s backend fails to load on this machine (100K context config vs 6GB VRAM). This is an environmental/config matter (`$LLAMA_SWAP_CONFIG` / `~/Models/config.yaml`), **not** a proxy-code defect. All proxy behavior was verified at the unit + live-path level.
 - Bug 3 design deviation (Alternative B over A) — intentional and spec-aligned, recorded.
 
-**SUGGESTION**: Reduce Llama3.2 context (`hctx`) in `/home/andy/Models/config.yaml` to fit within VRAM (e.g. 16K-32K) and re-run a final-stage streaming smoke to capture end-to-end content. The proxy code itself is verified.
+**SUGGESTION**: Reduce Llama3.2 context (`hctx`) in `$LLAMA_SWAP_CONFIG` / `~/Models/config.yaml` to fit within VRAM (e.g. 16K-32K) and re-run a final-stage streaming smoke to capture end-to-end content. The proxy code itself is verified.
 
 ### Verdict
 **PASS** — all 5 bugs (`fix-llm-proxy-bugs`) implemented, committed, and verified at static + unit + runtime-path level with zero CRITICAL findings. Bug 5 was discovered during runtime verification and included in this change. The only limitation is environmental (Llama3.2 backend load on 6GB VRAM with 100K context), which does not affect the correctness of the proxy code, whose syntax, normalization, NaN-guard, catch-path, and streaming argument binding were all exercised live.

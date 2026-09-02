@@ -32,7 +32,7 @@ This change fixed **5 bugs** (not the 4 originally scoped — Bug 5 was discover
 
 ## Environmental Caveat (NOT a proxy-code defect)
 
-The final-stage model of every pipeline (`Llama3.2-3B-Instruct`) does not load its llama.cpp backend on this machine: its production config (`/home/andy/Models/config.yaml`) sets `hctx: 102400` (100K context) with `--n-gpu-layers 99`, exceeding the 6GB VRAM (RTX 3050). `Phi-4-Mini-Instruct` (stage 1, `mctx: 32768`) loads fine and returned HTTP 200. Recording this as an environment note: full final-stage streaming content could not be captured, but all proxy behavior (syntax, normalization, NaN guard, catch path, streaming argument binding) was exercised live.
+The final-stage model of every pipeline (`Llama3.2-3B-Instruct`) does not load its llama.cpp backend on this machine: its production config (`$LLAMA_SWAP_CONFIG` / `~/Models/config.yaml`) sets `hctx: 102400` (100K context) with `--n-gpu-layers 99`, exceeding the 6GB VRAM (RTX 3050). `Phi-4-Mini-Instruct` (stage 1, `mctx: 32768`) loads fine and returned HTTP 200. Recording this as an environment note: full final-stage streaming content could not be captured, but all proxy behavior (syntax, normalization, NaN guard, catch path, streaming argument binding) was exercised live.
 
 ## Task Completion
 

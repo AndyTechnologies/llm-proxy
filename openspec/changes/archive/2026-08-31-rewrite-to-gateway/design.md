@@ -55,12 +55,12 @@ The manager renders config `models[]` to llama.cpp preset INI and writes it to `
 
 ```ini
 [SmolLM3-3B]
-url = file:///home/andy/Models/SmolLM3-3B-Q4_K_M.gguf
+url = file:///~/Models/SmolLM3-3B-Q4_K_M.gguf
 ctx_size = 8192
 temp = 0.7
 
 [Qwen2.5-Coder-3B-Instruct]
-url = file:///home/andy/Models/qwen2.5-coder-3b-instruct-q4.gguf
+url = file:///~/Models/qwen2.5-coder-3b-instruct-q4.gguf
 ctx_size = 8192
 temp = 0.7
 --n-gpu-layers = 99

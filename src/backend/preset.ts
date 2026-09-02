@@ -14,7 +14,7 @@
  *     design sketched (that key is rejected at boot).
  *
  *   [SmolLM3-3B]
- *   model = /home/andy/Models/SmolLM3-3B-Q4_K_M.gguf
+ *   model = ~/Models/SmolLM3-3B-Q4_K_M.gguf
  *   ctx-size = 65536
  *   temp = 0.1
  *

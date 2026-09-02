@@ -30,7 +30,8 @@ llama:
   # (state:"error"); 0 = unlimited retries.
   maxRestartAttempts: 5
   # Directory containing GGUF model files (relative file paths resolve here).
-  modelsDir: /home/andy/Models
+  # Use a portable path such as ~/Models; resolve to your local model cache.
+  modelsDir: ~/Models
   # false → --no-models-autoload (models loaded on-demand only)
   autoload: true
   # Global router args (llama.cpp serve flags).

@@ -1,7 +1,7 @@
 schema: spec-driven
 
 context: |
-  Tech stack: Bun.js v1.4.0 (runtime /home/andy/.bun/bin/bun); TypeScript strict
+  Tech stack: Bun.js v1.4.0 (runtime bun on PATH); TypeScript strict
     (tsconfig strict, all src/*.ts). Bun native features (Bun.serve, Bun.spawn,
     Bun.file().yaml(), built-in .env, bun build --compile). Replaces Node + tsx.
   Architecture: LLM proxy orchestrating multi-model pipelines toward llama-swap/llama.cpp;

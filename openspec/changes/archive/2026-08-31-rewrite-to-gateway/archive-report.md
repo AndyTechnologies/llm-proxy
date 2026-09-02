@@ -11,7 +11,7 @@
 
 - **Task Completion Gate**: PASS. Archived `tasks.md` shows **42/42** tasks checked `[x]`, **0** unchecked. No stale-checkbox reconciliation needed. (Tasks total 42, per archived tasks.md; apply-progress groups the same work into 21/21 units + 4/4 verify-gap closure commits.)
 - **Archive readiness**: PASS. Change folder was present with all tracking artifacts (proposal, 6 delta specs, design, tasks, apply-progress, verify-report). `dependencies.archive: ready`; verify report resolved and PASS; no CRITICAL findings.
-- **Action context**: `mode: repo-local`; all archive operations inside `allowedEditRoots: [/home/andy/Proyectos/llm-proxy]`.
+- **Action context**: `mode: repo-local`; all archive operations inside the repo's `allowedEditRoots`.
 - **Descriptor**: The OpenSpec dispatcher's `gentle-ai sdd-status rewrite-to-gateway` reported the folder as `<unresolved>` because the active folder is date-prefixed (`2026-08-31-rewrite-to-gateway`, matching the repo's existing archive convention used by `2026-08-31-fix-llm-proxy-bugs`). The orchestrator's launch prompt is the authoritative dispatch, so archive proceeded; the manifest/test status itself was never a blocker.
 
 ## Final-State Facts (verified against disk at close)
