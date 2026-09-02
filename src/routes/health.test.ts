@@ -49,8 +49,8 @@ function fakeManager(status: Partial<ReturnType<LlamaServeManager["status"]>>): 
   return { status: () => full } as unknown as LlamaServeManager;
 }
 
-function req(): Request {
-  return new Request("http://localhost/health");
+function req(path = "/health"): Request {
+  return new Request(`http://localhost${path}`);
 }
 
 describe("GET /health aggregate (legacy preserved)", () => {
@@ -95,5 +95,109 @@ describe("GET /health aggregate (legacy preserved)", () => {
     expect(body.backend.state).toBe("stopped");
     expect(body.backend.pid).toBeNull();
     expect(body.backend.models).toEqual([]);
+  });
+});
+
+describe("GET /health/live (S3.1 liveness — always 200 while process is up)", () => {
+  test("returns 200 regardless of backend state", async () => {
+    const handler = createHealthHandler({
+      config: baseConfig(),
+      chains: new Map(),
+      manager: fakeManager({ state: "starting" }),
+    });
+
+    const res = handler(req("/health/live"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe("alive");
+  });
+
+  test("returns 200 even when the backend is stopped", async () => {
+    const handler = createHealthHandler({
+      config: baseConfig(),
+      chains: new Map(),
+      manager: fakeManager({ state: "error" }),
+    });
+
+    const res = handler(req("/health/live"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "alive" });
+  });
+});
+
+describe("GET /health/ready (S3.1 readiness — gated on backend running)", () => {
+  test("returns 200 when backend state is running", async () => {
+    const handler = createHealthHandler({
+      config: baseConfig(),
+      chains: new Map(),
+      manager: fakeManager({ state: "running" }),
+    });
+
+    const res = handler(req("/health/ready"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; backend: { state: string } };
+    expect(body.status).toBe("ready");
+    expect(body.backend.state).toBe("running");
+  });
+
+  test("returns 503 with the backend state when starting", async () => {
+    const handler = createHealthHandler({
+      config: baseConfig(),
+      chains: new Map(),
+      manager: fakeManager({ state: "starting" }),
+    });
+
+    const res = handler(req("/health/ready"));
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { status: string; backend: { state: string } };
+    expect(body.status).toBe("unavailable");
+    expect(body.backend.state).toBe("starting");
+  });
+
+  test("returns 503 with the backend state when stopped", async () => {
+    const handler = createHealthHandler({
+      config: baseConfig(),
+      chains: new Map(),
+      manager: fakeManager({ state: "stopped" }),
+    });
+
+    const res = handler(req("/health/ready"));
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { backend: { state: string } };
+    expect(body.backend.state).toBe("stopped");
+  });
+
+  test("returns 503 with the backend state when error", async () => {
+    const handler = createHealthHandler({
+      config: baseConfig(),
+      chains: new Map(),
+      manager: fakeManager({ state: "error" }),
+    });
+
+    const res = handler(req("/health/ready"));
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { backend: { state: string } };
+    expect(body.backend.state).toBe("error");
+  });
+});
+
+describe("GET /health dispatch preserves legacy aggregate", () => {
+  test("legacy /health still returns the aggregate shape, not a live/ready payload", async () => {
+    const chains = new Map<string, ParsedChain>();
+    const config = baseConfig({ chains: { demo: {} as never } });
+    const manager = fakeManager({ state: "running", pid: 42, models: ["A"] });
+    const handler = createHealthHandler({ config, chains, manager });
+
+    const res = handler(req("/health"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string;
+      chains: string[];
+      backend: { pid: number | null; models: string[] };
+    };
+    // Aggregate payload: has chains array + backend { pid, models }.
+    expect(body.chains).toContain("demo");
+    expect(body.backend.pid).toBe(42);
+    expect(body.backend.models).toEqual(["A"]);
   });
 });

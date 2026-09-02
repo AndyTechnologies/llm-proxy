@@ -92,7 +92,12 @@ describe("resolveBinary (Bun.which swap)", () => {
   test("default seam is the real Bun.which under the declared runtime", () => {
     // The workspace's declared runtime (bun) is resolvable through the default
     // no-arg path — proves the default seam is wired to Bun.which, not which(1).
-    expect(resolveBinary("bun")).toBeTruthy();
+    const resolved = resolveBinary("bun");
+    // Exact assertion: resolveBinary returns a non-empty absolute path string.
+    expect(typeof resolved).toBe("string");
+    expect(resolved).toMatch(/^\/.+/);
+    // The path must actually exist on disk (Bun.which resolved a real binary).
+    expect(fs.existsSync(resolved)).toBe(true);
   });
 });
 
