@@ -19,3 +19,7 @@ file.log
 dist/
 # Local AI runtime state
 .atl/
+
+# Local runtime config (machine-specific paths). Template: config.example.yaml
+llm-proxy.config.yaml
+llama-swap.config.yaml
