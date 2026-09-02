@@ -27,7 +27,7 @@ const CHAIN_PREFIX = "gateway/";
 
 export function createCompletionsHandler(deps: CompletionsRouteDeps) {
   const passthroughProxy = createPassthroughProxy(
-    () => deps.manager.status().baseUrl,
+    () => deps.manager,
     deps.requestTimeoutMs,
   );
 
@@ -125,18 +125,38 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
 
     // ── Direct provider passthrough ──
     console.log(`[completions] passthrough → ${parsed.model}`);
-    passthroughProxy(req, res, () => {
-      if (!res.headersSent) {
-        res.status(404).json({
-          error: {
-            message: `Model "${parsed.model}" not found`,
-            type: "invalid_request_error",
-            param: "model",
-            code: "model_not_found",
-          },
-        });
-      }
+    const contentType = req.headers["content-type"] ?? null;
+    const bodyInit =
+      req.method !== "GET" && req.method !== "HEAD"
+        ? await new Promise<Buffer>((ok, fail) => {
+            const chunks: Buffer[] = [];
+            req.on("data", (c: Buffer) => chunks.push(c));
+            req.on("end", () => ok(Buffer.concat(chunks)));
+            req.on("fail", fail);
+          })
+        : undefined;
+    const bunHeaders = new Headers();
+    for (const [key, val] of Object.entries(req.headers)) {
+      if (val !== undefined) bunHeaders.set(key, Array.isArray(val) ? val.join(", ") : val);
+    }
+    if (contentType && !bunHeaders.has("content-type")) {
+      bunHeaders.set("content-type", contentType);
+    }
+    const bunReq = new Request(req.url, {
+      method: req.method,
+      headers: bunHeaders,
+      body: bodyInit,
     });
+    const proxyRes = await passthroughProxy(bunReq);
+    if (proxyRes.body) {
+      const { Readable } = await import("node:stream");
+      const nodeStream = Readable.fromWeb(
+        proxyRes.body as import("node:stream/web").ReadableStream,
+      );
+      nodeStream.pipe(res);
+    } else {
+      res.status(proxyRes.status).end();
+    }
   };
 }
 
