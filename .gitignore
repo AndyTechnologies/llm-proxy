@@ -17,3 +17,5 @@ file.log
 
 # Build output
 dist/
+# Local AI runtime state
+.atl/
