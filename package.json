@@ -23,10 +23,30 @@
     "proxy",
     "openai",
     "llama",
-    "orcestration"
+    "llama.cpp",
+    "llama-server",
+    "orchestration",
+    "ai",
+    "api"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": {
+    "name": "AndyTechnologies",
+    "email": "garciandy579@gmail.com",
+    "url": "https://github.com/AndyTechnologies"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndyTechnologies/llm-proxy.git"
+  },
+  "homepage": "https://github.com/AndyTechnologies/llm-proxy",
+  "bugs": {
+    "url": "https://github.com/AndyTechnologies/llm-proxy/issues"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/AndyTechnologies"
+  },
   "engines": {
     "bun": ">=1.4"
   },
