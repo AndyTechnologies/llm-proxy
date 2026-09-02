@@ -29,9 +29,8 @@ function buildErrorResponse(
  * Global error handler — mounted LAST on the Express app.
  *
  * Express identifies error handlers by their 4-argument signature; this
- * function intentionally accepts all four parameters.
+ * function intentionally accepts all four parameters (`_`-prefixed = unused).
  */
-/* eslint-disable-next-line @typescript-eslint/no-unused-vars */
 export function errorHandler(
   err: Error & { status?: number; statusCode?: number },
   _req: Request,

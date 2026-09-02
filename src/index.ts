@@ -17,7 +17,7 @@ import { createApp } from "./server.js";
 import { createLlamaServeManager } from "./backend/manager.js";
 
 // ── Config ──
-const config = loadGatewayConfig();
+const config = await loadGatewayConfig();
 console.log(`[gateway] config loaded: ${Object.keys(config.chains).length} chains`);
 
 // ── Backend manager ──
