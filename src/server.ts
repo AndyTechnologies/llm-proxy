@@ -1,30 +1,32 @@
 /**
- * Express application factory.
+ * Bun.serve application factory (S2.3 — createApp → Bun.serve fetch handler).
  *
- * Creates and configures the Express 5 app with the full middleware stack:
- *  1. helmet() — HTTP security headers (gateway-security Req 1)
- *  2. JSON body parsing
+ * Replaces the Express app with a single fetch handler mounted on Bun.serve.
+ * Middleware and routes are plain functions returning Response:
+ *  1. Security headers (manual, replaces helmet — gateway-security Req 1)
+ *  2. JSON body handling (via Request)
  *  3. CORS (optional, from config)
- *  4. Auth middleware (optional Bearer)
- *  5. Route handlers (chat, completions, models, health)
- *  6. Error handler (last — catches everything above)
+ *  4. Auth guard (optional Bearer)
+ *  5. Route handlers (health, models, chat/completions SSE)
+ *  6. Error normalization (OpenAI envelope)
  *
- * The server.ts file is the ONLY place that knows about all middleware.
- * Routes and middleware are injected as dependencies, keeping them testable
- * and decoupled from the Express app lifecycle.
+ * SLICE BOUNDARY: GET /health and GET /v1/models are fully wired in S2a.
+ * POST /v1/chat/completions and POST /v1/completions (SSE) are migrated in
+ * S2b: the dispatcher applies `server.timeout(req, 0)` on those stream routes
+ * (ADR-2 — idleTimeout disabled per-request so silent SSE streams survive),
+ * then hands off to the chat/completions fetch handlers.
  */
-import express from "express";
-import helmet from "helmet";
 import type { GatewayConfig } from "./config/schema.js";
 import type { ParsedChain } from "./orchestrator/parser.js";
 import type { Provider } from "./providers/types.js";
 import type { LlamaServeManager } from "./backend/manager.js";
-import { authMiddleware } from "./middleware/auth.js";
-import { errorHandler } from "./middleware/errors.js";
-import { createChatHandler } from "./routes/chat.js";
-import { createCompletionsHandler } from "./routes/completions.js";
+import type { Server } from "bun";
+import { errorHandler, securityHeaders } from "./middleware/errors.js";
+import { authGuard } from "./middleware/auth.js";
 import { createModelsHandler } from "./routes/models.js";
 import { createHealthHandler } from "./routes/health.js";
+import { createChatHandler } from "./routes/chat.js";
+import { createCompletionsHandler } from "./routes/completions.js";
 
 export interface ServerDeps {
   config: GatewayConfig;
@@ -33,35 +35,41 @@ export interface ServerDeps {
   manager: LlamaServeManager;
 }
 
-export function createApp(deps: ServerDeps): express.Express {
-  const app = express();
+/** The Bun.serve server handle passed as the fetch handler's 2nd argument. */
+type BunServer = Server<undefined>;
 
-  // ── 1. Security headers (gateway-security Req 1) ──
-  // helmet() MUST be explicit in src/index.ts/server per the refine gate.
-  app.use(helmet());
-
-  // ── 2. Body parsing ──
-  app.use(express.json({ limit: deps.config.server.jsonLimit }));
-
-  // ── 3. CORS (config-driven origins) ──
+/** CORS headers for allowed origins. */
+function corsHeaders(deps: ServerDeps): Record<string, string> {
   const origins = deps.config.server.corsOrigins;
   if (origins && origins !== "*") {
-    app.use((_req, res, next) => {
-      const origin = Array.isArray(origins) ? origins[0] : origins;
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader(
-        "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, X-Chain-ID",
-      );
-      next();
-    });
+    const origin = Array.isArray(origins) ? origins[0] : origins;
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Chain-ID",
+    };
   }
+  return {};
+}
 
-  // ── 4. Auth (optional Bearer) ──
-  app.use(authMiddleware);
-
-  // ── 5. Routes ──
+/**
+ * Create a fetch handler for Bun.serve.
+ *
+ * @returns a `(req, server) => Promise<Response>` handler. The server is used
+ *   to disable the SSE idle timeout per-request on stream routes.
+ */
+export function createApp(
+  deps: ServerDeps,
+): (req: Request, server: BunServer) => Promise<Response> {
+  const modelsHandler = createModelsHandler({
+    chains: deps.chains,
+    manager: deps.manager,
+  });
+  const healthHandler = createHealthHandler({
+    config: deps.config,
+    chains: deps.chains,
+    manager: deps.manager,
+  });
   const chatHandler = createChatHandler({
     chains: deps.chains,
     providers: deps.providers,
@@ -74,23 +82,96 @@ export function createApp(deps: ServerDeps): express.Express {
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,
   });
-  const modelsHandler = createModelsHandler({
-    chains: deps.chains,
-    manager: deps.manager,
+
+  return async (req: Request, server: BunServer): Promise<Response> => {
+    const url = new URL(req.url);
+
+    // ── CORS preflight ──
+    if (req.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders(deps),
+      });
+    }
+
+    // ── Auth guard (optional Bearer) ──
+    const denied = authGuard(req);
+    if (denied) return denied;
+
+    try {
+      // ── GET /health, /health/live, /health/ready (aggregate + live/ready) ──
+      // S3.1: the health handler dispatches each path. /health stays the
+      // legacy aggregate; /health/live and /health/ready implement liveness
+      // and backend-gated readiness (health-endpoints spec Reqs 1–3).
+      if (req.method === "GET") {
+        if (
+          url.pathname === "/health" ||
+          url.pathname === "/health/live" ||
+          url.pathname === "/health/ready"
+        ) {
+          return withSecurity(corsHeaders(deps), healthHandler(req));
+        }
+      }
+
+      // ── GET /v1/models ──
+      if (req.method === "GET" && url.pathname === "/v1/models") {
+        return withSecurity(corsHeaders(deps), modelsHandler(req));
+      }
+
+      // ── SSE streaming routes: chat/completions (S2b) ──
+      // ADR-2: disable the idle timeout per-request so silent SSE streams are
+      // never closed by the server's 10s default. Non-stream routes keep the
+      // default. (Runtime-verified: `server.timeout(req,0)` in the fetch
+      // handler accepts the Request and prevents the 10s idle kill.)
+      if (
+        req.method === "POST" &&
+        (url.pathname === "/v1/chat/completions" ||
+          url.pathname === "/v1/completions")
+      ) {
+        server.timeout(req, 0);
+        const handler =
+          url.pathname === "/v1/chat/completions"
+            ? chatHandler
+            : completionsHandler;
+        return withSecurity(corsHeaders(deps), await handler(req));
+      }
+
+      // ── Unknown route ──
+      return withSecurity(
+        corsHeaders(deps),
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "Not found",
+              type: "invalid_request_error",
+              param: null,
+              code: null,
+            },
+          }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    } catch (err) {
+      return errorHandler(err as Error & { status?: number });
+    }
+  };
+}
+
+/** Merge CORS + security headers into the given Response. */
+function withSecurity(
+  cors: Record<string, string>,
+  response: Response,
+): Response {
+  const merged = new Headers(response.headers);
+  for (const [name, value] of Object.entries(securityHeaders())) {
+    if (!merged.has(name)) merged.set(name, value);
+  }
+  for (const [name, value] of Object.entries(cors)) {
+    if (!merged.has(name)) merged.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: merged,
   });
-  const healthHandler = createHealthHandler({
-    config: deps.config,
-    chains: deps.chains,
-    manager: deps.manager,
-  });
-
-  app.get("/health", healthHandler);
-  app.get("/v1/models", modelsHandler);
-  app.post("/v1/chat/completions", chatHandler);
-  app.post("/v1/completions", completionsHandler);
-
-  // ── 6. Global error handler (must be last) ──
-  app.use(errorHandler);
-
-  return app;
 }

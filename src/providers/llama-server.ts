@@ -78,7 +78,7 @@ export class LlamaServerProvider implements Provider {
 
   async chat(
     request: Record<string, unknown>,
-    /* eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept in signature parity with Provider */
+    // `_`-prefixed: kept in signature parity with the Provider interface.
     _chainName?: string,
   ): Promise<Record<string, unknown>> {
     const sanitized = normalizeOutboundPayload({
