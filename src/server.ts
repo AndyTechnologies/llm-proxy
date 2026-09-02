@@ -7,22 +7,26 @@
  *  2. JSON body handling (via Request)
  *  3. CORS (optional, from config)
  *  4. Auth guard (optional Bearer)
- *  5. Route handlers (health, models; chat/completions SSE → S2b)
+ *  5. Route handlers (health, models, chat/completions SSE)
  *  6. Error normalization (OpenAI envelope)
  *
  * SLICE BOUNDARY: GET /health and GET /v1/models are fully wired in S2a.
  * POST /v1/chat/completions and POST /v1/completions (SSE) are migrated in
- * S2b and return 501 here so the slice stays autonomous and behavior is
- * restored by the following chained PR.
+ * S2b: the dispatcher applies `server.timeout(req, 0)` on those stream routes
+ * (ADR-2 — idleTimeout disabled per-request so silent SSE streams survive),
+ * then hands off to the chat/completions fetch handlers.
  */
 import type { GatewayConfig } from "./config/schema.js";
 import type { ParsedChain } from "./orchestrator/parser.js";
 import type { Provider } from "./providers/types.js";
 import type { LlamaServeManager } from "./backend/manager.js";
+import type { Server } from "bun";
 import { errorHandler, securityHeaders } from "./middleware/errors.js";
 import { authGuard } from "./middleware/auth.js";
 import { createModelsHandler } from "./routes/models.js";
 import { createHealthHandler } from "./routes/health.js";
+import { createChatHandler } from "./routes/chat.js";
+import { createCompletionsHandler } from "./routes/completions.js";
 
 export interface ServerDeps {
   config: GatewayConfig;
@@ -30,6 +34,9 @@ export interface ServerDeps {
   providers: Map<string, Provider>;
   manager: LlamaServeManager;
 }
+
+/** The Bun.serve server handle passed as the fetch handler's 2nd argument. */
+type BunServer = Server<undefined>;
 
 /** CORS headers for allowed origins. */
 function corsHeaders(deps: ServerDeps): Record<string, string> {
@@ -48,9 +55,12 @@ function corsHeaders(deps: ServerDeps): Record<string, string> {
 /**
  * Create a fetch handler for Bun.serve.
  *
- * @returns a `(req: Request) => Response | Promise<Response>` handler.
+ * @returns a `(req, server) => Promise<Response>` handler. The server is used
+ *   to disable the SSE idle timeout per-request on stream routes.
  */
-export function createApp(deps: ServerDeps): (req: Request) => Promise<Response> {
+export function createApp(
+  deps: ServerDeps,
+): (req: Request, server: BunServer) => Promise<Response> {
   const modelsHandler = createModelsHandler({
     chains: deps.chains,
     manager: deps.manager,
@@ -60,8 +70,20 @@ export function createApp(deps: ServerDeps): (req: Request) => Promise<Response>
     chains: deps.chains,
     manager: deps.manager,
   });
+  const chatHandler = createChatHandler({
+    chains: deps.chains,
+    providers: deps.providers,
+    manager: deps.manager,
+    requestTimeoutMs: deps.config.llama.requestTimeoutMs,
+  });
+  const completionsHandler = createCompletionsHandler({
+    chains: deps.chains,
+    providers: deps.providers,
+    manager: deps.manager,
+    requestTimeoutMs: deps.config.llama.requestTimeoutMs,
+  });
 
-  return async (req: Request): Promise<Response> => {
+  return async (req: Request, server: BunServer): Promise<Response> => {
     const url = new URL(req.url);
 
     // ── CORS preflight ──
@@ -87,29 +109,22 @@ export function createApp(deps: ServerDeps): (req: Request) => Promise<Response>
         return withSecurity(corsHeaders(deps), modelsHandler(req));
       }
 
-      // ── SSE streaming routes: migrated in S2b ──
+      // ── SSE streaming routes: chat/completions (S2b) ──
+      // ADR-2: disable the idle timeout per-request so silent SSE streams are
+      // never closed by the server's 10s default. Non-stream routes keep the
+      // default. (Runtime-verified: `server.timeout(req,0)` in the fetch
+      // handler accepts the Request and prevents the 10s idle kill.)
       if (
-        (req.method === "POST" &&
-          (url.pathname === "/v1/chat/completions" ||
-            url.pathname === "/v1/completions"))
+        req.method === "POST" &&
+        (url.pathname === "/v1/chat/completions" ||
+          url.pathname === "/v1/completions")
       ) {
-        return withSecurity(
-          corsHeaders(deps),
-          new Response(
-            JSON.stringify({
-              error: {
-                message: "SSE endpoints are migrated in the S2b slice",
-                type: "server_error",
-                param: null,
-                code: null,
-              },
-            }),
-            {
-              status: 501,
-              headers: { "Content-Type": "application/json" },
-            },
-          ),
-        );
+        server.timeout(req, 0);
+        const handler =
+          url.pathname === "/v1/chat/completions"
+            ? chatHandler
+            : completionsHandler;
+        return withSecurity(corsHeaders(deps), await handler(req));
       }
 
       // ── Unknown route ──

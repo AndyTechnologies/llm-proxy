@@ -9,8 +9,8 @@
  *    reroutes to the step named by `tool_calls_route`
  *  - Streaming: only the LAST step streams to the client. The streaming core
  *    (`buildStreamBody`) returns a `ReadableStream<Uint8Array>` whose frames
- *    are `data: {...}\n\n` SSE messages; the old Express `res.write` path is
- *    retained (S2a) by teeing the stream into the response.
+ *    are `data: {...}\n\n` SSE messages; `runChain` wraps that stream in a
+ *    `Response` (S2b) so the Bun.serve fetch handler returns it directly.
  *  - Abort: client disconnect cancels the upstream request via the stream's
  *    cancellation propagating to the provider's async generator.
  *
@@ -19,8 +19,6 @@
  * exactly sequential steps + 2 conditionals. Framework overhead is
  * unjustified.
  */
-import type { Response } from "express";
-import { Readable } from "node:stream";
 import type { ParsedChain } from "./parser.js";
 import type { Provider } from "../providers/types.js";
 import type { StepContext } from "../types/chain.js";
@@ -165,42 +163,40 @@ function runStepStream(
   return buildStreamBody(provider, payload, signal, completionId, created, modelName);
 }
 
-/**
- * S2a interlude: tee a Web `ReadableStream<Uint8Array>` into an Express
- * response. Keeps the Express-based chat/completions routes working until
- * S2b switches them to `new Response(stream)`. On client disconnect
- * (`res.close`) the source stream is cancelled, propagating abort upstream.
- */
-async function teeToExpress(
-  stream: ReadableStream<Uint8Array>,
-  res: Response,
-): Promise<void> {
-  const nodeReadable = Readable.fromWeb(stream as never);
-  const onClientClose = () => nodeReadable.destroy();
-  res.on("close", onClientClose);
-  nodeReadable.on("error", () => {
-    if (!res.writableEnded) res.destroy();
-  });
-  nodeReadable.on("end", () => res.removeListener("close", onClientClose));
-  nodeReadable.pipe(res);
-  await new Promise<void>((resolve) => {
-    res.on("finish", resolve);
-    res.on("close", resolve);
-  });
+/** SSE response headers for streaming chain steps (Bun.serve). */
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+  "X-Accel-Buffering": "no",
+};
+
+/** JSON response headers for non-streaming chain results. */
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
+/** Generate a stable-but-unique OpenAI chat completion id for a chain. */
+function newCompletionId(): string {
+  return `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+}
+
+/** Whether the payload requests a streaming response. */
+function isStreamRequest(payload: Record<string, unknown>): boolean {
+  return payload.stream === true;
 }
 
 /**
  * Run a full chain: sequential steps, context refeed, conditional routing,
- * streaming only on the final step.
+ * streaming only on the final step. Returns the final `Response` (SSE stream
+ * for streaming chains, JSON body otherwise) ready for the Bun.serve fetch
+ * handler to return directly.
  */
 export async function runChain(
   chain: ParsedChain,
   providers: ProviderMap,
   originalPayload: Record<string, unknown>,
-  res: Response,
   signal: AbortSignal,
   query?: string,
-): Promise<void> {
+): Promise<Response> {
   const steps = chain.steps;
   const displayName = chain.displayName ?? chain.name;
 
@@ -245,25 +241,20 @@ export async function runChain(
     );
 
     try {
-      if (isLast && originalPayload.stream) {
-        // Final streaming step — build the SSE ReadableStream and serve it.
-        // S2a: routes still use Express `res`, so tee the Web stream into the
-        // Express response. S2b replaces this with `new Response(stream)`.
+      if (isLast && isStreamRequest(originalPayload)) {
+        // Final streaming step — wrap the SSE ReadableStream in a Response.
         const stream = runStepStream(
           provider,
           payload,
           signal,
-          `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
+          newCompletionId(),
           Math.floor(Date.now() / 1000),
           displayName,
         );
-        res.setHeader("Content-Type", "text/event-stream");
-        res.setHeader("Cache-Control", "no-cache");
-        res.setHeader("Connection", "keep-alive");
-        res.setHeader("X-Accel-Buffering", "no");
-        res.flushHeaders?.();
-        await teeToExpress(stream, res);
-        return; // Stream completed, chain done.
+        return new Response(stream as ReadableStream, {
+          status: 200,
+          headers: SSE_HEADERS,
+        });
       }
 
       // Non-streaming step: get the full response and refeed.
@@ -308,23 +299,27 @@ export async function runChain(
     }
   }
 
-  // Non-streaming chain: send the final response as JSON.
-  if (!res.writableEnded) {
-    const finalResponse = context.lastResponse as Record<string, unknown>;
-    if (finalResponse) {
-      finalResponse.model = displayName;
-      res.json(finalResponse);
-    } else {
-      res.status(500).json({
-        error: {
-          message: "Chain produced no response",
-          type: "server_error",
-          param: null,
-          code: null,
-        },
-      });
-    }
+  // Non-streaming chain: return the final response as JSON.
+  const finalResponse = context.lastResponse as Record<string, unknown>;
+  if (finalResponse) {
+    finalResponse.model = displayName;
+    return new Response(JSON.stringify(finalResponse), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
   }
+
+  return new Response(
+    JSON.stringify({
+      error: {
+        message: "Chain produced no response",
+        type: "server_error",
+        param: null,
+        code: null,
+      },
+    }),
+    { status: 500, headers: JSON_HEADERS },
+  );
 }
 
 // ── Helpers ──
