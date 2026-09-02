@@ -89,7 +89,7 @@ export class LlamaServeManager {
     }
 
     // 2. Generate preset INI
-    const presetPath = writePresetIni(this.config, this.modelsDir);
+    const presetPath = await writePresetIni(this.config, this.modelsDir);
 
     // 3. Spawn llama serve
     this._status = { ...this._status, state: "starting" };

@@ -119,11 +119,15 @@ export function renderPresetIni(
  *
  * The .llm-proxy/ directory is created if it doesn't exist. The file is
  * regenerated on every start (idempotent).
+ *
+ * MIGRATION (S1, Bun 1.4.0): the write uses `Bun.file().write()` (async,
+ * non-blocking) instead of `fs.writeFileSync`. The render stays pure and
+ * unchanged; only the write mechanism changed, so the function is async now.
  */
-export function writePresetIni(
+export async function writePresetIni(
   config: LlamaConfig,
   modelsDir: string,
-): string {
+): Promise<string> {
   const content = renderPresetIni(config, modelsDir);
   const presetDir = path.resolve(PRESET_DIR);
 
@@ -132,7 +136,7 @@ export function writePresetIni(
   }
 
   const filePath = path.join(presetDir, PRESET_FILENAME);
-  fs.writeFileSync(filePath, content, "utf8");
+  await Bun.file(filePath).write(content);
 
   console.log(
     `[backend] preset written: ${filePath} (${Object.keys(config.models).length} models)`,
