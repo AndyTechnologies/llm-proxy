@@ -43,10 +43,6 @@
   "bugs": {
     "url": "https://github.com/AndyTechnologies/llm-proxy/issues"
   },
-  "funding": {
-    "type": "github",
-    "url": "https://github.com/sponsors/AndyTechnologies"
-  },
   "engines": {
     "bun": ">=1.4"
   },
