@@ -1,28 +1,26 @@
 /**
- * Express application factory.
+ * Bun.serve application factory (S2.3 — createApp → Bun.serve fetch handler).
  *
- * Creates and configures the Express 5 app with the full middleware stack:
- *  1. helmet() — HTTP security headers (gateway-security Req 1)
- *  2. JSON body parsing
+ * Replaces the Express app with a single fetch handler mounted on Bun.serve.
+ * Middleware and routes are plain functions returning Response:
+ *  1. Security headers (manual, replaces helmet — gateway-security Req 1)
+ *  2. JSON body handling (via Request)
  *  3. CORS (optional, from config)
- *  4. Auth middleware (optional Bearer)
- *  5. Route handlers (chat, completions, models, health)
- *  6. Error handler (last — catches everything above)
+ *  4. Auth guard (optional Bearer)
+ *  5. Route handlers (health, models; chat/completions SSE → S2b)
+ *  6. Error normalization (OpenAI envelope)
  *
- * The server.ts file is the ONLY place that knows about all middleware.
- * Routes and middleware are injected as dependencies, keeping them testable
- * and decoupled from the Express app lifecycle.
+ * SLICE BOUNDARY: GET /health and GET /v1/models are fully wired in S2a.
+ * POST /v1/chat/completions and POST /v1/completions (SSE) are migrated in
+ * S2b and return 501 here so the slice stays autonomous and behavior is
+ * restored by the following chained PR.
  */
-import express from "express";
-import helmet from "helmet";
 import type { GatewayConfig } from "./config/schema.js";
 import type { ParsedChain } from "./orchestrator/parser.js";
 import type { Provider } from "./providers/types.js";
 import type { LlamaServeManager } from "./backend/manager.js";
-import { authMiddleware } from "./middleware/auth.js";
-import { errorHandler } from "./middleware/errors.js";
-import { createChatHandler } from "./routes/chat.js";
-import { createCompletionsHandler } from "./routes/completions.js";
+import { errorHandler, securityHeaders } from "./middleware/errors.js";
+import { authGuard } from "./middleware/auth.js";
 import { createModelsHandler } from "./routes/models.js";
 import { createHealthHandler } from "./routes/health.js";
 
@@ -33,47 +31,26 @@ export interface ServerDeps {
   manager: LlamaServeManager;
 }
 
-export function createApp(deps: ServerDeps): express.Express {
-  const app = express();
-
-  // ── 1. Security headers (gateway-security Req 1) ──
-  // helmet() MUST be explicit in src/index.ts/server per the refine gate.
-  app.use(helmet());
-
-  // ── 2. Body parsing ──
-  app.use(express.json({ limit: deps.config.server.jsonLimit }));
-
-  // ── 3. CORS (config-driven origins) ──
+/** CORS headers for allowed origins. */
+function corsHeaders(deps: ServerDeps): Record<string, string> {
   const origins = deps.config.server.corsOrigins;
   if (origins && origins !== "*") {
-    app.use((_req, res, next) => {
-      const origin = Array.isArray(origins) ? origins[0] : origins;
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader(
-        "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, X-Chain-ID",
-      );
-      next();
-    });
+    const origin = Array.isArray(origins) ? origins[0] : origins;
+    return {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Chain-ID",
+    };
   }
+  return {};
+}
 
-  // ── 4. Auth (optional Bearer) ──
-  app.use(authMiddleware);
-
-  // ── 5. Routes ──
-  const chatHandler = createChatHandler({
-    chains: deps.chains,
-    providers: deps.providers,
-    manager: deps.manager,
-    requestTimeoutMs: deps.config.llama.requestTimeoutMs,
-  });
-  const completionsHandler = createCompletionsHandler({
-    chains: deps.chains,
-    providers: deps.providers,
-    manager: deps.manager,
-    requestTimeoutMs: deps.config.llama.requestTimeoutMs,
-  });
+/**
+ * Create a fetch handler for Bun.serve.
+ *
+ * @returns a `(req: Request) => Response | Promise<Response>` handler.
+ */
+export function createApp(deps: ServerDeps): (req: Request) => Promise<Response> {
   const modelsHandler = createModelsHandler({
     chains: deps.chains,
     manager: deps.manager,
@@ -84,13 +61,93 @@ export function createApp(deps: ServerDeps): express.Express {
     manager: deps.manager,
   });
 
-  app.get("/health", healthHandler);
-  app.get("/v1/models", modelsHandler);
-  app.post("/v1/chat/completions", chatHandler);
-  app.post("/v1/completions", completionsHandler);
+  return async (req: Request): Promise<Response> => {
+    const url = new URL(req.url);
 
-  // ── 6. Global error handler (must be last) ──
-  app.use(errorHandler);
+    // ── CORS preflight ──
+    if (req.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders(deps),
+      });
+    }
 
-  return app;
+    // ── Auth guard (optional Bearer) ──
+    const denied = authGuard(req);
+    if (denied) return denied;
+
+    try {
+      // ── GET /health (aggregate — preserved) ──
+      if (req.method === "GET" && url.pathname === "/health") {
+        return withSecurity(corsHeaders(deps), healthHandler(req));
+      }
+
+      // ── GET /v1/models ──
+      if (req.method === "GET" && url.pathname === "/v1/models") {
+        return withSecurity(corsHeaders(deps), modelsHandler(req));
+      }
+
+      // ── SSE streaming routes: migrated in S2b ──
+      if (
+        (req.method === "POST" &&
+          (url.pathname === "/v1/chat/completions" ||
+            url.pathname === "/v1/completions"))
+      ) {
+        return withSecurity(
+          corsHeaders(deps),
+          new Response(
+            JSON.stringify({
+              error: {
+                message: "SSE endpoints are migrated in the S2b slice",
+                type: "server_error",
+                param: null,
+                code: null,
+              },
+            }),
+            {
+              status: 501,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+        );
+      }
+
+      // ── Unknown route ──
+      return withSecurity(
+        corsHeaders(deps),
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "Not found",
+              type: "invalid_request_error",
+              param: null,
+              code: null,
+            },
+          }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    } catch (err) {
+      return errorHandler(err as Error & { status?: number });
+    }
+  };
+}
+
+/** Merge CORS + security headers into the given Response. */
+function withSecurity(
+  cors: Record<string, string>,
+  response: Response,
+): Response {
+  const merged = new Headers(response.headers);
+  for (const [name, value] of Object.entries(securityHeaders())) {
+    if (!merged.has(name)) merged.set(name, value);
+  }
+  for (const [name, value] of Object.entries(cors)) {
+    if (!merged.has(name)) merged.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: merged,
+  });
 }

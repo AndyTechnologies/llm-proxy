@@ -1,5 +1,5 @@
 /**
- * GET /v1/models route handler.
+ * GET /v1/models fetch handler (S2a — Bun.serve migration).
  *
  * Returns the list of available models: real models from the managed
  * llama-server backend PLUS virtual chain models. Virtual models use the
@@ -10,8 +10,10 @@
  * llama.models keys), which map 1:1 to the preset INI sections. The
  * gateway no longer needs to hit the backend's /v1/models endpoint because
  * the manager owns the model registry.
+ *
+ * Converted from an Express route handler to a plain fetch handler returning
+ * a Response.
  */
-import type { Request, Response } from "express";
 import type { ModelInfo, ModelListResponse } from "../types/openai.js";
 import type { ParsedChain } from "../orchestrator/parser.js";
 import type { LlamaServeManager } from "../backend/manager.js";
@@ -22,7 +24,7 @@ export interface ModelsRouteDeps {
 }
 
 export function createModelsHandler(deps: ModelsRouteDeps) {
-  return async (_req: Request, res: Response): Promise<void> => {
+  return (_req: Request): Response => {
     const now = Math.floor(Date.now() / 1000);
     const data: ModelInfo[] = [];
 
@@ -49,6 +51,9 @@ export function createModelsHandler(deps: ModelsRouteDeps) {
     }
 
     const response: ModelListResponse = { object: "list", data };
-    res.json(response);
+    return new Response(JSON.stringify(response), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   };
 }

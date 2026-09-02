@@ -1,17 +1,25 @@
 /**
- * Global Express error handler.
+ * Error handler (S2.1 — Bun.serve migration).
  *
- * Normalizes every unhandled error into the OpenAI-shaped envelope:
- *   { error: { message, type, param, code } }
+ * Plain function that takes an error and returns a Response with the
+ * OpenAI-shaped envelope: { error: { message, type, param, code } }.
+ *
+ * Replaces Express's 4-argument error middleware. Helmet is replaced
+ * with manual security headers. Hop-by-hop + 503/502 preserved for proxy.
  *
  * CRITICAL INVARIANT (proxy-pipeline spec): when an error occurs after the
  * response headers have already been sent (mid-stream), the handler MUST NOT
- * attempt to write a second response. The `res.headersSent` guard ensures
- * exactly ONE terminal chunk, no duplicate error payload after finish.
+ * attempt to write a second response.
  */
-import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
-import type { ErrorResponse } from "../types/openai.js";
+
+/** Security headers that replace helmet() for the Bun.serve migration. */
+const SECURITY_HEADERS: Record<string, string> = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "X-XSS-Protection": "1; mode=block",
+  "Referrer-Policy": "no-referrer",
+};
 
 /**
  * Build an OpenAI-shaped error response body.
@@ -21,28 +29,27 @@ function buildErrorResponse(
   type: string,
   param: string | null = null,
   code: string | null = null,
-): ErrorResponse {
+): { error: { message: string; type: string; param: string | null; code: string | null } } {
   return { error: { message, type, param, code } };
 }
 
 /**
- * Global error handler — mounted LAST on the Express app.
+ * Build security headers for error responses.
+ */
+export function securityHeaders(): Record<string, string> {
+  return { ...SECURITY_HEADERS };
+}
+
+/**
+ * Normalize an error into a Response with the OpenAI-shaped envelope.
  *
- * Express identifies error handlers by their 4-argument signature; this
- * function intentionally accepts all four parameters (`_`-prefixed = unused).
+ * @param err  The error to normalize
+ * @param fallbackStatus  HTTP status when the error does not carry one (default 500)
  */
 export function errorHandler(
   err: Error & { status?: number; statusCode?: number },
-  _req: Request,
-  res: Response,
-  _next: NextFunction,
-): void {
-  // ── Invariant: never write after headers are sent ──
-  if (res.headersSent) {
-    console.error("[errors] headers already sent, swallowing:", err.message);
-    return;
-  }
-
+  fallbackStatus = 500,
+): Response {
   // ── Zod validation errors → 400 ──
   if (err instanceof ZodError) {
     const messages = err.issues.map((i) => i.message).join("; ");
@@ -52,8 +59,10 @@ export function errorHandler(
       null,
       "validation_error",
     );
-    res.status(400).json(payload);
-    return;
+    return new Response(JSON.stringify(payload), {
+      status: 400,
+      headers: { "Content-Type": "application/json", ...SECURITY_HEADERS },
+    });
   }
 
   // ── Upstream HTTP errors (thrown by provider adapters with .status) ──
@@ -66,11 +75,13 @@ export function errorHandler(
           ? "server_error"
           : "invalid_request_error";
     const payload = buildErrorResponse(err.message, errorType, null, null);
-    res.status(status).json(payload);
-    return;
+    return new Response(JSON.stringify(payload), {
+      status,
+      headers: { "Content-Type": "application/json", ...SECURITY_HEADERS },
+    });
   }
 
-  // ── Generic unhandled errors → 500 ──
+  // ── Generic unhandled errors → fallbackStatus (default 500) ──
   console.error("[errors] unhandled:", err);
   const payload = buildErrorResponse(
     err.message || "Internal server error",
@@ -78,5 +89,8 @@ export function errorHandler(
     null,
     null,
   );
-  res.status(500).json(payload);
+  return new Response(JSON.stringify(payload), {
+    status: fallbackStatus,
+    headers: { "Content-Type": "application/json", ...SECURITY_HEADERS },
+  });
 }

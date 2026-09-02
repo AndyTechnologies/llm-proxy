@@ -7,9 +7,12 @@
  *    with err.status=429), the engine reroutes to the step named by `on_429`
  *  - tool_calls routing: when a response contains tool_calls, the engine
  *    reroutes to the step named by `tool_calls_route`
- *  - Streaming: only the LAST step streams to the client via `res.pipe()`
- *    unbuffered; all prior steps run non-streaming
- *  - Abort: client disconnect (`res.on('close')`) aborts upstream requests
+ *  - Streaming: only the LAST step streams to the client. The streaming core
+ *    (`buildStreamBody`) returns a `ReadableStream<Uint8Array>` whose frames
+ *    are `data: {...}\n\n` SSE messages; the old Express `res.write` path is
+ *    retained (S2a) by teeing the stream into the response.
+ *  - Abort: client disconnect cancels the upstream request via the stream's
+ *    cancellation propagating to the provider's async generator.
  *
  * DESIGN DECISION (from design.md): the engine is bespoke (~40 lines of
  * core loop) rather than using LangChain/Mastra — the current needs are
@@ -17,6 +20,7 @@
  * unjustified.
  */
 import type { Response } from "express";
+import { Readable } from "node:stream";
 import type { ParsedChain } from "./parser.js";
 import type { Provider } from "../providers/types.js";
 import type { StepContext } from "../types/chain.js";
@@ -40,104 +44,149 @@ async function runStepNonStream(
 }
 
 /**
- * Execute the final step streaming, piping raw SSE data directly to the
- * client response via `res.pipe()`-style forwarding (unbuffered).
+ * Build a `ReadableStream<Uint8Array>` of SSE frames for the final streaming
+ * step. Replaces the old `res.write` path (S2.2).
  *
- * CRITICAL: we iterate the async generator and write each chunk individually
- * rather than using Node stream.pipe() because the provider yields parsed
- * SSE data strings, not raw Node streams. The effect is the same: unbuffered,
- * real-time forwarding.
+ * Invariants (gateway-api "SSE streaming integrity" spec):
+ *  1. each token arrives as a `data: {json}\n\n` frame, unbuffered;
+ *  2. exactly ONE terminal chunk: if the upstream never sends a finish_reason,
+ *     a synthesized chunk with `finish_reason: "stop"` is emitted once;
+ *  3. the stream ends with exactly ONE `data: [DONE]\n\n`;
+ *  4. on error, exactly one error chunk (finish_reason null) then `[DONE]`;
+ *  5. client disconnect (stream cancellation) aborts the upstream generator.
  */
-async function runStepStream(
+export function buildStreamBody(
   provider: Provider,
   payload: Record<string, unknown>,
   signal: AbortSignal,
-  res: Response,
   completionId: string,
   created: number,
   modelName: string,
-): Promise<void> {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders?.();
+): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
 
   let receivedFinishReason = false;
 
-  try {
-    for await (const data of provider.chatStream(payload, signal)) {
-      let parsed: Record<string, unknown>;
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
       try {
-        parsed = JSON.parse(data) as Record<string, unknown>;
-      } catch {
-        continue;
+        for await (const data of provider.chatStream(payload, signal)) {
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(data) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          // Rewrite IDs and model to reflect the chain, not the backend model.
+          parsed.id = completionId;
+          parsed.model = modelName;
+          parsed.created = created;
+          if (parsed.object !== "chat.completion.chunk") {
+            parsed.object = "chat.completion.chunk";
+          }
+
+          const choices = parsed.choices as
+            | Array<{ finish_reason?: string | null }>
+            | undefined;
+          if (choices?.[0]?.finish_reason) {
+            receivedFinishReason = true;
+          }
+
+          controller.enqueue(enc.encode(`data: ${JSON.stringify(parsed)}\n\n`));
+        }
+
+        // Spec invariant: exactly ONE terminal chunk. If the upstream never
+        // sent a finish_reason, synthesize the stop chunk before [DONE].
+        if (!receivedFinishReason) {
+          const finalChunk = {
+            id: completionId,
+            object: "chat.completion.chunk",
+            created,
+            model: modelName,
+            choices: [
+              {
+                index: 0,
+                delta: {},
+                finish_reason: "stop",
+              },
+            ],
+          };
+          controller.enqueue(enc.encode(`data: ${JSON.stringify(finalChunk)}\n\n`));
+        }
+
+        controller.enqueue(enc.encode("data: [DONE]\n\n"));
+        controller.close();
+      } catch (err) {
+        // Proxy-pipeline spec: exactly ONE terminal chunk on error, no
+        // duplicate error payload after a successful finish.
+        const errorChunk = {
+          id: completionId,
+          object: "chat.completion.chunk",
+          created,
+          model: modelName,
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: null,
+              error: { message: String(err) },
+            },
+          ],
+        };
+        try {
+          controller.enqueue(enc.encode(`data: ${JSON.stringify(errorChunk)}\n\n`));
+          controller.enqueue(enc.encode("data: [DONE]\n\n"));
+          controller.close();
+        } catch {
+          // Stream already closed/cancelled — nothing more to write.
+        }
       }
+    },
+    cancel() {
+      // Client disconnect: aborting the reader cancels the upstream generator
+      // (the provider's `finally` observes it), releasing resources.
+    },
+  });
+}
 
-      // Rewrite IDs and model to reflect the chain, not the backend model.
-      parsed.id = completionId;
-      parsed.model = modelName;
-      parsed.created = created;
-      if (parsed.object !== "chat.completion.chunk") {
-        parsed.object = "chat.completion.chunk";
-      }
+/**
+ * Execute the final step streaming into the given ReadableStream, returning
+ * it so the caller (route / server) can serve it as an SSE Response.
+ */
+function runStepStream(
+  provider: Provider,
+  payload: Record<string, unknown>,
+  signal: AbortSignal,
+  completionId: string,
+  created: number,
+  modelName: string,
+): ReadableStream<Uint8Array> {
+  return buildStreamBody(provider, payload, signal, completionId, created, modelName);
+}
 
-      const choices = parsed.choices as
-        | Array<{ finish_reason?: string | null }>
-        | undefined;
-      if (choices?.[0]?.finish_reason) {
-        receivedFinishReason = true;
-      }
-
-      res.write(`data: ${JSON.stringify(parsed)}\n\n`);
-    }
-
-    // Spec invariant: exactly ONE terminal chunk. If the upstream never sent
-    // a finish_reason, we synthesize the stop chunk before [DONE].
-    if (!receivedFinishReason && !res.writableEnded) {
-      const finalChunk = {
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model: modelName,
-        choices: [
-          {
-            index: 0,
-            delta: {},
-            finish_reason: "stop",
-          },
-        ],
-      };
-      res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
-    }
-
-    if (!res.writableEnded) {
-      res.write("data: [DONE]\n\n");
-      res.end();
-    }
-  } catch (err) {
-    // Proxy-pipeline spec: exactly ONE terminal chunk on error, no duplicate
-    // error payload after a successful finish.
-    if (!res.writableEnded) {
-      const errorChunk = {
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model: modelName,
-        choices: [
-          {
-            index: 0,
-            delta: {},
-            finish_reason: null,
-            error: { message: String(err) },
-          },
-        ],
-      };
-      res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
-      res.write("data: [DONE]\n\n");
-      res.end();
-    }
-  }
+/**
+ * S2a interlude: tee a Web `ReadableStream<Uint8Array>` into an Express
+ * response. Keeps the Express-based chat/completions routes working until
+ * S2b switches them to `new Response(stream)`. On client disconnect
+ * (`res.close`) the source stream is cancelled, propagating abort upstream.
+ */
+async function teeToExpress(
+  stream: ReadableStream<Uint8Array>,
+  res: Response,
+): Promise<void> {
+  const nodeReadable = Readable.fromWeb(stream as never);
+  const onClientClose = () => nodeReadable.destroy();
+  res.on("close", onClientClose);
+  nodeReadable.on("error", () => {
+    if (!res.writableEnded) res.destroy();
+  });
+  nodeReadable.on("end", () => res.removeListener("close", onClientClose));
+  nodeReadable.pipe(res);
+  await new Promise<void>((resolve) => {
+    res.on("finish", resolve);
+    res.on("close", resolve);
+  });
 }
 
 /**
@@ -197,16 +246,23 @@ export async function runChain(
 
     try {
       if (isLast && originalPayload.stream) {
-        // Final streaming step — pipe directly to the client response.
-        await runStepStream(
+        // Final streaming step — build the SSE ReadableStream and serve it.
+        // S2a: routes still use Express `res`, so tee the Web stream into the
+        // Express response. S2b replaces this with `new Response(stream)`.
+        const stream = runStepStream(
           provider,
           payload,
           signal,
-          res,
           `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
           Math.floor(Date.now() / 1000),
           displayName,
         );
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        res.flushHeaders?.();
+        await teeToExpress(stream, res);
         return; // Stream completed, chain done.
       }
 
