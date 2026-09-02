@@ -1,35 +1,39 @@
 schema: spec-driven
 
 context: |
-  Tech stack: Node.js modern (ESM, "type":"module"), Express 5, cors, js-yaml.
+  Tech stack: Bun.js v1.4.0 (runtime /home/andy/.bun/bin/bun); TypeScript strict
+    (tsconfig strict, all src/*.ts). Bun native features (Bun.serve, Bun.spawn,
+    Bun.file().yaml(), built-in .env, bun build --compile). Replaces Node + tsx.
   Architecture: LLM proxy orchestrating multi-model pipelines toward llama-swap/llama.cpp;
     OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, /v1/models).
-  Testing: No test runner configured; no test framework installed. Runtime verification
-    via manual smoke tests. Linter: eslint (lint/format scripts).
-  Style: ESM modules; JS only (no type checker / TS); eslint enforces semi + no-unused-vars.
+  Testing: bun test (workspace test runner). Strict TDD active. Linter: eslint
+    (lint script). Formatter: eslint --fix . Type checker: tsc --noEmit.
+  Style: ESM TypeScript; strict typing required; eslint enforces semi + no-unused-vars.
+  Migration note: active change migrates Node.js/Express/tsx to Bun native runtime
+    and test suite; do NOT let the legacy Node-only description act as current context.
 
-strict_tdd: false
+strict_tdd: true
 
 testing:
-  strict_tdd: false
+  strict_tdd: true
   projects:
     - path: .
-      stack: Node.js ESM (Express 5)
-      test_command: null
-      framework: null
+      stack: TypeScript strict on Bun.js 1.4.0
+      test_command: bun test
+      framework: bun:test (built-in)
       test_layers:
-        unit: false
+        unit: true
         integration: false
         e2e: false
-      coverage: null
+      coverage: "bun test --coverage"
       quality:
-        linter: "eslint ."
-        type_checker: null
+        linter: "eslint . (via eslint.config.js)"
+        type_checker: "tsc --noEmit"
         formatter: "eslint --fix . (via lint config)"
   note: >
-    No explicit workspace-level test command exists. strict_tdd set to false.
-    Downstream apply/verify execution requires a workspace-wide command once a
-    test runner is introduced.
+    bun test is a single workspace-level command covering the single in-scope
+    project (.); strict_tdd set to true. Downstream apply/verify must run tests
+    through `bun test` from the workspace root.
 
 rules:
   proposal:
@@ -45,12 +49,13 @@ rules:
     - Keep tasks completable in one session
   apply:
     guidelines:
-      - Follow existing code patterns (ESM, Express 5)
-    tdd: false
-    test_command: ""
+      - Follow existing code patterns (ESM TypeScript, strict)
+      - Use Bun native features per migration (Bun.serve, Bun.spawn, Bun.file().yaml(), built-in .env)
+    tdd: true
+    test_command: bun test
   verify:
-    test_command: ""
-    build_command: "node --check <file> (or node index.js)"
+    test_command: bun test
+    build_command: bun build src/index.ts --outdir dist
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas

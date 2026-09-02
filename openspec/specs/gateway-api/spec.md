@@ -42,21 +42,38 @@ The system SHALL expose `GET /v1/models` returning a list of all available real 
 - WHEN the system resolves configured providers and virtual chains
 - THEN the response contains `object: "list"` with entries for each model and each virtual chain prefixed `gateway/`
 
-### Requirement: SSE streaming via res.pipe
+### Requirement: SSE idle timeout disabled on streaming routes
 
-The system SHALL stream responses using `res.pipe()` without buffering. Each SSE message SHALL be a `data:` line terminated by `\n\n`. The stream SHALL end with a `data: [DONE]` message.
+The system MUST serve SSE routes with the Bun.serve idle timeout disabled (`idleTimeout: 0` or `server.timeout(req, 0)`) so silent streams are never closed by the server. Slow non-SSE routes SHOULD be given explicit per-route timeouts.
+
+#### Scenario: Stream survives long silence
+
+- GIVEN an SSE stream with no frames for more than 10 seconds
+- WHEN the stream continues producing no data
+- THEN the connection stays open and `data: [DONE]` still arrives at completion
+
+### Requirement: SSE streaming integrity
+
+The system SHALL stream responses unbuffered. Each SSE message SHALL be a `data:` line terminated by `\n\n`. The stream SHALL end with exactly one `data: [DONE]` message, preceded by exactly one terminal chunk when the upstream sends no finish reason. On client disconnect the system MUST abort the upstream request.
+(Previously: streamed via Express `res.pipe()`; transport is now Bun.serve with idle timeout disabled.)
 
 #### Scenario: Chat completions streams via SSE
 
 - GIVEN a chat completions request with `stream: true`
 - WHEN the backend starts producing tokens
-- THEN each token arrives as a `data: {...}\n\n` SSE frame and the stream ends with `data: [DONE]\n\n`
+- THEN each token arrives as a `data: {...}\n\n` frame and the stream ends with exactly one `data: [DONE]\n\n`
 
 #### Scenario: Client disconnect aborts upstream
 
 - GIVEN an active SSE stream
 - WHEN the client disconnects (TCP close)
 - THEN the system aborts the upstream request and releases resources
+
+#### Scenario: Terminal chunk synthesized exactly once
+
+- GIVEN a stream whose upstream never sends a finish reason
+- WHEN the stream reaches completion
+- THEN exactly one synthesized chunk with `finish_reason: "stop"` is emitted before `data: [DONE]`
 
 ### Requirement: Normalized error responses
 
