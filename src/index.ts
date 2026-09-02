@@ -1,14 +1,16 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Gateway entry point.
  *
  * Boots config → validate backend → spawn llama-server → parse chains →
- * create providers → mount Express app → listen.
+ * create providers → mount Bun.serve (fetch handler) → listen.
  *
- * The managed backend MUST be ready (start()) BEFORE app.listen() so traffic
- * never hits an unready upstream. Shutdown stops the backend before exiting.
+ * The managed backend MUST be ready (start()) BEFORE Bun.serve listens so
+ * traffic never hits an unready upstream. Shutdown stops the backend and
+ * drains in-flight requests before exiting.
  *
- * This is the TS replacement for the old index.js + server.js pair.
+ * S2a: Bun.serve serves GET /health + GET /v1/models. SSE chat/completions
+ * routes are migrated in S2b.
  */
 import { loadGatewayConfig } from "./config/index.js";
 import { parseChains } from "./orchestrator/parser.js";
@@ -46,19 +48,22 @@ const providers = new Map([
   ],
 ]);
 
-// ── Express app ──
+// ── Bun.serve fetch handler ──
 const app = createApp({ config, chains, providers, manager });
 
-// ── Listen ──
-const server = app.listen(config.server.port, config.server.host, () => {
-  console.log(
-    `[gateway] OpenAI-compatible API listening on http://${config.server.host}:${config.server.port}`,
-  );
-  console.log(
-    `[gateway] virtual models: ${[...chains.keys()].map((n) => `gateway/${n}`).join(", ")}`,
-  );
-  console.log(`[gateway] backend: ${manager.status().baseUrl}`);
+const server = Bun.serve({
+  port: config.server.port,
+  hostname: config.server.host,
+  fetch: app,
 });
+
+console.log(
+  `[gateway] OpenAI-compatible API listening on http://${config.server.host}:${server.port}`,
+);
+console.log(
+  `[gateway] virtual models: ${[...chains.keys()].map((n) => `gateway/${n}`).join(", ")}`,
+);
+console.log(`[gateway] backend: ${manager.status().baseUrl}`);
 
 // ── Graceful shutdown ──
 let shuttingDown = false;
@@ -70,13 +75,12 @@ async function shutdown(reason: string): Promise<void> {
   console.log(`[gateway] shutting down (${reason})`);
 
   const forceClose = setTimeout(() => {
-    server.closeAllConnections?.();
+    server.stop(true);
   }, 3000);
   forceClose.unref();
 
-  await new Promise<void>((resolve) => {
-    server.close(() => resolve());
-  });
+  await server.stop(false);
+  clearTimeout(forceClose);
 
   await manager.stop();
   process.exit(0);
