@@ -1,15 +1,19 @@
 /**
- * POST /v1/completions route handler.
+ * POST /v1/completions route handler (S2b — Bun.serve fetch handler).
  *
  * Legacy text completions endpoint. Converts the prompt-based request into
  * a chat-formatted request internally (prompt → messages[{role:"user"}]),
  * then dispatches to chain or provider using the same logic as chat.ts.
  *
+ * Converted from an Express handler to a plain fetch handler returning
+ * `Promise<Response>` (S2b). The SSE idle-timeout disable
+ * (`server.timeout(req, 0)`) is applied by the Bun.serve dispatcher in
+ * server.ts.
+ *
  * For passthrough (non-chain) requests, the payload is forwarded to the
  * backend via the passthrough forwarder, which re-serializes the parsed
  * body and streams the upstream response back (see middleware/proxy.ts).
  */
-import type { Request, Response } from "express";
 import { completionRequestSchema } from "../types/zod.js";
 import { createPassthroughProxy } from "../middleware/proxy.js";
 import type { ChainMap, ProviderMap } from "../orchestrator/engine.js";
@@ -24,18 +28,34 @@ export interface CompletionsRouteDeps {
 }
 
 const CHAIN_PREFIX = "gateway/";
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
+function jsonError(
+  message: string,
+  type: string,
+  param: string | null,
+  code: string | null,
+  status: number,
+): Response {
+  return new Response(JSON.stringify({ error: { message, type, param, code } }), {
+    status,
+    headers: JSON_HEADERS,
+  });
+}
 
 export function createCompletionsHandler(deps: CompletionsRouteDeps) {
   const passthroughProxy = createPassthroughProxy(
-    () => deps.manager.status().baseUrl,
+    () => deps.manager,
     deps.requestTimeoutMs,
   );
 
-  return async (req: Request, res: Response): Promise<void> => {
-    // ── Zod validation ──
+  return async (req: Request): Promise<Response> => {
+    // ── Read + Zod validation ──
+    let rawBody: Record<string, unknown>;
     let parsed;
     try {
-      parsed = completionRequestSchema.parse(req.body);
+      rawBody = (await req.json()) as Record<string, unknown>;
+      parsed = completionRequestSchema.parse(rawBody);
     } catch (err) {
       throw err;
     }
@@ -51,92 +71,71 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
     const chatPayload: Record<string, unknown> = {
       // Raw validated body (see chat.ts): zod strips unknown keys, and
       // OpenAI-compatible extras must survive for chain steps.
-      ...(req.body as Record<string, unknown>),
+      ...rawBody,
       messages: [{ role: "user", content: prompt }],
     };
 
     // ── Resolve chain vs provider ──
     const chainId = resolveChainId(
       parsed.model,
-      req.headers["x-chain-id"] as string | undefined,
+      req.headers.get("x-chain-id") ?? undefined,
     );
 
     if (chainId) {
       const chain = deps.chains.get(chainId);
       if (!chain) {
-        res.status(404).json({
-          error: {
-            message: `Chain "${chainId}" not found`,
-            type: "invalid_request_error",
-            param: "model",
-            code: "model_not_found",
-          },
-        });
-        return;
+        return jsonError(
+          `Chain "${chainId}" not found`,
+          "invalid_request_error",
+          "model",
+          "model_not_found",
+          404,
+        );
       }
 
       // Backend availability gate for chains (external-mode: must 503 like
       // passthrough, not surface a raw fetch TypeError as 500).
       if (!backendAvailable(deps.manager)) {
-        res.status(503).json({
-          error: {
-            message: "Backend not available",
-            type: "server_error",
-            param: null,
-            code: "backend_unavailable",
-          },
-        });
-        return;
-      }
-
-      const controller = new AbortController();
-      res.on("close", () => controller.abort());
-
-      try {
-        await runChain(
-          chain,
-          deps.providers,
-          chatPayload,
-          res,
-          controller.signal,
-          queryString(req),
+        return jsonError(
+          "Backend not available",
+          "server_error",
+          null,
+          "backend_unavailable",
+          503,
         );
-      } catch (err) {
-        if (!res.headersSent) {
-          throw err;
-        }
-        console.error("[completions] error after headers sent:", err);
       }
-      return;
+
+      return await runChain(
+        chain,
+        deps.providers,
+        chatPayload,
+        req.signal,
+        queryString(req),
+      );
     }
 
     // ── Unknown real model → 404 (gateway-api "Unknown model returns 404") ──
     if (!modelExists(deps.manager, parsed.model) && backendAvailable(deps.manager)) {
-      res.status(404).json({
-        error: {
-          message: `Model "${parsed.model}" not found`,
-          type: "invalid_request_error",
-          param: "model",
-          code: "model_not_found",
-        },
-      });
-      return;
+      return jsonError(
+        `Model "${parsed.model}" not found`,
+        "invalid_request_error",
+        "model",
+        "model_not_found",
+        404,
+      );
     }
 
     // ── Direct provider passthrough ──
     console.log(`[completions] passthrough → ${parsed.model}`);
-    passthroughProxy(req, res, () => {
-      if (!res.headersSent) {
-        res.status(404).json({
-          error: {
-            message: `Model "${parsed.model}" not found`,
-            type: "invalid_request_error",
-            param: "model",
-            code: "model_not_found",
-          },
-        });
-      }
+    const passthroughReq = new Request(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body:
+        req.method !== "GET" && req.method !== "HEAD"
+          ? JSON.stringify(chatPayload)
+          : undefined,
     });
+    return await passthroughProxy(passthroughReq);
   };
 }
 
@@ -161,8 +160,7 @@ function modelExists(manager: LlamaServeManager, model: string): boolean {
 
 /** Extract the raw query string after `?` from the client request. */
 function queryString(req: Request): string | undefined {
-  const originalUrl = req.originalUrl ?? req.url ?? "";
-  const queryIndex = originalUrl.indexOf("?");
+  const queryIndex = req.url.indexOf("?");
   if (queryIndex < 0) return undefined;
-  return originalUrl.slice(queryIndex + 1);
+  return req.url.slice(queryIndex + 1);
 }

@@ -8,17 +8,26 @@
  *  - Each GGUF file referenced in config.models exists on disk
  *
  * These are the spec's "Fail-fast config validation at startup" requirement.
+ *
+ * MIGRATION (S1, Bun 1.4.0): the PATH lookup swaps the `execFileSync("which")`
+ * subprocess for `Bun.which()` (native, no child process). The optional
+ * `whichFn` seam (ADR-3) exists because Bun.which reads a PATH snapshot taken
+ * at startup — it does not observe live process.env.PATH mutations — so tests
+ * inject a deterministic lookup. Fallback semantics are preserved
+ * byte-for-byte (same error strings, same absolute-path precedence).
  */
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import type { LlamaConfig } from "../config/schema.js";
 
 /**
  * Resolve the llama binary. If the path is absolute and exists, return it.
- * Otherwise try PATH lookup via `which`.
+ * Otherwise try PATH lookup via Bun.which.
  */
-function resolveBinary(binary: string): string {
+function resolveBinary(
+  binary: string,
+  whichFn: (bin: string) => string | null = Bun.which,
+): string {
   if (path.isAbsolute(binary)) {
     if (!fs.existsSync(binary)) {
       throw new Error(
@@ -29,16 +38,9 @@ function resolveBinary(binary: string): string {
     return binary;
   }
 
-  // PATH lookup via `which`
-  try {
-    const resolved = execFileSync("which", [binary], {
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    if (resolved) return resolved;
-  } catch {
-    // `which` failed — fall through to error
-  }
+  // PATH lookup via Bun.which (replaces the `which` subprocess)
+  const resolved = whichFn(binary);
+  if (resolved) return resolved;
 
   throw new Error(
     `[backend] llama binary "${binary}" not found on PATH\n` +

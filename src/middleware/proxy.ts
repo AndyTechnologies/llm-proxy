@@ -1,5 +1,5 @@
 /**
- * Passthrough forwarder for single-hop `/v1/*` requests.
+ * Passthrough forwarder for single-hop `/v1/*` requests (S2a — Bun.serve).
  *
  * For requests that do NOT match a `gateway/<chain>` model prefix or an
  * `X-Chain-ID` header, the request is forwarded verbatim to the llama-server
@@ -7,30 +7,18 @@
  * (which reflects the running backend's actual host:port) — never from
  * the request body (SSRF guard).
  *
- * WHY `fetch` instead of http-proxy-middleware (deviation from design.md):
- * the app-level `express.json()` consumes the request body stream before any
- * route handler runs. http-proxy-middleware could no longer forward the body
- * (POST requests hung; GET worked), so the passthrough re-serializes the
- * already-parsed `req.body` and streams the upstream response back — the same
- * pattern the chain engine already uses successfully. SSE chunking, abort
- * propagation, and connection handling are preserved without a proxy library.
+ * Converted from an Express piped response to a plain fetch handler returning
+ * `new Response(upstream.body)` — the Bun-native passthrough (design.md
+ * proxy/pipeline row). Hop-by-hop headers are stripped and upstream error
+ * responses (503/502 etc.) are normalized to the OpenAI envelope.
  */
-import type { Request, Response } from "express";
-import { Readable } from "node:stream";
-import type { IncomingHttpHeaders } from "node:http";
+import type { LlamaServeManager } from "../backend/manager.js";
 
-/** fetch()'s Response type (shadowed by Express's Response import above). */
+/** fetch()'s Response type. */
 type FetchResponse = Awaited<ReturnType<typeof fetch>>;
 
-/** Passthrough middleware signature (same shape as an Express middleware). */
-export type PassthroughHandler = (
-  req: Request,
-  res: Response,
-  next?: (err?: unknown) => void,
-) => Promise<void>;
-
 /** Hop-by-hop headers that must never be forwarded. */
-const HOP_BY_HOP = new Set([
+export const HOP_BY_HOP = new Set([
   "connection",
   "keep-alive",
   "proxy-authenticate",
@@ -42,125 +30,124 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /**
- * Build a client-side header set from the incoming request headers,
+ * Build the upstream request's header set from the client Request headers,
  * excluding hop-by-hop and transport-level headers.
  */
-function forwardHeaders(
-  headers: IncomingHttpHeaders,
-  hasBody: boolean,
+export function forwardHeaders(
+  headers: Headers,
+  contentType: string | null,
 ): Headers {
   const out = new Headers();
-
-  for (const [name, value] of Object.entries(headers)) {
+  for (const [name, value] of headers.entries()) {
     const lower = name.toLowerCase();
     if (HOP_BY_HOP.has(lower)) continue;
     if (lower === "host" || lower === "content-length") continue;
-    if (value === undefined) continue;
-
-    if (Array.isArray(value)) {
-      for (const v of value) out.append(name, v);
-    } else {
-      out.append(name, value);
-    }
+    out.append(name, value);
   }
-
-  if (hasBody && !out.has("content-type")) {
-    out.set("content-type", "application/json");
+  if (contentType && !out.has("content-type")) {
+    out.set("content-type", contentType);
   }
+  return out;
+}
 
+/** Forward upstream response headers, stripping hop-by-hop + content-length. */
+function forwardResponseHeaders(headers: Headers): Headers {
+  const out = new Headers();
+  for (const [name, value] of headers.entries()) {
+    const lower = name.toLowerCase();
+    if (HOP_BY_HOP.has(lower) || lower === "content-length") continue;
+    out.append(name, value);
+  }
   return out;
 }
 
 /**
  * Create a passthrough forwarder that targets the managed backend dynamically.
  *
- * @param getBaseUrl  Dynamic getter — reads from manager.status().baseUrl
+ * @param getManager  Manager to read baseUrl from dynamically
  * @param requestTimeoutMs  Timeout for upstream requests
  */
 export function createPassthroughProxy(
-  getBaseUrl: () => string,
+  getManager: () => LlamaServeManager,
   requestTimeoutMs: number,
-): PassthroughHandler {
-  return async (req, res) => {
-    const baseUrl = getBaseUrl();
+): (req: Request) => Promise<Response> {
+  return async (req: Request): Promise<Response> => {
+    const baseUrl = getManager().status().baseUrl;
 
     if (!baseUrl) {
-      res.status(503).json({
-        error: {
-          message: "Backend not available",
-          type: "server_error",
-          param: null,
-          code: "backend_unavailable",
-        },
-      });
-      return;
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: "Backend not available",
+            type: "server_error",
+            param: null,
+            code: "backend_unavailable",
+          },
+        }),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      );
     }
 
     // ── Build target URL, preserving path + query ──
-    const originalUrl = req.originalUrl ?? req.url ?? "/";
-    const queryIndex = originalUrl.indexOf("?");
-    const pathname = queryIndex >= 0 ? originalUrl.slice(0, queryIndex) : originalUrl;
-    const search = queryIndex >= 0 ? originalUrl.slice(queryIndex) : "";
-
+    const url = new URL(req.url);
+    const pathname = url.pathname;
+    const search = url.search;
     const target = new URL(pathname, baseUrl);
     target.search = search;
 
     // ── Abort: client disconnect OR hard timeout ──
     const controller = new AbortController();
-    const onClientClose = () => controller.abort();
-    res.on("close", onClientClose);
+    const onClientAbort = () => controller.abort();
+    req.signal.addEventListener("abort", onClientAbort, { once: true });
     const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
 
-    const hasBody = req.body !== undefined && req.body !== null;
+    // Re-read the body (Bun fetch already consumed it once for this handler;
+    // for a passthrough we re-serialize only when a body is present).
+    const contentType = req.headers.get("content-type");
+    let body: ArrayBuffer | undefined;
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      body = await req.arrayBuffer();
+    }
 
     let upstream: FetchResponse;
     try {
       upstream = await fetch(target, {
         method: req.method,
-        headers: forwardHeaders(req.headers, hasBody),
-        body: hasBody ? JSON.stringify(req.body) : undefined,
+        headers: forwardHeaders(req.headers, contentType),
+        body,
         signal: controller.signal,
         redirect: "manual",
       });
     } catch (err) {
       clearTimeout(timeout);
-      res.removeListener("close", onClientClose);
-
-      // Client went away or timed out — nothing sensible to write.
-      if (controller.signal.aborted || res.destroyed || res.writableEnded) {
-        return;
+      req.signal.removeEventListener("abort", onClientAbort);
+      if (controller.signal.aborted || req.signal.aborted) {
+        // Client went away or timed out — nothing sensible to write.
+        throw err;
       }
-
       console.error("[proxy] upstream error:", (err as Error).message);
-      res.status(502).json({
-        error: {
-          message: `Upstream error: ${(err as Error).message}`,
-          type: "server_error",
-          param: null,
-          code: "upstream_error",
-        },
-      });
-      return;
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: `Upstream error: ${(err as Error).message}`,
+            type: "server_error",
+            param: null,
+            code: "upstream_error",
+          },
+        }),
+        { status: 502, headers: { "Content-Type": "application/json" } },
+      );
+    } finally {
+      clearTimeout(timeout);
+      req.signal.removeEventListener("abort", onClientAbort);
     }
 
-    // ── Cleanup: release the timeout and the res-close listener. Defined
-    // before use (error path below runs before any streaming setup). ──
-    const cleanup = () => {
-      clearTimeout(timeout);
-      res.removeListener("close", onClientClose);
-    };
-
     // ── Normalize upstream error responses (gateway-api normalized errors) ──
-    // Non-2xx upstream bodies are forwarded verbatim today (the llama-server
-    // 400 on unknown real models is OpenAI-shaped but non-canonical: numeric
-    // code, no param). Normalize every non-2xx passthrough response to the
-    // canonical OpenAI `{error:{message,type,param,code}}` envelope here.
     if (!upstream.ok) {
-      cleanup();
-      const body = await upstream.text();
-      let message = body.slice(0, 500);
+      const upstreamBody = await upstream.text();
+      let message = upstreamBody.slice(0, 500);
       try {
-        const parsed = JSON.parse(body) as {
+        const parsed = JSON.parse(upstreamBody) as {
           error?: { message?: unknown };
         };
         if (typeof parsed?.error?.message === "string") {
@@ -177,43 +164,25 @@ export function createPassthroughProxy(
             ? "server_error"
             : "invalid_request_error";
 
-      res.status(upstream.status).json({
-        error: {
-          message,
-          type: errorType,
-          param: null,
-          code: null,
-        },
-      });
-      return;
+      return new Response(
+        JSON.stringify({
+          error: { message, type: errorType, param: null, code: null },
+        }),
+        { status: upstream.status, headers: { "Content-Type": "application/json" } },
+      );
     }
 
-    // ── Forward status + non-hop-by-hop headers ──
-    res.status(upstream.status);
-    for (const [name, value] of upstream.headers) {
-      const lower = name.toLowerCase();
-      if (HOP_BY_HOP.has(lower) || lower === "content-length") continue;
-      res.setHeader(name, value);
-    }
-
+    // ── Forward status + non-hop-by-hop headers; stream the body unbuffered ──
     if (!upstream.body) {
-      cleanup();
-      res.end();
-      return;
+      return new Response(null, {
+        status: upstream.status,
+        headers: forwardResponseHeaders(upstream.headers),
+      });
     }
 
-    // ── Stream the upstream body (SSE or JSON) unbuffered ──
-    const upstreamStream = Readable.fromWeb(
-      upstream.body as import("node:stream/web").ReadableStream,
-    );
-    upstreamStream.on("error", () => {
-      cleanup();
-      if (!res.writableEnded) {
-        res.destroy();
-      }
+    return new Response(upstream.body as ReadableStream, {
+      status: upstream.status,
+      headers: forwardResponseHeaders(upstream.headers),
     });
-    upstreamStream.on("end", cleanup);
-    res.on("finish", cleanup);
-    upstreamStream.pipe(res);
   };
 }
