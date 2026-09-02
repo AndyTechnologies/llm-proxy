@@ -17,10 +17,23 @@ import { parseChains } from "./orchestrator/parser.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
 import { createApp } from "./server.js";
 import { createLlamaServeManager } from "./backend/manager.js";
+import { logJson } from "./utils/logger.js";
+
+// ── Structured JSON logging (S3.1 — health-endpoints Req 4) ──
+// Startup, shutdown, and fatal-error lines are emitted as single-line JSON
+// with `level` + `message`. info/warn → stdout; error/fatal → stderr.
+function log(level: string, message: string, extra: Record<string, unknown> = {}) {
+  const line = logJson(level, message, extra);
+  if (level === "error" || level === "fatal") {
+    console.error(line);
+  } else {
+    console.log(line);
+  }
+}
 
 // ── Config ──
 const config = await loadGatewayConfig();
-console.log(`[gateway] config loaded: ${Object.keys(config.chains).length} chains`);
+log("info", "config loaded", { chains: Object.keys(config.chains).length });
 
 // ── Backend manager ──
 const manager = createLlamaServeManager({ config: config.llama });
@@ -28,8 +41,10 @@ const manager = createLlamaServeManager({ config: config.llama });
 try {
   await manager.start();
 } catch (err) {
-  console.error(
-    `[gateway] FATAL: backend failed to start — ${(err as Error).message}`,
+  log(
+    "fatal",
+    "backend failed to start",
+    { message: (err as Error).message },
   );
   process.exit(1);
 }
@@ -57,13 +72,17 @@ const server = Bun.serve({
   fetch: app,
 });
 
-console.log(
-  `[gateway] OpenAI-compatible API listening on http://${config.server.host}:${server.port}`,
+log(
+  "info",
+  "OpenAI-compatible API listening",
+  { url: `http://${config.server.host}:${server.port}` },
 );
-console.log(
-  `[gateway] virtual models: ${[...chains.keys()].map((n) => `gateway/${n}`).join(", ")}`,
+log(
+  "info",
+  "virtual models",
+  { models: [...chains.keys()].map((n) => `gateway/${n}`) },
 );
-console.log(`[gateway] backend: ${manager.status().baseUrl}`);
+log("info", "backend", { baseUrl: manager.status().baseUrl });
 
 // ── Graceful shutdown ──
 let shuttingDown = false;
@@ -72,8 +91,11 @@ async function shutdown(reason: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
 
-  console.log(`[gateway] shutting down (${reason})`);
+  log("info", "shutting down", { reason });
 
+  // Bounded drain (health-endpoints Req 5): stop accepting new connections
+  // and drain in-flight requests gracefully; if a connection outlives the
+  // window (3s), force-close it so shutdown always completes with no orphans.
   const forceClose = setTimeout(() => {
     server.stop(true);
   }, 3000);
@@ -83,6 +105,7 @@ async function shutdown(reason: string): Promise<void> {
   clearTimeout(forceClose);
 
   await manager.stop();
+  log("info", "shutdown complete", { reason });
   process.exit(0);
 }
 
@@ -95,11 +118,11 @@ process.on("SIGTERM", () => {
 });
 
 process.on("unhandledRejection", (reason) => {
-  console.error("[gateway] unhandledRejection:", reason);
+  log("error", "unhandledRejection", { reason: String(reason) });
   void shutdown("unhandledRejection");
 });
 
 process.on("uncaughtException", (err) => {
-  console.error("[gateway] uncaughtException:", err);
+  log("fatal", "uncaughtException", { message: (err as Error).message });
   void shutdown("uncaughtException");
 });

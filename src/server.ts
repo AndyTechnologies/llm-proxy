@@ -99,9 +99,18 @@ export function createApp(
     if (denied) return denied;
 
     try {
-      // ── GET /health (aggregate — preserved) ──
-      if (req.method === "GET" && url.pathname === "/health") {
-        return withSecurity(corsHeaders(deps), healthHandler(req));
+      // ── GET /health, /health/live, /health/ready (aggregate + live/ready) ──
+      // S3.1: the health handler dispatches each path. /health stays the
+      // legacy aggregate; /health/live and /health/ready implement liveness
+      // and backend-gated readiness (health-endpoints spec Reqs 1–3).
+      if (req.method === "GET") {
+        if (
+          url.pathname === "/health" ||
+          url.pathname === "/health/live" ||
+          url.pathname === "/health/ready"
+        ) {
+          return withSecurity(corsHeaders(deps), healthHandler(req));
+        }
       }
 
       // ── GET /v1/models ──
