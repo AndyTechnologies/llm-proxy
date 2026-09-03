@@ -17,19 +17,12 @@
  * trivially testable without a runtime harness.
  */
 import type { ParsedChain } from "./parser.js";
+import type { GraphPipeline } from "./graph.js";
 
-/**
- * Minimal placeholder for a graph pipeline.
- *
- * The full `GraphPipeline` shape (nodes/edges/conditions) and its validation
- * land in Slice B (`src/orchestrator/graph.ts`). Slice A only needs a stable
- * identity seam so the registry's `getGraph` contract is forward-compatible;
- * no graph entries are produced or validated yet.
- */
-export interface GraphPipeline {
-  /** Stable identifier used to look the graph up via `getGraph`. */
-  id: string;
-}
+// The full graph model lives in `graph.ts` (nodes/edges/conditions + SAFE AST).
+// `GraphPipeline` is re-exported so registry consumers get the engine's graph
+// shape directly — the registry stores and serves complete pipelines.
+export type { GraphPipeline } from "./graph.js";
 
 /**
  * The mutable registry contract.

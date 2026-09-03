@@ -18,6 +18,9 @@ import { completionRequestSchema } from "../types/zod.js";
 import { createPassthroughProxy } from "../middleware/proxy.js";
 import type { ChainMap, ProviderMap } from "../orchestrator/engine.js";
 import { runChain } from "../orchestrator/engine.js";
+import { createHybridSelector } from "../orchestrator/hybrid-selector.js";
+import { runGraphEngine } from "../orchestrator/graph-engine.js";
+import type { GraphPipeline } from "../orchestrator/graph.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface CompletionsRouteDeps {
@@ -25,6 +28,8 @@ export interface CompletionsRouteDeps {
   providers: ProviderMap;
   manager: LlamaServeManager;
   requestTimeoutMs: number;
+  /** Optional graph pipeline lookup — enables graph-engine routing (Slice B). */
+  getGraph?: (id: string) => GraphPipeline | undefined;
 }
 
 const CHAIN_PREFIX = "gateway/";
@@ -82,8 +87,15 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
     );
 
     if (chainId) {
-      const chain = deps.chains.get(chainId);
-      if (!chain) {
+      // Slice B: route via the hybrid selector — linear chains run on
+      // `runChain`, complex graphs on the graph engine. Without a graph
+      // lookup the selector degrades to chain-only resolution.
+      const hybrid = createHybridSelector({
+        getChain: (n) => deps.chains.get(n),
+        getGraph: (n) => deps.getGraph?.(n),
+      });
+      const dispatch = hybrid.resolve(chainId);
+      if (!dispatch) {
         return jsonError(
           `Chain "${chainId}" not found`,
           "invalid_request_error",
@@ -105,13 +117,26 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
         );
       }
 
-      return await runChain(
-        chain,
-        deps.providers,
-        chatPayload,
-        req.signal,
-        queryString(req),
+      if (dispatch.kind === "linear") {
+        return await runChain(
+          dispatch.chain,
+          deps.providers,
+          chatPayload,
+          req.signal,
+          queryString(req),
+        );
+      }
+
+      const result = await runGraphEngine(
+        dispatch.graph,
+        { providers: deps.providers, getPipeline: () => undefined },
+        {
+          streamRequested: chatPayload.stream === true,
+          payload: chatPayload,
+          signal: req.signal,
+        },
       );
+      return result.response;
     }
 
     // ── Unknown real model → 404 (gateway-api "Unknown model returns 404") ──

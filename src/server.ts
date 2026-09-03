@@ -74,6 +74,9 @@ export function createApp(
   // can swap chains without a restart. When no registry is injected (existing
   // route tests), fall back to the frozen `chains` map — registry is additive.
   const chains = deps.registry?.asMap() ?? deps.chains;
+  // Slice B: graph pipelines are also resolved through the registry so complex
+  // graphs route to the graph engine via the hybrid selector (2.6).
+  const getGraph = deps.registry ? (id: string) => deps.registry!.getGraph(id) : undefined;
 
   const modelsHandler = createModelsHandler({
     chains,
@@ -89,12 +92,14 @@ export function createApp(
     providers: deps.providers,
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,
+    getGraph,
   });
   const completionsHandler = createCompletionsHandler({
     chains,
     providers: deps.providers,
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,
+    getGraph,
   });
 
   return async (req: Request, server: BunServer): Promise<Response> => {

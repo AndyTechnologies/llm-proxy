@@ -38,12 +38,12 @@ Chain strategy is **pending** — delivery_strategy is auto-chain but no chain s
 
 ## Phase 2 — Slice B: Graph Engine, AST, Composition, Hybrid
 
-- [ ] 2.1 Create `src/orchestrator/graph.ts`: node/edge validation — acyclic except `loop` boundaries, exactly one `start` + ≥1 `end`, model existence, required fields; RED for cyclic/zero-start (dashboard-api validate scenarios)
-- [ ] 2.2 Create `src/orchestrator/graph.ts` SAFE AST: typed walker (discriminated union) for `compare`/`logical`/`not`/`exists` over `lastResponse.status/content`, `error`, `variables`; forbid `eval`/`new Function`/URL/file/network; RED unsafe-input-rejected (graph-engine Req safe AST)
-- [ ] 2.3 Create `src/orchestrator/composition.ts`: pipeline invocation by name, input params, output→`lastResponse`, max depth 5 enforced; RED depth-6 fails, depth-3 runs (pipeline-composition Req 2)
-- [ ] 2.4 Create `src/orchestrator/graph-engine.ts`: immutable runtime executing start/end/llm_call/condition/loop; sequential-guarded default; parallel opt-in with explicit `join`; loop bound; single-terminal stream on last executed-path step (reuse `buildStreamBody`), intermediates `step:*` non-streaming
-- [ ] 2.5 Hybrid selector: linear-compatible graph → `runChain`; else graph engine (pipeline-orchestration modified Req sequential/streaming); RED both scenarios
-- [ ] 2.6 Modify `src/routes/chat.ts`/`completions.ts`: route via hybrid selector after `registry.asMap()`; `/v1/*`(read-only) streams never buffered (RED no-buffer invariant)
+- [x] 2.1 Create `src/orchestrator/graph.ts`: node/edge validation — acyclic except `loop` boundaries, exactly one `start` + ≥1 `end`, model existence, required fields; RED for cyclic/zero-start (dashboard-api validate scenarios)
+- [x] 2.2 Create `src/orchestrator/graph.ts` SAFE AST: typed walker (discriminated union) for `compare`/`logical`/`not`/`exists` over `lastResponse.status/content`, `error`, `variables`; forbid `eval`/`new Function`/URL/file/network; RED unsafe-input-rejected (graph-engine Req safe AST)
+- [x] 2.3 Create `src/orchestrator/composition.ts`: pipeline invocation by name, input params, output→`lastResponse`, max depth 5 enforced; RED depth-6 fails, depth-3 runs (pipeline-composition Req 2)
+- [x] 2.4 Create `src/orchestrator/graph-engine.ts`: immutable runtime executing start/end/llm_call/condition/loop; sequential-guarded default; parallel opt-in with explicit `join`; loop bound; single-terminal stream on last executed-path step (reuse `buildStreamBody`), intermediates `step:*` non-streaming
+- [x] 2.5 Hybrid selector: linear-compatible graph → `runChain`; else graph engine (pipeline-orchestration modified Req sequential/streaming); RED both scenarios
+- [x] 2.6 Modify `src/routes/chat.ts`/`completions.ts`: route via hybrid selector after `registry.asMap()`; `/v1/*`(read-only) streams never buffered (RED no-buffer invariant)
 
 ## Phase 3 — Slice C: Dashboard API + SSE + Tracker
 
