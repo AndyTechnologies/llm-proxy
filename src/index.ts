@@ -208,6 +208,10 @@ const app = createApp({
   providers,
   manager,
   dashboard: { handler: dashboardHandler },
+  // Static SPA served at /ui (Slice D). Running from source this resolves to
+  // src/ui in the repo root; UI_DIR overrides the location (e.g. when the
+  // build:binary step copies the SPA next to the binary).
+  uiDir: process.env.UI_DIR ?? "./src/ui",
 });
 
 const server = Bun.serve({

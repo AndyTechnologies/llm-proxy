@@ -1,4 +1,65 @@
 /**
+ * Slice D: static `/ui` SPA serving — resolve a request pathname to a file
+ * within the SPA directory, guarding against path traversal.
+ *
+ * The SPA is served as plain static assets (no build step). Only `uiDir`
+ * files are reachable; any path that escapes the directory (via `..` or an
+ * absolute path), requests a subdirectory, or names an unknown asset resolves
+ * to `null` so the caller returns a non-200 (dashboard-ui Req "Static SPA
+ * serving" / path-traversal scenario).
+ */
+export function resolveUiAsset(
+  pathname: string,
+  contentTypeFor: (ext: string) => string,
+): { file: string; contentType: string } | null {
+  // Only the `/ui` prefix is eligible.
+  if (pathname !== "/ui" && !pathname.startsWith("/ui/")) return null;
+
+  // Relative path under /ui/, normalized and traversal-safe.
+  const raw = pathname === "/ui" ? "index.html" : pathname.slice("/ui/".length);
+
+  // Reject anything that isn't a plain filename-ish path (no `..`, no leading
+  // slash, no backslash) — a traversal attempt collapses to null → 4xx.
+  if (raw.length === 0 || raw.includes("/") || raw.includes("\\") || raw === ".." || raw.startsWith(".")) {
+    return null;
+  }
+
+  const ext = raw.includes(".") ? raw.slice(raw.lastIndexOf(".")) : "";
+  return { file: raw, contentType: contentTypeFor(ext) };
+}
+
+/** Map a file extension to its MIME content-type. */
+export function contentTypeFor(ext: string): string {
+  switch (ext) {
+    case ".html":
+      return "text/html";
+    case ".js":
+      return "application/javascript";
+    case ".css":
+      return "text/css";
+    case ".json":
+      return "application/json";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".ico":
+      return "image/x-icon";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+/**
+ * Build a safe path by joining the SPA directory with a single, already
+ * traversal-checked filename segment (see `resolveUiAsset`, which never emits
+ * `..`, an absolute path, or a subdirectory). Pure concatenation is safe here.
+ */
+function joinUIPath(dir: string, file: string): string {
+  return dir.endsWith("/") ? dir + file : `${dir}/${file}`;
+}
+
+/**
  * Bun.serve application factory (S2.3 — createApp → Bun.serve fetch handler).
  *
  * Replaces the Express app with a single fetch handler mounted on Bun.serve.
@@ -41,6 +102,12 @@ export interface ServerDeps {
   chains: Map<string, ParsedChain>;
   providers: Map<string, Provider>;
   manager: LlamaServeManager;
+  /**
+   * Static SPA directory (`src/ui`). When present, `/ui` serves index.html and
+   * siblings as static assets with correct content types + a path-traversal
+   * guard (Slice D, dashboard-ui Req "Static SPA serving").
+   */
+  uiDir?: string;
   /**
    * Dashboard `/api/ui/*` handler + static `/ui` route (Slice C). When present,
    * the dispatcher wires the dashboard REST/SSE branches; when absent
@@ -131,9 +198,34 @@ export function createApp(
 
     // ── Static /ui SPA (always open — no auth) ──
     // Served BEFORE the auth guard so the dashboard is reachable even when a
-    // BEARER_TOKEN protects the API. The actual SPA build lands in Slice D;
-    // this branch exists now so the route split + open-auth behavior is real.
-    if (req.method === "GET" && url.pathname === "/ui") {
+    // BEARER_TOKEN protects the API. When `uiDir` is configured the SPA is
+    // served as static assets with correct content types + a path-traversal
+    // guard (Slice D); otherwise the route returns a 404 explaining the SPA is
+    // not built (Slice C stub kept for backward-compatible boot).
+    if (req.method === "GET" && (url.pathname === "/ui" || url.pathname.startsWith("/ui/"))) {
+      if (deps.uiDir) {
+        const asset = resolveUiAsset(url.pathname, contentTypeFor);
+        if (asset) {
+          const file = Bun.file(joinUIPath(deps.uiDir, asset.file));
+          const exists = await file.exists();
+          if (exists) {
+            return withSecurity(
+              corsHeaders(deps),
+              new Response(file, {
+                headers: { "Content-Type": asset.contentType },
+              }),
+            );
+          }
+        }
+        // Path traversal, unknown asset, or subdirectory → non-200.
+        return withSecurity(
+          corsHeaders(deps),
+          new Response(JSON.stringify({ error: { message: "Not found", type: "invalid_request_error", param: null, code: null } }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
       return withSecurity(
         corsHeaders(deps),
         new Response(
