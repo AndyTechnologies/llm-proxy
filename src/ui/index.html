@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>llm-proxy Dashboard</title>
+  <link rel="stylesheet" href="/ui/styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="app-header" role="banner">
+    <h1 class="app-title">llm-proxy Dashboard</h1>
+    <nav class="app-nav" aria-label="Primary">
+      <a href="#editor" class="nav-link" data-view="editor" aria-current="true">Editor</a>
+      <a href="#pipelines" class="nav-link" data-view="pipelines">Pipelines</a>
+      <a href="#models" class="nav-link" data-view="models">Models</a>
+      <a href="#executions" class="nav-link" data-view="executions">Executions</a>
+    </nav>
+    <div class="conn-status" id="conn-status" role="status" aria-live="polite">Connecting…</div>
+  </header>
+
+  <main id="main" class="app-main">
+    <!-- ── Editor view ─────────────────────────────────────────────── -->
+    <section id="editor" class="view" aria-label="Pipeline editor">
+      <div class="editor-layout">
+        <div id="palette" class="palette" aria-label="Node palette">
+          <h2 class="panel-title">Node palette</h2>
+          <p class="hint" id="palette-hint">Drag a node onto the canvas, or press its letter key while the canvas is focused.</p>
+          <ul id="palette-list" class="palette-list">
+            <li><button type="button" class="palette-item" data-node-type="start" draggable="true" data-key="1">Start</button></li>
+            <li><button type="button" class="palette-item" data-node-type="llm_call" draggable="true" data-key="2">LLM call</button></li>
+            <li><button type="button" class="palette-item" data-node-type="condition" draggable="true" data-key="3">Condition</button></li>
+            <li><button type="button" class="palette-item" data-node-type="loop" draggable="true" data-key="4">Loop</button></li>
+            <li><button type="button" class="palette-item" data-node-type="pipeline" draggable="true" data-key="5">Pipeline</button></li>
+            <li><button type="button" class="palette-item" data-node-type="end" draggable="true" data-key="6">End</button></li>
+          </ul>
+        </div>
+
+        <div class="canvas-wrap">
+          <div class="canvas-toolbar" role="toolbar" aria-label="Editor actions">
+            <h2 class="panel-title">Pipeline graph</h2>
+            <button type="button" id="btn-new" class="btn">New</button>
+            <label for="pipeline-name" class="field-label">Name</label>
+            <input id="pipeline-name" class="text-input" type="text" value="new-pipeline" aria-label="Pipeline name" />
+            <button type="button" id="btn-validate" class="btn">Validate</button>
+            <button type="button" id="btn-apply" class="btn btn-primary">Apply</button>
+            <button type="button" id="btn-clear" class="btn">Clear</button>
+          </div>
+          <div id="graph-canvas" class="graph-canvas" tabindex="0" role="application" aria-label="Pipeline graph canvas" aria-describedby="keyboard-help">
+            <svg id="graph-svg" role="img" aria-label="Pipeline graph"></svg>
+            <p id="canvas-empty" class="canvas-empty">Drag nodes here or tab to the canvas and press 1–6 to add a node.</p>
+          </div>
+          <p id="keyboard-help" class="hint">
+            Keyboard: Tab moves focus. With the canvas focused: 1–6 add a node type, Delete removes a selected node.
+          </p>
+          <div id="validation-result" class="validation-result" role="status" aria-live="polite"></div>
+        </div>
+
+        <div id="inspector" class="inspector" aria-label="Node inspector">
+          <h2 class="panel-title">Inspector</h2>
+          <div id="inspector-empty" class="hint">Select a node to configure it.</div>
+          <div id="inspector-body" hidden></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Pipelines view ───────────────────────────────────────────── -->
+    <section id="pipelines" class="view" aria-label="Pipelines" hidden>
+      <h2 class="panel-title">Pipelines</h2>
+      <div id="pipelines-list" class="list"></div>
+    </section>
+
+    <!-- ── Models view ──────────────────────────────────────────────── -->
+    <section id="models" class="view" aria-label="Models" hidden>
+      <h2 class="panel-title">Models</h2>
+      <p id="models-dir" class="hint"></p>
+      <div id="models-list" class="list"></div>
+    </section>
+
+    <!-- ── Executions view ──────────────────────────────────────────── -->
+    <section id="executions" class="view" aria-label="Executions" hidden>
+      <h2 class="panel-title">Executions</h2>
+      <div id="executions-list" class="list"></div>
+    </section>
+  </main>
+
+  <!-- ── Node configuration dialog ─────────────────────────────────── -->
+  <dialog id="node-dialog" aria-labelledby="node-dialog-title">
+    <form method="dialog" id="node-form">
+      <h2 id="node-dialog-title" class="dialog-title">Configure node</h2>
+      <div id="node-form-body"></div>
+      <div class="dialog-actions">
+        <button type="button" id="btn-node-save" class="btn btn-primary">Save</button>
+        <button type="button" id="btn-node-cancel" class="btn">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ── Apply error dialog ────────────────────────────────────────── -->
+  <dialog id="apply-dialog" aria-labelledby="apply-dialog-title" role="alertdialog">
+    <h2 id="apply-dialog-title" class="dialog-title">Apply failed</h2>
+    <p id="apply-dialog-message"></p>
+    <div class="dialog-actions">
+      <button type="button" id="btn-apply-ok" class="btn">OK</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="/ui/app.js"></script>
+</body>
+</html>
