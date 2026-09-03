@@ -74,6 +74,9 @@ export const stepConfigSchema = z.object({
   system: z.string().optional(),
   assistant: z.string().optional(),
   user: z.string().optional(),
+  // Optional per-step context window override (tokens). Set from the editor's
+  // llm_call context selector; a plain number or string so custom values pass.
+  ctx: z.union([z.number().int().positive(), z.string().min(1)]).optional(),
   on_429: z.string().optional(),
   tool_calls_route: z.string().optional(),
 });

@@ -21,7 +21,27 @@ function makeDeps(overrides: Partial<DashboardRouterDeps> = {}): DashboardRouter
       { id: "c1", description: "chain one", nodeCount: 3, lastExecution: "2026-09-01T00:00:00Z" },
       { id: "c2", description: "chain two", nodeCount: 5, lastExecution: null },
     ],
+    getPipeline: (id) =>
+      id === "c1"
+        ? {
+            id: "c1",
+            name: "c1",
+            nodes: [
+              { id: "a", type: "start" },
+              { id: "b", type: "llm_call", model: "m1.gguf" },
+              { id: "d", type: "end" },
+            ],
+            edges: [
+              { from: "a", to: "b" },
+              { from: "b", to: "d" },
+            ],
+          }
+        : undefined,
     registeredModels: () => ["m1.gguf", "m2.gguf"],
+    modelDetails: () => [
+      { id: "m1.gguf", file: "m1.gguf", ctx: 4096, temp: 0.1 },
+      { id: "m2.gguf", file: "m2.gguf", ctx: 8192, temp: 0.7 },
+    ],
     detectedModels: () => ["m3.gguf"],
     modelsDir: "/models",
     autoRefresh: true,
@@ -72,6 +92,8 @@ interface ModelSummary {
   id: string;
   file: string;
   loaded: boolean;
+  ctx?: number;
+  temp?: number;
 }
 
 interface ModelListPayload {
@@ -116,6 +138,24 @@ describe("dashboard router", () => {
     });
   });
 
+  it("GET /api/ui/pipelines/:id returns the full graph for an existing pipeline", async () => {
+    const res = await call(makeDeps(), "GET", "/api/ui/pipelines/c1");
+    expect(res.status).toBe(200);
+    const data = await jsonBody<{ id: string; name: string | null; nodes: unknown[]; edges: unknown[] }>(res);
+    expect(data.id).toBe("c1");
+    expect(data.nodes).toHaveLength(3);
+    expect(data.nodes[1]).toEqual({ id: "b", type: "llm_call", model: "m1.gguf" });
+    expect(data.edges).toEqual([
+      { from: "a", to: "b" },
+      { from: "b", to: "d" },
+    ]);
+  });
+
+  it("GET /api/ui/pipelines/:id returns 404 for an unknown pipeline", async () => {
+    const res = await call(makeDeps(), "GET", "/api/ui/pipelines/nope");
+    expect(res.status).toBe(404);
+  });
+
   it("GET /api/ui/models returns merged registered + detected models", async () => {
     const res = await call(makeDeps(), "GET", "/api/ui/models");
     expect(res.status).toBe(200);
@@ -123,8 +163,8 @@ describe("dashboard router", () => {
     expect(data.modelsDir).toBe("/models");
     expect(data.autoRefresh).toBe(true);
     expect(data.models).toHaveLength(3);
-    expect(data.models[0]).toEqual({ id: "m1.gguf", file: "m1.gguf", loaded: true });
-    expect(data.models[1]).toEqual({ id: "m2.gguf", file: "m2.gguf", loaded: true });
+    expect(data.models[0]).toEqual({ id: "m1.gguf", file: "m1.gguf", loaded: true, ctx: 4096, temp: 0.1 });
+    expect(data.models[1]).toEqual({ id: "m2.gguf", file: "m2.gguf", loaded: true, ctx: 8192, temp: 0.7 });
     // Detected model is a candidate, not loaded.
     expect(data.models[2]).toEqual({ id: "m3.gguf", file: "m3.gguf", loaded: false });
   });

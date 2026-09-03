@@ -53,7 +53,19 @@ function dashboardDeps(): NonNullable<ServerDeps["dashboard"]> {
     chainSummaries: () => [
       { id: "c1", description: "desc", nodeCount: 3, lastExecution: null },
     ],
+    getPipeline: (id) =>
+      id === "c1"
+        ? {
+            id: "c1",
+            nodes: [
+              { id: "a", type: "start" },
+              { id: "b", type: "end" },
+            ],
+            edges: [{ from: "a", to: "b" }],
+          }
+        : undefined,
     registeredModels: () => ["m1.gguf"],
+    modelDetails: () => [{ id: "m1.gguf", file: "m1.gguf", ctx: 4096 }],
     detectedModels: () => [],
     modelsDir: "/models",
     autoRefresh: true,

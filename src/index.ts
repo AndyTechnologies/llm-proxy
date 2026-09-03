@@ -17,7 +17,7 @@ import { ERR_CONFIG_NOT_FOUND } from "./config/load.js";
 import { generateDefaultConfig } from "./config/defaults.js";
 import { createModelsWatcher } from "./config/watcher.js";
 import { persistConfig } from "./config/write.js";
-import { parseChains } from "./orchestrator/parser.js";
+import { parseChains, chainToGraph } from "./orchestrator/parser.js";
 import { createPipelineRegistry } from "./orchestrator/registry.js";
 import { validateGraph } from "./orchestrator/graph.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
@@ -86,7 +86,12 @@ const parsed = parseChains(config);
 // for chain resolution. Routes read chains via `registry.asMap()`, which also
 // allows a later atomic `reload()` (dashboard-api apply) to swap chains
 // without a restart.
-const registry = createPipelineRegistry({ chains: [...parsed.values()] });
+const registry = createPipelineRegistry({
+  chains: [...parsed.values()],
+  // Materialize the boot chains as graphs too, so the dashboard can load an
+  // existing config-defined pipeline into the editor (GET /api/ui/pipelines/:id).
+  graphs: [...parsed.values()].map(chainToGraph),
+});
 
 // ── Models directory watcher (Slice A) ──
 // Detects candidate `*.gguf` models and emits `models:changed` for the
@@ -131,7 +136,7 @@ const applyService = createApplyService({
   reload: async () => {
     const cfg = await loadGatewayConfig();
     const fresh = parseChains(cfg);
-    await registry.reload([], [...fresh.values()]);
+    await registry.reload([...fresh.values()].map(chainToGraph), [...fresh.values()]);
   },
   getCurrentChains: () => [...registry.asMap().keys()],
 });
@@ -162,7 +167,15 @@ const dashboardHandler = createDashboardRouter({
         lastExecution: tracker.get(id)?.id ? new Date().toISOString() : null,
       };
     }),
+  getPipeline: (id) => registry.getGraph(id),
   registeredModels: () => Object.keys(config.llama.models ?? {}),
+  modelDetails: () =>
+    Object.entries(config.llama.models ?? {}).map(([id, m]) => ({
+      id,
+      file: m.file,
+      ctx: m.ctx,
+      temp: m.temp,
+    })),
   detectedModels: () => detectedModels,
   modelsDir: config.llama.modelsDir,
   autoRefresh: true,

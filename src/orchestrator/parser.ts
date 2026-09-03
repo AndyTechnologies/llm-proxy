@@ -13,6 +13,7 @@
  */
 import type { GatewayConfig } from "../config/schema.js";
 import type { Chain, Step, ResolvedStep } from "../types/chain.js";
+import type { GraphPipeline, GraphNode, GraphEdge } from "./graph.js";
 
 /** A fully resolved chain ready for the engine to execute. */
 export interface ParsedChain extends Chain {
@@ -82,4 +83,39 @@ export function parseChains(config: GatewayConfig): Map<string, ParsedChain> {
   }
 
   return chains;
+}
+
+/**
+ * Convert a legacy linear chain (ordered `generate`/`refine`/`passthrough`
+ * steps) into an equivalent `GraphPipeline` (linear: start → steps → end).
+ *
+ * The dashboard editor works in the graph model, so loading an existing
+ * config-defined chain requires materializing its steps as graph nodes. Every
+ * step in the config carries a `model` (enforced by `stepConfigSchema`), so
+ * each is emitted as an `llm_call` node — `passthrough` included, which the
+ * graph engine treats as a plain (non-prompted) provider call. Node ids reuse
+ * the step's `name` when present for stable, readable references.
+ *
+ * This is a one-way view helper: it does not attempt to round-trip control
+ * flow (on_429 / tool_calls_route) that the graph model expresses differently.
+ */
+export function chainToGraph(chain: ParsedChain): GraphPipeline {
+  const nodes: GraphNode[] = [{ id: "start", type: "start" }];
+  const edges: GraphEdge[] = [];
+
+  for (let i = 0; i < chain.steps.length; i++) {
+    const step = chain.steps[i];
+    const id = step.name ?? `step-${i}`;
+    nodes.push({ id, type: "llm_call", model: step.model });
+    edges.push({ from: i === 0 ? "start" : (chain.steps[i - 1].name ?? `step-${i - 1}`), to: id });
+  }
+
+  const lastId =
+    chain.steps.length === 0
+      ? "start"
+      : chain.steps[chain.steps.length - 1].name ?? `step-${chain.steps.length - 1}`;
+  nodes.push({ id: "end", type: "end" });
+  edges.push({ from: lastId, to: "end" });
+
+  return { id: chain.name, name: chain.displayName ?? chain.name, nodes, edges };
 }

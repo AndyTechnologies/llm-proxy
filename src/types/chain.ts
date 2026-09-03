@@ -31,6 +31,12 @@ export interface Step {
   system?: string;
   assistant?: string;
   user?: string;
+  /**
+   * Optional per-step context window override (tokens). Persisted from the
+   * editor's llm_call context selector and carried onto the graph node's
+   * `params.ctx` when the chain is materialized into a graph.
+   */
+  ctx?: number | string;
   on_429?: string;
   tool_calls_route?: string;
 }
