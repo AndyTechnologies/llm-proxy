@@ -51,7 +51,7 @@ Chain strategy is **pending** — delivery_strategy is auto-chain but no chain s
 - [x] 3.2 Create `src/dashboard/metrics.ts`: per-step aggregate metrics fed by engine/events
 - [x] 3.3 Create `src/dashboard/events.ts`: SSE pub/sub, bounded buffer + slow-client eviction/backpressure; test eviction (dashboard-api Req SSE)
 - [x] 3.4 Create `src/dashboard/service.ts`: apply — zod-validate draft → atomic write → `reload()`; rolls back on failure, writes nothing; error envelope `{error:{message,type,param,code}}` (config-load Req reload path)
-- [ ] 3.5 Create `src/dashboard/router.ts`: `/api/ui/pipelines|models|executions|:id/validate|apply|:execId/steps/:nodeId/retry|events(SSE)`(read-only) fetch handlers; normalized errors; `server.timeout(req,0)` on SSE
+- [x] 3.5 Create `src/dashboard/router.ts`: `/api/ui/pipelines|models|executions|:id/validate|apply|:execId/steps/:nodeId/retry|events(SSE)`(read-only) fetch handlers; normalized errors; `server.timeout(req,0)` on SSE
 - [ ] 3.6 Modify `src/server.ts`: add `/api/ui/*`(read-only) + `/ui`(read-only) branches; auth guard on `/api/ui/*`(read-only)+SSE when `BEARER_TOKEN` set, `/ui`(read-only) open (dashboard-api Req auth)
 - [ ] 3.7 Retry: manual retry only failed `llm_call`, max 1/step, non-streaming, result stored; RED already-retried refused + non-llm_call refused (dashboard-api Req retry)
 
