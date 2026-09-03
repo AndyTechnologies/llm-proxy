@@ -11,8 +11,12 @@
     "dev": "bun run --watch src/index.ts",
     "build": "bun build src/index.ts --target=bun --outdir dist",
     "build:binary": "bun build src/index.ts --compile --outfile dist/llm-proxy",
+    "build:binaries": "bun run scripts/build-binaries.ts",
     "start": "bun run src/index.ts",
     "test": "bun test",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "e2e-server": "bun run e2e/e2e-server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "eslint --fix ."
@@ -52,6 +56,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/bun": "^1.4.0",
     "@types/express": "^5.0.0",
     "@typescript-eslint/eslint-plugin": "^8.69.0",

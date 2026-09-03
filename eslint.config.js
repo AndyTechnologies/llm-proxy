@@ -44,6 +44,12 @@ export default defineConfig([
 	},
 	// Generated build output is not linted (dist/ is gitignored).
 	{
-		ignores: ["dist/**"],
+		ignores: [
+			"dist/**",
+			"test-results/**",
+			"playwright-report/**",
+			"blob-report/**",
+			"playwright/.cache/**",
+		],
 	},
 ]);

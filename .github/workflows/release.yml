@@ -1,0 +1,144 @@
+# ── Continuous Delivery / Release ──────────────────────────────────────────
+#
+# Triggered by pushing a semantic version tag `v<major>.<minor>.<patch>`:
+#   1. `build-binaries` — cross-compile the gateway into native executables for
+#      all six Bun 1.4 targets on a single Ubuntu runner, upload each as a
+#      unique artifact.
+#   2. `publish-release` — download every `llm-proxy-*` artifact, merge them,
+#      and create a GitHub Release with the binaries attached.
+#
+# Bun 1.4 cross-compiles REAL executables via `bun build --compile
+# --target=bun-<os>-<arch>`; Bun appends `.exe` automatically for the Windows
+# targets — no manual extension. Targets are the MUST use canonical Bun target
+# names, NOT triplet-style strings.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  # Creating the release requires write on contents.
+  contents: write
+
+jobs:
+  build-binaries:
+    name: cross-compile binaries (6 targets)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # PINNING: actions/checkout@v4 — pin to a commit SHA, e.g.
+        # actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        # PINNING: oven-sh/setup-bun@v2 — pin to a commit SHA for supply-chain
+        # hardening, e.g. oven-sh/setup-bun@f27d7f2c1b1e1f4e1f... (latest v2).
+        with:
+          bun-version: ${{ vars.BUN_VERSION || '1.4.0' }}
+      - name: Cache Bun install cache
+        uses: actions/cache@v4
+        # PINNING: actions/cache@v4 — pin to a commit SHA, e.g.
+        # actions/cache@5a3f4b5c1d2e3f... (latest v4 release)
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      # ── Cross-compile each target. Windows targets get `.exe` appended by
+      # Bun automatically; linux/darwin get no extension. Outfile names are
+      # `llm-proxy-bun-<os>-<arch>`. ──
+      - name: Compile linux-x64
+        run: bun build src/index.ts --compile --target=bun-linux-x64 --outfile ./dist/llm-proxy-bun-linux-x64
+      - name: Compile linux-arm64
+        run: bun build src/index.ts --compile --target=bun-linux-arm64 --outfile ./dist/llm-proxy-bun-linux-arm64
+      - name: Compile darwin-x64
+        run: bun build src/index.ts --compile --target=bun-darwin-x64 --outfile ./dist/llm-proxy-bun-darwin-x64
+      - name: Compile darwin-arm64
+        run: bun build src/index.ts --compile --target=bun-darwin-arm64 --outfile ./dist/llm-proxy-bun-darwin-arm64
+      - name: Compile windows-x64
+        run: bun build src/index.ts --compile --target=bun-windows-x64 --outfile ./dist/llm-proxy-bun-windows-x64
+      - name: Compile windows-arm64
+        run: bun build src/index.ts --compile --target=bun-windows-arm64 --outfile ./dist/llm-proxy-bun-windows-arm64
+
+      - name: Inspect dist contents
+        run: ls -la dist
+
+      # ── Upload each binary as a UNIQUE artifact so publish-release can merge
+      # them with a single glob download. `if-no-files-found: error` fails the
+      # job loudly if a target produced no file. ──
+      - name: Upload linux-x64 artifact
+        uses: actions/upload-artifact@v4
+        # PINNING: actions/upload-artifact@v4 — pin to a commit SHA, e.g.
+        # actions/upload-artifact@ab1f2c3d4e5f6... (latest v4 release)
+        with:
+          name: llm-proxy-bun-linux-x64
+          path: ./dist/llm-proxy-bun-linux-x64
+          if-no-files-found: error
+      - name: Upload linux-arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-proxy-bun-linux-arm64
+          path: ./dist/llm-proxy-bun-linux-arm64
+          if-no-files-found: error
+      - name: Upload darwin-x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-proxy-bun-darwin-x64
+          path: ./dist/llm-proxy-bun-darwin-x64
+          if-no-files-found: error
+      - name: Upload darwin-arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-proxy-bun-darwin-arm64
+          path: ./dist/llm-proxy-bun-darwin-arm64
+          if-no-files-found: error
+      - name: Upload windows-x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-proxy-bun-windows-x64
+          path: ./dist/llm-proxy-bun-windows-x64
+          if-no-files-found: error
+      - name: Upload windows-arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-proxy-bun-windows-arm64
+          path: ./dist/llm-proxy-bun-windows-arm64
+          if-no-files-found: error
+
+  publish-release:
+    name: publish GitHub release
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # PINNING: actions/checkout@v4 — pin to a commit SHA, e.g.
+        # actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Download all binary artifacts (merged)
+        uses: actions/download-artifact@v4
+        # PINNING: actions/download-artifact@v4 — pin to a commit SHA, e.g.
+        # actions/download-artifact@2434f5d6e7f8a9... (latest v4 release)
+        with:
+          pattern: llm-proxy-*
+          merge-multiple: true
+          path: ./release-assets
+      - name: Inspect merged release assets
+        run: ls -la ./release-assets
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        # PINNING: softprops/action-gh-release@v2 — pin to a commit SHA, e.g.
+        # softprops/action-gh-release@9c1e0c0... (latest v2 release)
+        with:
+          tag_name: ${{ github.ref }}
+          name: ${{ github.ref }}
+          body: "Automated release"
+          files: ./release-assets/
+          draft: false
+          prerelease: false
+          generate_release_notes: true

@@ -1,0 +1,92 @@
+# ── Continuous Integration ──────────────────────────────────────────────────
+#
+# Runs on every pull request targeting `master`:
+#   1. `test-unit`  — lint, typecheck, unit/integration tests (bun test).
+#   2. `e2e`        — Playwright dashboard tests against the fake harness
+#                     (requires `test-unit` to have passed first).
+#
+# The default workflow permission is read-only; no extra `permissions` block is
+# added so the workflow stays least-privileged (it only checks out and reads).
+
+name: ci
+
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-unit:
+    name: unit · lint · typecheck (bun)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # PINNING: actions/checkout@v4 — pin to a commit SHA for supply-chain
+        # hardening, e.g. actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        # PINNING: oven-sh/setup-bun@v2 — pin to a commit SHA, e.g.
+        # oven-sh/setup-bun@f27d7f2c1b1e1f4e1f... (latest v2 release)
+        with:
+          bun-version: ${{ vars.BUN_VERSION || '1.4.0' }}
+      - name: Cache Bun install cache
+        uses: actions/cache@v4
+        # PINNING: actions/cache@v4 — pin to a commit SHA, e.g.
+        # actions/cache@5a3f4b5c1d2e3f... (latest v4 release)
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Unit + integration tests
+        run: bun run test
+
+  e2e:
+    name: E2E dashboard (Playwright)
+    runs-on: ubuntu-latest
+    needs: test-unit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # PINNING: actions/checkout@v4 — pin to a commit SHA for supply-chain
+        # hardening, e.g. actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        # PINNING: oven-sh/setup-bun@v2 — pin to a commit SHA, e.g.
+        # oven-sh/setup-bun@f27d7f2c1b1e1f4e1f... (latest v2 release)
+        with:
+          bun-version: ${{ vars.BUN_VERSION || '1.4.0' }}
+      - name: Cache Bun install cache
+        uses: actions/cache@v4
+        # PINNING: actions/cache@v4 — pin to a commit SHA, e.g.
+        # actions/cache@5a3f4b5c1d2e3f... (latest v4 release)
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+      - name: Install Playwright Chromium (with system deps)
+        run: bunx playwright install --with-deps chromium
+      - name: Run Playwright E2E tests
+        run: bun run test:e2e
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        # PINNING: actions/upload-artifact@v4 — pin to a commit SHA, e.g.
+        # actions/upload-artifact@ab1f2c3d4e5f6... (latest v4 release)
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore

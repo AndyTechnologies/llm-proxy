@@ -17,6 +17,13 @@ file.log
 
 # Build output
 dist/
+
+# Playwright E2E output
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # Local AI runtime state
 .atl/
 

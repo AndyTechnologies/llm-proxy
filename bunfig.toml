@@ -1,0 +1,7 @@
+# Bun configuration.
+#
+# `bun test` (the `test` npm script) is scoped to `src/` so Playwright's E2E
+# specs under `e2e/` (run via `bun run test:e2e`) are never picked up by the
+# unit/integration runner. Unit tests live next to code under `src/`.
+[test]
+root = "./src"
