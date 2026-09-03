@@ -27,6 +27,9 @@ orchestration pipelines exposed as virtual models.
   validation, and SSRF prevention.
 - **Health endpoints** — liveness (`/health/live`) and backend-gated readiness
   (`/health/ready`).
+- **Dashboard UI** — a static SPA at `/ui` for inspecting pipelines, models,
+  and executions and building/validating/hot-applying pipeline graphs, backed
+  by the `/api/ui/*` REST + SSE surface.
 - **Graceful shutdown** — drains in-flight requests before exiting.
 
 ---
@@ -147,6 +150,7 @@ chains:
 | -------------- | ---------------------------------------------- |
 | `CONFIG_FILE`  | Override the config file path.                 |
 | `BEARER_TOKEN` | When set, require `Authorization: Bearer <token>` on every request. |
+| `UI_DIR`       | Override the dashboard SPA directory served at `/ui` (default `./src/ui`). |
 
 ---
 
@@ -175,6 +179,55 @@ chains:
 | GET    | `/health`              | Aggregate health (legacy).                        |
 | GET    | `/health/live`         | Liveness.                                         |
 | GET    | `/health/ready`        | Readiness (gated on backend running).             |
+| GET    | `/ui`                  | Dashboard SPA (static, always open).              |
+| GET    | `/api/ui/pipelines`    | Registered pipeline summaries.                    |
+| GET    | `/api/ui/models`       | Merged registered + detected models.              |
+| GET    | `/api/ui/executions`   | Recent execution history (bounded).               |
+| POST   | `/api/ui/pipelines/:id/validate` | Validate a graph draft.                 |
+| POST   | `/api/ui/apply`        | Zod-validate + atomically apply a config.         |
+| POST   | `/api/ui/executions/:id/steps/:node/retry` | Retry a failed `llm_call` step. |
+| GET    | `/api/ui/events`       | SSE event stream (live updates).                  |
+
+---
+
+## Dashboard
+
+The gateway ships a **dashboard SPA** at [`/ui`](http://127.0.0.1:8090/ui) —
+a vanilla HTML/CSS/JS editor (no framework, no D3) for inspecting and managing
+pipelines:
+
+- Browse **pipelines**, **models**, and **executions**.
+- Build a pipeline graph via drag-and-drop (or keyboard: press 1–6 with the
+  canvas focused) from `start`, `llm_call`, `condition`, `loop`, `pipeline`,
+  and `end` nodes, and connect them.
+- Configure `condition` nodes with a **closed-set AST builder** — only
+  `compare`, `logical`, `not`, and `exists` over `lastResponse.status`,
+  `lastResponse.content`, `error`, and variables. There is **no free-form code
+  entry**.
+- **Validate** the graph against the `/api/ui/pipelines/:id/validate` endpoint,
+  which checks cyclicity (except loop boundaries), model existence, exactly one
+  `start` and ≥1 `end`, and required fields per node type.
+- **Apply** the composed config via `/api/ui/apply`, which zod-validates and
+  writes atomically (a failed apply writes nothing and the editor retains its
+  previous state).
+
+The SPA subscribes to `/api/ui/events` (SSE) for live updates: execution
+progress, `pipeline:reloaded`, and `models:changed`.
+
+The dashboard REST + SSE surface (`/api/ui/*`) is protected by the same Bearer
+auth as the rest of the API when `BEARER_TOKEN` is set; the static `/ui` SPA
+remains open (see [Security](#security)).
+
+### Model list semantics (`/api/ui/models`)
+
+`GET /api/ui/models` returns `{ models, modelsDir, autoRefresh }`, where each
+model is `{ id, file, loaded }`. The list **merges** two sources:
+
+- **Registered** models from `config.llama.models` — reported with `loaded: true`.
+- **Detected** `.gguf` files on disk in `modelsDir` that are **not** in config —
+  reported with `loaded: false` as **candidates only**. Detection never
+  auto-registers a model; to serve a detected file you must add it to
+  `config.llama.models` and **apply** the config (e.g. through the Dashboard).
 
 ---
 
@@ -190,6 +243,8 @@ src/providers/     Provider contract (+ llama-server implementation)
 src/orchestrator/  chain parsing (parser) + execution (engine)
 src/routes/        HTTP handlers: chat, completions, health, models
 src/middleware/    auth guard, error handling, passthrough proxy
+src/dashboard/     /api/ui/* REST+SSE, apply, tracker, metrics, retry
+src/ui/            dashboard SPA (static HTML/CSS/JS served at /ui)
 src/types/         shared + OpenAI types
 src/utils/         logging, ids, content extraction, sanitization
 ```

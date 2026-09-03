@@ -13,8 +13,6 @@
  * should not be forced to configure auth. Production deployments set the env
  * and get automatic protection without code changes.
  */
-const REQUIRED_TOKEN = process.env.BEARER_TOKEN;
-
 const UNAUTHORIZED = new Response(
   JSON.stringify({
     error: {
@@ -28,9 +26,21 @@ const UNAUTHORIZED = new Response(
 );
 
 /**
+ * The required token, read at call time from the environment.
+ *
+ * NOT a module-load const: reading `process.env.BEARER_TOKEN` at call time
+ * lets tests toggle the token between requests (and re-apply after config
+ * changes) without re-importing the module. When unset, auth is disabled.
+ */
+function requiredToken(): string | undefined {
+  return process.env.BEARER_TOKEN;
+}
+
+/**
  * @returns null when authorized (continue), or a 401 Response to short-circuit.
  */
 export function authorize(req: Request): Response | null {
+  const REQUIRED_TOKEN = requiredToken();
   if (!REQUIRED_TOKEN) return null;
 
   const header = req.headers.get("authorization");
