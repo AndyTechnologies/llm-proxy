@@ -29,7 +29,7 @@ Chain strategy is **pending** — delivery_strategy is auto-chain but no chain s
 
 ## Phase 1 — Slice A: Registry + Atomic Config Write
 
-- [ ] 1.1 Create `src/orchestrator/registry.ts`: `PipelineRegistry` with `asMap(): Map<string,ParsedChain>`, `getGraph(id)`, `reload(graphs,chains)` — build+validate all, swap only on full success; RED/GREEN for swap/no-swap on `registry.test.ts`
+- [x] 1.1 Create `src/orchestrator/registry.ts`: `PipelineRegistry` with `asMap(): Map<string,ParsedChain>`, `getGraph(id)`, `reload(graphs,chains)` — build+validate all, swap only on full success; RED/GREEN for swap/no-swap on `registry.test.ts`
 - [ ] 1.2 Create `src/config/write.ts`: atomic persist — `Bun.write`(tmp in same dir) + `fs.renameSync`; re-validate via zod before persist; test failed-write-leaves-prior-intact (config-load Req 1, scenarios)
 - [ ] 1.3 Create `src/config/defaults.ts`: generate minimal schema-valid config when file absent, scanning `modelsDir` for `*.gguf`; test missing-config-boots (config-load Req default gen)
 - [ ] 1.4 Create `src/config/watcher.ts`: scan `modelsDir` for `*.gguf` (case-insensitive paths), candidate-only; emit `models:changed` hook; test scan (dashboard-api model-list merge)
