@@ -24,7 +24,7 @@ function chain(
   return {
     name,
     displayName: name,
-    steps: steps.map((s, i) => ({
+    steps: steps.map((s) => ({
       name: s.name,
       type: "generate",
       provider: "llama-server",

@@ -16,15 +16,8 @@
  */
 import { scanGgufFiles, bunDefaultsDeps, type DefaultsDeps } from "./defaults.js";
 
-/** Event map for the models watcher. */
-export interface ModelsWatcherEvents {
-  models: "models:changed";
-}
-
 /** Listener signature for a models:changed event (fresh candidate set). */
-type Listener<T extends keyof ModelsWatcherEvents> = (
-  payload: string[],
-) => void;
+type Listener = (payload: string[]) => void;
 
 /** Injectable deps: override `scan` for tests (defaults to real gguf scan). */
 export interface ModelsWatcherDeps {
@@ -39,11 +32,8 @@ export interface ModelsWatcher {
   scan(): Promise<string[]>;
   /** Scan and, if the candidate set changed versus the last emitted set, emit. */
   refresh(): Promise<string[]>;
-  on<K extends keyof ModelsWatcherEvents>(
-    event: K,
-    cb: Listener<K>,
-  ): void;
-  off<K extends keyof ModelsWatcherEvents>(event: K, cb: Listener<K>): void;
+  on(event: "models:changed", cb: Listener): void;
+  off(event: "models:changed", cb: Listener): void;
 }
 
 /** Compare two candidate sets ignoring order. */
@@ -60,7 +50,7 @@ export function createModelsWatcher(deps: ModelsWatcherDeps): ModelsWatcher {
     deps.scan ??
     (() => scanGgufFiles(deps.modelsDir, deps.defaultsDeps ?? bunDefaultsDeps));
 
-  const listeners = new Set<Listener<"models:changed">>();
+  const listeners = new Set<Listener>();
   // Candidate-only invariant: keep only local .gguf files regardless of what
   // the underlying scan returns. Initial baseline is empty so the first scan
   // only emits when it actually finds candidates.
@@ -86,10 +76,10 @@ export function createModelsWatcher(deps: ModelsWatcherDeps): ModelsWatcher {
       return files;
     },
     on(_event, cb) {
-      listeners.add(cb as Listener<"models:changed">);
+      listeners.add(cb);
     },
     off(_event, cb) {
-      listeners.delete(cb as Listener<"models:changed">);
+      listeners.delete(cb);
     },
   };
 }

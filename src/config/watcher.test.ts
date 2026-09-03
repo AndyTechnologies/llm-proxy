@@ -7,7 +7,7 @@
  * non-gguf files are never surfaced.
  */
 import { describe, expect, test } from "bun:test";
-import { createModelsWatcher, type ModelsWatcher } from "./watcher.js";
+import { createModelsWatcher } from "./watcher.js";
 
 describe("models watcher scan", () => {
   test("surfaces only .gguf candidates, case-insensitively", async () => {

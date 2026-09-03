@@ -31,7 +31,7 @@ function validConfig(): GatewayConfig {
       maxRestartAttempts: 5,
       modelsDir: "~/Models",
       autoload: true,
-      router: {},
+      router: {} as never,
       models: {},
     },
     chains: {},

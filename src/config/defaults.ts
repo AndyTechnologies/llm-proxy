@@ -57,13 +57,10 @@ export function buildDefaultConfig(
     models[modelIdFromFile(f)] = { file: f, ctx: DEFAULT_CTX, temp: DEFAULT_TEMP };
   }
 
-  const cfg: GatewayConfig = {
-    server: {},
-    llama: { modelsDir, models },
-    chains: {},
-  };
-  // Route through the schema to guarantee the produced config is valid.
-  return configSchema.parse(cfg);
+  // Route through the schema (which fills all defaults) to guarantee the
+  // produced config is schema-valid.
+  const raw = { server: {}, llama: { modelsDir, models }, chains: {} };
+  return configSchema.parse(raw);
 }
 
 /**
