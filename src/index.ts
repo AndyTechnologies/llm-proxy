@@ -16,13 +16,21 @@ import { loadGatewayConfig } from "./config/index.js";
 import { ERR_CONFIG_NOT_FOUND } from "./config/load.js";
 import { generateDefaultConfig } from "./config/defaults.js";
 import { createModelsWatcher } from "./config/watcher.js";
+import { persistConfig } from "./config/write.js";
 import { parseChains } from "./orchestrator/parser.js";
 import { createPipelineRegistry } from "./orchestrator/registry.js";
+import { validateGraph } from "./orchestrator/graph.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
 import { createApp } from "./server.js";
 import { createLlamaServeManager } from "./backend/manager.js";
 import { logJson } from "./utils/logger.js";
 import { shutdown } from "./shutdown.js";
+import { createExecutionTracker } from "./dashboard/execution-tracker.js";
+import { createEventBus } from "./dashboard/events.js";
+import { createMetricsCollector } from "./dashboard/metrics.js";
+import { createApplyService } from "./dashboard/service.js";
+import { createDashboardRouter } from "./dashboard/router.js";
+import { runStepRetry } from "./dashboard/retry.js";
 import type { GatewayConfig } from "./config/schema.js";
 
 // ── Structured JSON logging (S3.1 — health-endpoints Req 4) ──
@@ -85,6 +93,14 @@ const registry = createPipelineRegistry({ chains: [...parsed.values()] });
 // dashboard-api model-list merge (Slice C). Candidate-only — no auto-register.
 const watcher = createModelsWatcher({ modelsDir: config.llama.modelsDir });
 
+// Latest candidate set, kept live by the watcher's `models:changed` event so
+// the dashboard /api/ui/models list reflects newly detected `.gguf` files
+// without the router awaiting an async scan at request time.
+let detectedModels: string[] = [];
+watcher.on("models:changed", (files) => {
+  detectedModels = files;
+});
+
 // ── Providers ──
 const providers = new Map([
   [
@@ -96,8 +112,103 @@ const providers = new Map([
   ],
 ]);
 
+// ── Dashboard (Slice C: /api/ui REST+SSE, apply, retry) ──
+// The dashboard application stack is built once at boot and handed to the
+// server as `deps.dashboard.handler`. Sources are read live from the registry,
+// manager, and watcher so a hot-applied config is reflected on the next request.
+const tracker = createExecutionTracker({ maxHistory: 100 });
+const bus = createEventBus({ bufferSize: 100 });
+const metrics = createMetricsCollector();
+const configPath =
+  process.env.CONFIG_FILE ?? "./llm-proxy.config.yaml";
+
+const applyService = createApplyService({
+  configPath,
+  // Atomic persist (validation-gated; invalid config writes nothing).
+  persist: (cfg) => persistConfig(cfg, configPath),
+  // After a successful persist, reload the registry from the freshly written
+  // config file so the new chains go live without a restart.
+  reload: async () => {
+    const cfg = await loadGatewayConfig();
+    const fresh = parseChains(cfg);
+    await registry.reload([], [...fresh.values()]);
+  },
+  getCurrentChains: () => [...registry.asMap().keys()],
+});
+
+// Resolve a node's runtime type for retry gating: graph pipelines expose their
+// node types directly; linear chains treat every step as an llm_call.
+function nodeTypeFor(pipelineId: string, nodeId: string): string | undefined {
+  const graph = registry.getGraph(pipelineId);
+  if (graph) {
+    return graph.nodes.find((n) => n.id === nodeId)?.type;
+  }
+  return registry.asMap().has(pipelineId) ? "llm_call" : undefined;
+}
+
+// Non-streaming retry of a failed llm_call step (task 3.7). The provider is
+// the managed llama-server backend; the model comes from the graph/chain.
+const getModel = registry.getGraph.bind(registry);
+
+const dashboardHandler = createDashboardRouter({
+  chainSummaries: () =>
+    [...registry.asMap().keys()].map((id) => {
+      const graph = registry.getGraph(id);
+      const chain = registry.asMap().get(id);
+      return {
+        id,
+        description: null,
+        nodeCount: graph?.nodes.length ?? chain?.steps.length ?? 0,
+        lastExecution: tracker.get(id)?.id ? new Date().toISOString() : null,
+      };
+    }),
+  registeredModels: () => Object.keys(config.llama.models ?? {}),
+  detectedModels: () => detectedModels,
+  modelsDir: config.llama.modelsDir,
+  autoRefresh: true,
+  tracker,
+  bus,
+  metrics,
+  validateGraph,
+  applyService,
+  runRetry: async ({ executionId, nodeId }) => {
+    const exec = tracker.get(executionId);
+    const pipelineId = exec?.pipelineId ?? "unknown";
+    const provider = providers.get("llama-server");
+    if (!provider) {
+      return {
+        ok: false,
+        error: {
+          message: "llama-server provider not available",
+          type: "server_error",
+          code: null,
+        },
+      };
+    }
+    return runStepRetry({
+      tracker,
+      // The retry runs a NON-streaming chat call through the real provider.
+      provider: { chat: (payload) => provider.chat(payload) },
+      getNodeType: nodeTypeFor,
+      requestPayload: () => ({}),
+      model: getModel(pipelineId)?.nodes.find((n) => n.id === nodeId)?.model ?? "",
+      executionId,
+      nodeId,
+      pipelineId,
+    });
+  },
+  getNodeType: nodeTypeFor,
+});
+
 // ── Bun.serve fetch handler ──
-const app = createApp({ config, registry, chains: registry.asMap(), providers, manager });
+const app = createApp({
+  config,
+  registry,
+  chains: registry.asMap(),
+  providers,
+  manager,
+  dashboard: { handler: dashboardHandler },
+});
 
 const server = Bun.serve({
   port: config.server.port,

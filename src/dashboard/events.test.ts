@@ -106,7 +106,7 @@ describe("dashboard event bus", () => {
     // Live subscriber delivered all 6.
     expect(received).toHaveLength(6);
     // Replay buffer only keeps the newest 3.
-    const buffered = bus.drainBuffer();
+    const buffered = bus.drainBuffer() as { type: string; nodeId: string }[];
     expect(buffered).toHaveLength(3);
     expect(buffered[0].nodeId).toBe("n3");
   });

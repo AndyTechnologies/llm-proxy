@@ -17,20 +17,12 @@ function makeDeps(overrides: Partial<DashboardRouterDeps> = {}): DashboardRouter
     getCurrentChains: () => ["c1"],
   });
   return {
-    chainNames: ["c1", "c2"],
-    chainDescriptions: new Map([
-      ["c1", "chain one"],
-      ["c2", "chain two"],
-    ]),
-    nodeCounts: new Map([
-      ["c1", 3],
-      ["c2", 5],
-    ]),
-    lastExecution: new Map([
-      ["c1", "2026-09-01T00:00:00Z"],
-    ]),
-    registeredModels: ["m1.gguf", "m2.gguf"],
-    detectedModels: ["m3.gguf"],
+    chainSummaries: () => [
+      { id: "c1", description: "chain one", nodeCount: 3, lastExecution: "2026-09-01T00:00:00Z" },
+      { id: "c2", description: "chain two", nodeCount: 5, lastExecution: null },
+    ],
+    registeredModels: () => ["m1.gguf", "m2.gguf"],
+    detectedModels: () => ["m3.gguf"],
     modelsDir: "/models",
     autoRefresh: true,
     tracker,

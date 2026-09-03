@@ -40,18 +40,18 @@ export interface RetryRunResult {
 
 /** Injected dependencies for the dashboard router. */
 export interface DashboardRouterDeps {
-  /** Ordered registered pipeline/chain names. */
-  chainNames: string[];
-  /** id → human description. */
-  chainDescriptions: Map<string, string>;
-  /** id → node count for the pipeline list. */
-  nodeCounts: Map<string, number>;
-  /** id → ISO timestamp of the last execution (or none). */
-  lastExecution: Map<string, string>;
-  /** Registered model file names (config.llama.models keys). */
-  registeredModels: string[];
-  /** Detected (candidate-only) `.gguf` files from the watcher. */
-  detectedModels: string[];
+  /**
+   * Resolve the ordered pipeline summaries. A function (not a static array) so
+   * a runtime registry `reload()` is reflected on the next request.
+   */
+  chainSummaries: () => PipelineSummary[];
+  /**
+   * Resolve the registered (config.llama.models) model file names. A function
+   * so re-applied configs update the list live.
+   */
+  registeredModels: () => string[];
+  /** Resolve the detected (candidate-only) `.gguf` files from the watcher. */
+  detectedModels: () => string[];
   /** The models directory (for the models list payload). */
   modelsDir: string;
   /** Whether the dashboard polls/refreshes models automatically. */
@@ -76,6 +76,14 @@ export interface DashboardRouterDeps {
   }) => Promise<RetryRunResult>;
   /** Resolve a node's type for a given execution (retry gating). */
   getNodeType: (executionId: string, nodeId: string) => string | undefined;
+}
+
+/** A pipeline summary for the /pipelines list. */
+export interface PipelineSummary {
+  id: string;
+  description: string | null;
+  nodeCount: number;
+  lastExecution: string | null;
 }
 
 /** JSON response helper. */
@@ -151,24 +159,18 @@ export function createDashboardRouter(deps: DashboardRouterDeps) {
     async function handle(): Promise<Response> {
       // ── GET /api/ui/pipelines ──
       if (req.method === "GET" && sub.length === 1 && sub[0] === "pipelines") {
-        const list = deps.chainNames.map((id) => ({
-          id,
-          description: deps.chainDescriptions.get(id) ?? null,
-          nodeCount: deps.nodeCounts.get(id) ?? 0,
-          lastExecution: deps.lastExecution.get(id) ?? null,
-        }));
-        return json(list);
+        return json(deps.chainSummaries());
       }
 
       // ── GET /api/ui/models ──
       if (req.method === "GET" && sub.length === 1 && sub[0] === "models") {
         const seen = new Set<string>();
         const models: { id: string; file: string; loaded: boolean }[] = [];
-        for (const file of deps.registeredModels) {
+        for (const file of deps.registeredModels()) {
           models.push({ id: file, file, loaded: true });
           seen.add(file);
         }
-        for (const file of deps.detectedModels) {
+        for (const file of deps.detectedModels()) {
           if (seen.has(file)) continue;
           models.push({ id: file, file, loaded: false });
         }
@@ -205,7 +207,7 @@ export function createDashboardRouter(deps: DashboardRouterDeps) {
         }
         const graph = normalizeGraph(sub[1], raw);
         const result = deps.validateGraph(graph, {
-          knownModels: deps.registeredModels,
+          knownModels: deps.registeredModels(),
         });
         if (result.ok) return json({ valid: true });
         return json({ valid: false, errors: result.errors });

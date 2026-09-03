@@ -1,6 +1,5 @@
 import { describe, it, expect } from "bun:test";
 import { createExecutionTracker } from "./execution-tracker.js";
-import type { ExecutionStatus } from "./execution-tracker.js";
 
 describe("execution-tracker", () => {
   it("records an execution and retrieves it", () => {

@@ -50,12 +50,11 @@ function dashboardDeps(): NonNullable<ServerDeps["dashboard"]> {
     getCurrentChains: () => ["c1"],
   });
   const handler = createDashboardRouter({
-    chainNames: ["c1"],
-    chainDescriptions: new Map([["c1", "desc"]]),
-    nodeCounts: new Map([["c1", 3]]),
-    lastExecution: new Map(),
-    registeredModels: ["m1.gguf"],
-    detectedModels: [],
+    chainSummaries: () => [
+      { id: "c1", description: "desc", nodeCount: 3, lastExecution: null },
+    ],
+    registeredModels: () => ["m1.gguf"],
+    detectedModels: () => [],
     modelsDir: "/models",
     autoRefresh: true,
     tracker,

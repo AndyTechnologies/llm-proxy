@@ -2,7 +2,9 @@ import { describe, it, expect } from "bun:test";
 import { createApplyService } from "./service.js";
 import type { ApplyDeps } from "./service.js";
 
-function makeDeps(overrides: Partial<ApplyDeps> = {}): ApplyDeps {
+function makeDeps(overrides: Partial<ApplyDeps> = {}): ApplyDeps & {
+  getPersisted: () => boolean;
+} {
   let written: boolean = false;
   let currentChains: string[] = [];
   return {
