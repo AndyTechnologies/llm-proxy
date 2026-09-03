@@ -69,6 +69,29 @@ llama:
 # Default chain invoked when no X-Chain-ID header is provided.
 defaultChain: orchestrator
 
+# Dashboard (Slice D)
+# ----------------
+# A static SPA is served at /ui — open a browser to http://<host>:<port>/ui to
+# inspect pipelines/models/executions and build+validate+hot-apply pipeline
+# graphs. The SPA talks to the /api/ui/* REST + SSE surface and is open even
+# when BEARER_TOKEN protects the API.
+#
+# /api/ui/* endpoints
+#   GET  /api/ui/pipelines                      → pipeline summaries
+#   GET  /api/ui/models                         → merged registered + detected models
+#   GET  /api/ui/executions?limit=N             → recent execution history (bounded)
+#   POST /api/ui/pipelines/:id/validate         → validate a graph draft
+#   POST /api/ui/apply                          → zod-validate + atomically apply config
+#   POST /api/ui/executions/:id/steps/:node/retry → retry a failed llm_call step
+#   GET  /api/ui/events                         → SSE live updates
+#
+# Model list semantics (/api/ui/models):
+#   The list merges registered models from `llama.models` (loaded: true) with
+#   `.gguf` files detected on disk in `llama.modelsDir` (loaded: false). On-disk
+#   files are CANDIDATES ONLY — they are never auto-registered. To serve a
+#   detected file, add it to `llama.models` and apply the config (via the
+#   dashboard, which atomically persists and reloads).
+
 # Chain definitions — virtual models invocable via "gateway/<name>" or X-Chain-ID.
 # Each chain is an ordered list of steps executed sequentially.
 #
