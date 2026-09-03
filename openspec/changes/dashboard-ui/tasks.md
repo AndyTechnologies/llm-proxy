@@ -47,7 +47,7 @@ Chain strategy is **pending** — delivery_strategy is auto-chain but no chain s
 
 ## Phase 3 — Slice C: Dashboard API + SSE + Tracker
 
-- [ ] 3.1 Create `src/dashboard/execution-tracker.ts`: in-memory history, N=100 bound, `ExecutionStatus`; test bounds (dashboard-api Req executions)
+- [x] 3.1 Create `src/dashboard/execution-tracker.ts`: in-memory history, N=100 bound, `ExecutionStatus`; test bounds (dashboard-api Req executions)
 - [ ] 3.2 Create `src/dashboard/metrics.ts`: per-step aggregate metrics fed by engine/events
 - [ ] 3.3 Create `src/dashboard/events.ts`: SSE pub/sub, bounded buffer + slow-client eviction/backpressure; test eviction (dashboard-api Req SSE)
 - [ ] 3.4 Create `src/dashboard/service.ts`: apply — zod-validate draft → atomic write → `reload()`; rolls back on failure, writes nothing; error envelope `{error:{message,type,param,code}}` (config-load Req reload path)
