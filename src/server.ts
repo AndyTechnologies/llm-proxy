@@ -41,6 +41,22 @@ export interface ServerDeps {
   chains: Map<string, ParsedChain>;
   providers: Map<string, Provider>;
   manager: LlamaServeManager;
+  /**
+   * Dashboard `/api/ui/*` handler + static `/ui` route (Slice C). When present,
+   * the dispatcher wires the dashboard REST/SSE branches; when absent
+   * (backward-compatible tests) `/api/ui/*` returns 404.
+   */
+  dashboard?: {
+    /**
+     * The dashboard REST+SSE fetch handler (handles `/api/ui/*`). Invoked with
+     * the request, the Bun.serve server handle, and the parsed URL.
+     */
+    handler: (
+      req: Request,
+      server: BunServer,
+      url: URL,
+    ) => Promise<Response> | Response;
+  };
 }
 
 /** The Bun.serve server handle passed as the fetch handler's 2nd argument. */
@@ -113,11 +129,44 @@ export function createApp(
       });
     }
 
+    // ── Static /ui SPA (always open — no auth) ──
+    // Served BEFORE the auth guard so the dashboard is reachable even when a
+    // BEARER_TOKEN protects the API. The actual SPA build lands in Slice D;
+    // this branch exists now so the route split + open-auth behavior is real.
+    if (req.method === "GET" && url.pathname === "/ui") {
+      return withSecurity(
+        corsHeaders(deps),
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "Dashboard UI not yet built (Slice D)",
+              type: "invalid_request_error",
+              param: null,
+              code: null,
+            },
+          }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+
     // ── Auth guard (optional Bearer) ──
     const denied = authGuard(req);
     if (denied) return denied;
 
     try {
+      // ── /api/ui/* dashboard REST + SSE (protected by the auth guard above) ──
+      // The dashboard handler is invoked AFTER auth so `/api/ui/*` + its SSE
+      // endpoint are gated whenever BEARER_TOKEN is set (dashboard-api Req
+      // "Auth boundary"). When no token is set, authGuard is a no-op and
+      // everything remains open.
+      if (deps.dashboard && url.pathname.startsWith("/api/ui/")) {
+        return withSecurity(
+          corsHeaders(deps),
+          await deps.dashboard.handler(req, server, url),
+        );
+      }
+
       // ── GET /health, /health/live, /health/ready (aggregate + live/ready) ──
       // S3.1: the health handler dispatches each path. /health stays the
       // legacy aggregate; /health/live and /health/ready implement liveness
