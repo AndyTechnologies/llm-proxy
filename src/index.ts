@@ -13,12 +13,17 @@
  * routes are migrated in S2b.
  */
 import { loadGatewayConfig } from "./config/index.js";
+import { ERR_CONFIG_NOT_FOUND } from "./config/load.js";
+import { generateDefaultConfig } from "./config/defaults.js";
+import { createModelsWatcher } from "./config/watcher.js";
 import { parseChains } from "./orchestrator/parser.js";
+import { createPipelineRegistry } from "./orchestrator/registry.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
 import { createApp } from "./server.js";
 import { createLlamaServeManager } from "./backend/manager.js";
 import { logJson } from "./utils/logger.js";
 import { shutdown } from "./shutdown.js";
+import type { GatewayConfig } from "./config/schema.js";
 
 // ── Structured JSON logging (S3.1 — health-endpoints Req 4) ──
 // Startup, shutdown, and fatal-error lines are emitted as single-line JSON
@@ -33,7 +38,22 @@ function log(level: string, message: string, extra: Record<string, unknown> = {}
 }
 
 // ── Config ──
-const config = await loadGatewayConfig();
+// Load the config from disk; when no config file exists, generate a minimal
+// schema-valid config from the detected `.gguf` models (config-load Req
+// "Config defaults generation") so the gateway can still boot.
+const MODEL_DIR_DEFAULT = "~/Models";
+function loadConfig(): Promise<GatewayConfig> {
+  return loadGatewayConfig().catch((err: unknown) => {
+    if (err instanceof Error && err.message.includes(ERR_CONFIG_NOT_FOUND)) {
+      log("warn", "no config file found; booting on generated defaults", {
+        modelsDir: MODEL_DIR_DEFAULT,
+      });
+      return generateDefaultConfig(MODEL_DIR_DEFAULT);
+    }
+    throw err;
+  });
+}
+const config = await loadConfig();
 log("info", "config loaded", { chains: Object.keys(config.chains).length });
 
 // ── Backend manager ──
@@ -51,7 +71,19 @@ try {
 }
 
 // ── Parse chains (fails fast on invalid config) ──
-const chains = parseChains(config);
+const parsed = parseChains(config);
+
+// ── Mutable chain registry (Slice A) ──
+// The registry supersedes the frozen `parseChains` Map as the source of truth
+// for chain resolution. Routes read chains via `registry.asMap()`, which also
+// allows a later atomic `reload()` (dashboard-api apply) to swap chains
+// without a restart.
+const registry = createPipelineRegistry({ chains: [...parsed.values()] });
+
+// ── Models directory watcher (Slice A) ──
+// Detects candidate `*.gguf` models and emits `models:changed` for the
+// dashboard-api model-list merge (Slice C). Candidate-only — no auto-register.
+const watcher = createModelsWatcher({ modelsDir: config.llama.modelsDir });
 
 // ── Providers ──
 const providers = new Map([
@@ -65,7 +97,7 @@ const providers = new Map([
 ]);
 
 // ── Bun.serve fetch handler ──
-const app = createApp({ config, chains, providers, manager });
+const app = createApp({ config, registry, chains: registry.asMap(), providers, manager });
 
 const server = Bun.serve({
   port: config.server.port,
@@ -81,9 +113,19 @@ log(
 log(
   "info",
   "virtual models",
-  { models: [...chains.keys()].map((n) => `gateway/${n}`) },
+  { models: [...registry.asMap().keys()].map((n) => `gateway/${n}`) },
 );
 log("info", "backend", { baseUrl: manager.status().baseUrl });
+
+// ── Initial models watcher scan (candidate-only, harmless if absent) ──
+try {
+  const candidates = await watcher.refresh();
+  log("info", "models watcher scanned", { candidates: candidates.length });
+} catch (err) {
+  log("warn", "models watcher initial scan skipped", {
+    message: (err as Error).message,
+  });
+}
 
 // ── Graceful shutdown ──
 // `shutdown` lives in src/shutdown.ts (pure, side-effect-free, importable by

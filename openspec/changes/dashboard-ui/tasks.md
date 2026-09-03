@@ -33,8 +33,8 @@ Chain strategy is **pending** — delivery_strategy is auto-chain but no chain s
 - [x] 1.2 Create `src/config/write.ts`: atomic persist — `Bun.write`(tmp in same dir) + `fs.renameSync`; re-validate via zod before persist; test failed-write-leaves-prior-intact (config-load Req 1, scenarios)
 - [x] 1.3 Create `src/config/defaults.ts`: generate minimal schema-valid config when file absent, scanning `modelsDir` for `*.gguf`; test missing-config-boots (config-load Req default gen)
 - [x] 1.4 Create `src/config/watcher.ts`: scan `modelsDir` for `*.gguf` (case-insensitive paths), candidate-only; emit `models:changed` hook; test scan (dashboard-api model-list merge)
-- [ ] 1.5 Modify `src/index.ts`: construct registry + defaults + watcher; wire into `createApp` deps; chain resolution reads registry not frozen `parseChains`
-- [ ] 1.6 Modify `src/routes/models.ts`/`health.ts` (read-only consumers unchanged): read chains via registry `.asMap()`; verify existing route tests stay green
+- [x] 1.5 Modify `src/index.ts`: construct registry + defaults + watcher; wire into `createApp` deps; chain resolution reads registry not frozen `parseChains`
+- [x] 1.6 Modify `src/routes/models.ts`/`health.ts` (read-only consumers unchanged): read chains via registry `.asMap()`; verify existing route tests stay green
 
 ## Phase 2 — Slice B: Graph Engine, AST, Composition, Hybrid
 

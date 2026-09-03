@@ -18,6 +18,7 @@
  */
 import type { GatewayConfig } from "./config/schema.js";
 import type { ParsedChain } from "./orchestrator/parser.js";
+import type { PipelineRegistry } from "./orchestrator/registry.js";
 import type { Provider } from "./providers/types.js";
 import type { LlamaServeManager } from "./backend/manager.js";
 import type { Server } from "bun";
@@ -30,6 +31,13 @@ import { createCompletionsHandler } from "./routes/completions.js";
 
 export interface ServerDeps {
   config: GatewayConfig;
+  /**
+   * Mutable registry — the source of truth for chain resolution (Slice A).
+   * When present, the routes read their chains from `registry.asMap()`; when
+   * absent (backward-compatible tests), they fall back to the frozen `chains`
+   * map. This keeps the registry additive/Map-compatible per the design.
+   */
+  registry?: PipelineRegistry;
   chains: Map<string, ParsedChain>;
   providers: Map<string, Provider>;
   manager: LlamaServeManager;
@@ -61,23 +69,29 @@ function corsHeaders(deps: ServerDeps): Record<string, string> {
 export function createApp(
   deps: ServerDeps,
 ): (req: Request, server: BunServer) => Promise<Response> {
+  // Slice A: the mutable registry is the source of truth for chain resolution.
+  // Routes read the current chains via `registry.asMap()` so a runtime `reload()`
+  // can swap chains without a restart. When no registry is injected (existing
+  // route tests), fall back to the frozen `chains` map — registry is additive.
+  const chains = deps.registry?.asMap() ?? deps.chains;
+
   const modelsHandler = createModelsHandler({
-    chains: deps.chains,
+    chains,
     manager: deps.manager,
   });
   const healthHandler = createHealthHandler({
     config: deps.config,
-    chains: deps.chains,
+    chains,
     manager: deps.manager,
   });
   const chatHandler = createChatHandler({
-    chains: deps.chains,
+    chains,
     providers: deps.providers,
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,
   });
   const completionsHandler = createCompletionsHandler({
-    chains: deps.chains,
+    chains,
     providers: deps.providers,
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,
