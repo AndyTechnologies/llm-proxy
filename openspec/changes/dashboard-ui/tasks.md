@@ -65,4 +65,5 @@ Chain strategy is **pending** — delivery_strategy is auto-chain but no chain s
 
 ## Phase 5 — Docs / Cleanup
 
-- [ ] 5.1 Update `config.example.yaml` / README with dashboard + `/ui`(read-only) + `/api/ui/*`(read-only) usage; document `/api/ui/models`(read-only) model-candidate semantics- [ ] 5.2 Archive maintenance: ensure spec delta scenarios all covered by tests; remove any scratch code
+- [x] 5.1 Update `config.example.yaml` / README with dashboard + `/ui`(read-only) + `/api/ui/*`(read-only) usage; document `/api/ui/models`(read-only) model-candidate semantics
+- [x] 5.2 Archive maintenance: ensure spec delta scenarios all covered by tests; remove any scratch code

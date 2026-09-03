@@ -27,16 +27,13 @@ export const ctxFields = [
   "lastResponse.status",
   "lastResponse.content",
   "error",
-] ;
+];
 
 /** Valid comparison operators for a `compare` expression. */
 export const compareOps = ["==", "!=", "<", "<=", ">", ">="];
 
 /** Valid condition operators (compare/logical/not/exists only). */
 export const conditionOps = ["compare", "logical", "not", "exists"];
-
-const modelKey = Symbol("modelDraft");
-const conditionKey = Symbol("conditionDraft");
 
 /**
  * Create a new node with type-appropriate default fields. The editor keeps
@@ -187,6 +184,3 @@ function fieldChild(form) {
   if (!form) return null;
   return buildCondition({ op: form.op, field: form.field, op2: form.op2, value: form.value });
 }
-
-// Reserved for future wiring of model/condition drafts to nodes.
-export { modelKey, conditionKey };
