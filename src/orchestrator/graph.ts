@@ -48,6 +48,27 @@ export interface GraphNode {
   pipeline?: string;
   /** Optional input parameters for a `pipeline` composition node. */
   params?: Record<string, string>;
+  /**
+   * `llm_call` message mode — how the payload messages are built from the
+   * original request + execution context (the graph twin of the linear
+   * `Step.type`). `generate` seeds with the user messages (plus optional
+   * `system`/`assistant`), `refine` re-feeds the previous step's content,
+   * `passthrough` forwards the original messages unchanged. Absent on
+   * non-`llm_call` nodes.
+   */
+  mode?: "generate" | "refine" | "passthrough";
+  /** Optional per-node context window override (tokens) → `params.ctx`. */
+  ctx?: number | string;
+  /** Optional system-message scaffold for `generate`/`refine` modes. */
+  system?: string;
+  /** Optional assistant-message scaffold for `generate`/`refine` modes. */
+  assistant?: string;
+  /** Optional user-message scaffold (unused by current modes; reserved). */
+  user?: string;
+  /** `llm_call` 429 fallback: target node id to route to on HTTP 429. */
+  on_429?: string;
+  /** `llm_call` tool-calls route: target node id when the response has tool_calls. */
+  tool_calls_route?: string;
 }
 
 /** A directed edge between nodes, with an optional condition guard. */

@@ -22,7 +22,8 @@
  * state across branches).
  */
 import type { ProviderMap } from "./engine.js";
-import { buildStreamBody } from "./engine.js";
+import { buildStepMessages, buildStreamBody, hasToolCalls } from "./engine.js";
+import type { StepContext } from "../types/chain.js";
 import { extractContent } from "../utils/extract.js";
 import { evaluateAst } from "./graph.js";
 import type { GraphPipeline, GraphNode, GraphEdge, AstExpr } from "./graph.js";
@@ -249,11 +250,7 @@ export async function runGraphEngine(
             // Last executed-path step: stream via buildStreamBody (one chunk).
             terminalStream = buildStreamBody(
               provider,
-              {
-                ...(opts.payload ?? {}),
-                model: n.model ?? "unknown",
-                stream: true,
-              },
+              payloadFor(n, opts.payload ?? {}, curState),
               signal,
               newCompletionId(),
               Math.floor(Date.now() / 1000),
@@ -264,10 +261,42 @@ export async function runGraphEngine(
             return { state: curState, current: null, executed: exec };
           }
 
-          const result = await provider.chat(payloadFor(n), graph.name);
+          let result: Record<string, unknown>;
+          try {
+            result = await provider.chat(payloadFor(n, opts.payload ?? {}, curState), graph.name);
+          } catch (err) {
+            // 429 fallback: reroute to the node named by `on_429` when present.
+            const status = (err as Error & { status?: number }).status;
+            if (status === 429 && n.on_429) {
+              const target = byId.get(n.on_429);
+              if (target) {
+                curState = { ...curState, lastStatus: 429 };
+                pushStep(n.id, curState);
+                exec.push(n.id);
+                cur = n.on_429;
+                break;
+              }
+            }
+            curState = {
+              ...curState,
+              error: String(err),
+            };
+            cur = null;
+            break;
+          }
           curState = applyLlmResult(curState, result);
           exec.push(n.id);
           pushStep(n.id, curState);
+
+          // tool_calls routing: reroute to `tool_calls_route` when present.
+          if (n.tool_calls_route && hasToolCalls(result)) {
+            const target = byId.get(n.tool_calls_route);
+            if (target) {
+              cur = n.tool_calls_route;
+              break;
+            }
+          }
+
           cur = nextId;
           break;
         }
@@ -378,9 +407,41 @@ export async function runGraphEngine(
 
 // ── free helpers ───────────────────────────────────────────────────────────
 
-/** Build a per-llm_call payload (non-streaming). */
-function payloadFor(node: GraphNode): Record<string, unknown> {
-  return { model: node.model ?? "unknown", stream: false };
+/** Build a per-llm_call payload (non-streaming) from the original chat
+ * payload and the flowing execution context. Message construction reuses the
+ * linear engine's `buildStepMessages` so graph and linear engines produce
+ * IDENTICAL prompts for the same chain (parity gate). */
+function payloadFor(
+  node: GraphNode,
+  originalPayload: Record<string, unknown>,
+  ctx: GraphState,
+): Record<string, unknown> {
+  const stepContext: StepContext = {
+    lastResponse: ctx.lastResponse,
+    lastContent: ctx.lastContent,
+  };
+  const messages = buildStepMessages(
+    {
+      type: node.mode ?? "generate",
+      system: node.system,
+      assistant: node.assistant,
+      user: node.user,
+    },
+    originalPayload,
+    stepContext,
+  );
+  const payload: Record<string, unknown> = {
+    ...originalPayload,
+    model: node.model ?? "unknown",
+    messages,
+    stream: false,
+  };
+  if (node.ctx !== undefined) {
+    payload.params = { ...(node.params ?? {}), ctx: node.ctx };
+  } else if (node.params && Object.keys(node.params).length > 0) {
+    payload.params = { ...node.params };
+  }
+  return payload;
 }
 
 /** Apply an llm_call result to the execution state. */

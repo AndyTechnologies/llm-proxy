@@ -331,7 +331,7 @@ export async function runChain(
  * - refine:   refeed previous step's content as a user message.
  * - passthrough: use original messages unchanged.
  */
-function buildStepMessages(
+export function buildStepMessages(
   step: { type: string; system?: string; assistant?: string; user?: string },
   originalPayload: Record<string, unknown>,
   context: StepContext,
@@ -380,7 +380,7 @@ function buildStepMessages(
 /**
  * Check whether a response body contains non-empty tool_calls.
  */
-function hasToolCalls(response: Record<string, unknown>): boolean {
+export function hasToolCalls(response: Record<string, unknown>): boolean {
   const choices = response.choices as
     | Array<{ message?: { tool_calls?: unknown[] } }>
     | undefined;
