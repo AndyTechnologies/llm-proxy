@@ -57,12 +57,13 @@ Chain strategy is **pending** — delivery_strategy is auto-chain but no chain s
 
 ## Phase 4 — Slice D: Static SPA (/ui)
 
-- [ ] 4.1 Create `src/ui/index.html`: ARIA landmarks, keyboard nav, WCAG AA, `<dialog>`, EventSource client
-- [ ] 4.2 Create `src/ui/app.js`: load pipelines/models/executions; SVG-native graph render (no D3/xyflow); HTML5 DnD node palette; condition AST builder (compare/logical/not/exists only, no free-form code); validate + apply wiring; live SSE updates; surface apply errors, retain editor state
-- [ ] 4.3 Create `src/ui/styles.css`: WCAG AA contrast, visible focus states
-- [ ] 4.4 Static serving in `src/server.ts`/`router.ts`: correct content-types; path-traversal guard (RED `/ui/../../etc/passwd`(read-only) 4xx) (dashboard-ui Req static serving)
-- [ ] 4.5 E2E smoke: `/ui`(read-only) loads, editor builds+validates+applies a graph, keyboard operable; verify `bun run typecheck && bun run lint && bun test` green (RFC acceptance)
+- [x] 4.1 Create `src/ui/index.html`: ARIA landmarks, keyboard nav, WCAG AA, `<dialog>`, EventSource client
+- [x] 4.2 Create `src/ui/app.js`: load pipelines/models/executions; SVG-native graph render (no D3/xyflow); HTML5 DnD node palette; condition AST builder (compare/logical/not/exists only, no free-form code); validate + apply wiring; live SSE updates; surface apply errors, retain editor state
+- [x] 4.3 Create `src/ui/styles.css`: WCAG AA contrast, visible focus states
+- [x] 4.4 Static serving in `src/server.ts`/`router.ts`: correct content-types; path-traversal guard (RED `/ui/../../etc/passwd`(read-only) 4xx) (dashboard-ui Req static serving)
+- [x] 4.5 E2E smoke: `/ui`(read-only) loads, editor builds+validates+applies a graph, keyboard operable; verify `bun run typecheck && bun run lint && bun test` green (RFC acceptance)
 
 ## Phase 5 — Docs / Cleanup
 
-- [ ] 5.1 Update `config.example.yaml` / README with dashboard + `/ui`(read-only) + `/api/ui/*`(read-only) usage; document `/api/ui/models`(read-only) model-candidate semantics- [ ] 5.2 Archive maintenance: ensure spec delta scenarios all covered by tests; remove any scratch code
+- [x] 5.1 Update `config.example.yaml` / README with dashboard + `/ui`(read-only) + `/api/ui/*`(read-only) usage; document `/api/ui/models`(read-only) model-candidate semantics
+- [x] 5.2 Archive maintenance: ensure spec delta scenarios all covered by tests; remove any scratch code
