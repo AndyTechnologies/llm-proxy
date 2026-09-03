@@ -20,7 +20,15 @@
  */
 
 /** Supported node types. */
-export type NodeType = "start" | "end" | "llm_call" | "condition" | "loop" | "join" | "pipeline";
+export type NodeType =
+  | "start"
+  | "end"
+  | "llm_call"
+  | "condition"
+  | "loop"
+  | "fan"
+  | "join"
+  | "pipeline";
 
 /** A node in a pipeline graph. */
 export interface GraphNode {
