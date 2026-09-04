@@ -164,6 +164,20 @@ describe("graph-model: buildPayload", () => {
     expect(payload.nodes).toHaveLength(2);
     expect(payload.edges).toEqual([{ from: "a", to: "b" }]);
   });
+
+  it("preserves node layout positions through round-trip (pos kept)", () => {
+    const payload = buildPayload({
+      nodes: [
+        { id: "a", type: "start", pos: { x: 1, y: 2 } },
+        { id: "b", type: "llm_call", model: "m", pos: { x: 30, y: 40 } },
+      ],
+      edges: [{ from: "a", to: "b" }],
+    });
+    expect(payload.nodes[0].pos).toEqual({ x: 1, y: 2 });
+    expect(payload.nodes[1].pos).toEqual({ x: 30, y: 40 });
+    // Other committed fields are still preserved.
+    expect(payload.nodes[1].model).toBe("m");
+  });
 });
 
 describe("graph-model: buildCondition (condition AST builder / no free-form code)", () => {

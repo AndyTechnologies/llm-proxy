@@ -1,60 +1,151 @@
 import { describe, expect, test } from "bun:test";
-import type { ParsedChain } from "./parser.js";
-import { chainToGraph } from "./parser.js";
+import type { GatewayConfig } from "../config/schema.js";
+import { configSchema } from "../config/schema.js";
+import { parseChains } from "./parser.js";
 
-function chain(name: string, steps: { name?: string; type: string; model: string }[]): ParsedChain {
-  return {
-    name,
-    displayName: name,
-    steps: steps.map((s) => ({
-      ...s,
-      // ResolvedStep always carries a provider.
-      provider: "llama-server",
-    })),
-  } as ParsedChain;
+/**
+ * Graph-based chain config parser tests (refactor-graph-canonical — Phase 5).
+ *
+ * The config now stores chains as `nodes`/`edges` graphs (the `steps` shape is
+ * gone). `parseChains` reads that graph directly and materializes the linear
+ * `ParsedChain` the linear engine still consumes, preserving per-node routing
+ * (`on_429`/`tool_calls_route`) and message scaffolding (`mode`, `ctx`,
+ * `system`, `assistant`, `user`).
+ */
+
+/** Build a schema-valid graph-shaped GatewayConfig with a single chain. */
+function configWithChain(
+  name: string,
+  chain: {
+    provider?: string;
+    defaultProvider?: string;
+    displayName?: string;
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<{ from: string; to: string }>;
+  },
+): GatewayConfig {
+  return configSchema.parse({
+    chains: {
+      [name]: {
+        ...(chain.provider ? { provider: chain.provider } : {}),
+        ...(chain.defaultProvider ? { defaultProvider: chain.defaultProvider } : {}),
+        ...(chain.displayName ? { displayName: chain.displayName } : {}),
+        nodes: chain.nodes,
+        edges: chain.edges,
+      },
+    },
+  });
 }
 
-describe("chainToGraph", () => {
-  test("materializes a linear chain as start -> steps -> end", () => {
-    const g = chainToGraph(
-      chain("linear", [
-        { name: "s1", type: "generate", model: "m1" },
-        { name: "s2", type: "refine", model: "m2" },
-      ]),
-    );
+describe("parseChains — reads a graph-based chain config", () => {
+  test("materializes llm_call nodes in order as steps", () => {
+    const cfg = configWithChain("linear", {
+      provider: "llama-server",
+      displayName: "Linear",
+      nodes: [
+        { id: "start", type: "start" },
+        { id: "a", type: "llm_call", model: "M1", mode: "generate" },
+        { id: "b", type: "llm_call", model: "M2", mode: "refine" },
+        { id: "end", type: "end" },
+      ],
+      edges: [
+        { from: "start", to: "a" },
+        { from: "a", to: "b" },
+        { from: "b", to: "end" },
+      ],
+    });
 
-    expect(g.id).toBe("linear");
-    expect(g.nodes.map((n) => n.id)).toEqual(["start", "s1", "s2", "end"]);
-    expect(g.nodes[1]).toEqual({ id: "s1", type: "llm_call", model: "m1" });
-    expect(g.nodes[2]).toEqual({ id: "s2", type: "llm_call", model: "m2" });
-    expect(g.edges).toEqual([
-      { from: "start", to: "s1" },
-      { from: "s1", to: "s2" },
-      { from: "s2", to: "end" },
-    ]);
+    const chains = parseChains(cfg);
+    const chain = chains.get("linear");
+    expect(chain).toBeDefined();
+    expect(chain!.steps.map((s) => s.model)).toEqual(["M1", "M2"]);
+    // mode maps to the linear step type.
+    expect(chain!.steps[0].type).toBe("generate");
+    expect(chain!.steps[1].type).toBe("refine");
+    // provider is normalized from the chain default.
+    expect(chain!.steps[0].provider).toBe("llama-server");
+    expect(chain!.name).toBe("linear");
+    expect(chain!.displayName).toBe("Linear");
   });
 
-  test("falls back to step-N ids when a step has no name", () => {
-    const g = chainToGraph(
-      chain("anon", [
-        { type: "generate", model: "mx" },
-        { type: "passthrough", model: "my" },
-      ]),
-    );
+  test("carries on_429 / tool_calls_route / message scaffolding from nodes", () => {
+    const cfg = configWithChain("routed", {
+      nodes: [
+        { id: "start", type: "start" },
+        {
+          id: "primary",
+          type: "llm_call",
+          model: "P",
+          mode: "generate",
+          on_429: "fallback",
+          tool_calls_route: "exec",
+          ctx: 4096,
+          system: "sys",
+        },
+        { id: "fallback", type: "llm_call", model: "F" },
+        { id: "exec", type: "llm_call", model: "E", mode: "refine" },
+        { id: "end", type: "end" },
+      ],
+      edges: [
+        { from: "start", to: "primary" },
+        { from: "primary", to: "fallback" },
+        { from: "primary", to: "exec" },
+        { from: "fallback", to: "end" },
+        { from: "exec", to: "end" },
+      ],
+    });
 
-    expect(g.nodes.map((n) => n.id)).toEqual(["start", "step-0", "step-1", "end"]);
-    // passthrough keeps its model and is materialized as an llm_call node.
-    expect(g.nodes[2]).toEqual({ id: "step-1", type: "llm_call", model: "my" });
-    expect(g.edges).toEqual([
-      { from: "start", to: "step-0" },
-      { from: "step-0", to: "step-1" },
-      { from: "step-1", to: "end" },
-    ]);
+    const chain = parseChains(cfg).get("routed")!;
+    expect(chain.steps[0].on_429).toBe("fallback");
+    expect(chain.steps[0].tool_calls_route).toBe("exec");
+    expect(chain.steps[0].ctx).toBe(4096);
+    expect(chain.steps[0].system).toBe("sys");
   });
 
-  test("a chain with no steps yields start -> end with no step nodes", () => {
-    const g = chainToGraph(chain("empty", []));
-    expect(g.nodes.map((n) => n.id)).toEqual(["start", "end"]);
-    expect(g.edges).toEqual([{ from: "start", to: "end" }]);
+  test("throws when a chain has no llm_call nodes", () => {
+    const cfg = configWithChain("empty", {
+      nodes: [
+        { id: "start", type: "start" },
+        { id: "end", type: "end" },
+      ],
+      edges: [{ from: "start", to: "end" }],
+    });
+
+    expect(() => parseChains(cfg)).toThrow(/no llm_call nodes/i);
+  });
+
+  test("throws when on_429 references an unknown node id", () => {
+    const cfg = configWithChain("bad", {
+      nodes: [
+        { id: "start", type: "start" },
+        { id: "a", type: "llm_call", model: "M", on_429: "missing" },
+        { id: "end", type: "end" },
+      ],
+      edges: [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+      ],
+    });
+
+    expect(() => parseChains(cfg)).toThrow(/on_429.*missing/i);
+  });
+
+  test("falls back to the standard default provider and maps passthrough mode", () => {
+    const cfg = configWithChain("unset", {
+      nodes: [
+        { id: "start", type: "start" },
+        { id: "a", type: "llm_call", model: "M", mode: "passthrough" },
+        { id: "end", type: "end" },
+      ],
+      edges: [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+      ],
+    });
+
+    const chain = parseChains(cfg).get("unset")!;
+    // No chain-level provider → resolveStep falls back to the standard one.
+    expect(chain.steps[0].provider).toBe("llama-server");
+    expect(chain.steps[0].type).toBe("passthrough");
   });
 });

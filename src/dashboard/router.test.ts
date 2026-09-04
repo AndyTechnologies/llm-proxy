@@ -212,7 +212,21 @@ describe("dashboard router", () => {
 
   it("POST /api/ui/apply returns applied with reloaded chains", async () => {
     const res = await call(makeDeps(), "POST", "/api/ui/apply", {
-      config: { chains: { c1: { steps: [{ model: "m" }] } } },
+      config: {
+        chains: {
+          c1: {
+            nodes: [
+              { id: "start", type: "start" },
+              { id: "a", type: "llm_call", model: "m", mode: "generate" },
+              { id: "end", type: "end" },
+            ],
+            edges: [
+              { from: "start", to: "a" },
+              { from: "a", to: "end" },
+            ],
+          },
+        },
+      },
     });
     expect(res.status).toBe(200);
     const data = await jsonBody<ApplyPayload>(res);

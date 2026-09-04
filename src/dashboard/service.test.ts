@@ -38,7 +38,17 @@ describe("apply service", () => {
         server: {},
         llama: { models: { m: { file: "m.gguf" } } },
         chains: {
-          c1: { steps: [{ model: "m", type: "generate" }] },
+          c1: {
+            nodes: [
+              { id: "start", type: "start" },
+              { id: "a", type: "llm_call", model: "m", mode: "generate" },
+              { id: "end", type: "end" },
+            ],
+            edges: [
+              { from: "start", to: "a" },
+              { from: "a", to: "end" },
+            ],
+          },
         },
       },
     });
@@ -54,7 +64,19 @@ describe("apply service", () => {
     await expect(
       service.apply({
         config: {
-          chains: { c1: { steps: [{ type: "generate" }] } }, // missing model
+          chains: {
+            c1: {
+              nodes: [
+                { id: "start", type: "start" },
+                { id: "a", type: "llm_call", model: 123, mode: "generate" }, // model must be a string
+                { id: "end", type: "end" },
+              ],
+              edges: [
+                { from: "start", to: "a" },
+                { from: "a", to: "end" },
+              ],
+            },
+          },
         },
       }),
     ).rejects.toMatchObject({
@@ -78,7 +100,17 @@ describe("apply service", () => {
       service.apply({
         config: {
           chains: {
-            c1: { steps: [{ model: "m" }] },
+            c1: {
+              nodes: [
+                { id: "start", type: "start" },
+                { id: "a", type: "llm_call", model: "m", mode: "generate" },
+                { id: "end", type: "end" },
+              ],
+              edges: [
+                { from: "start", to: "a" },
+                { from: "a", to: "end" },
+              ],
+            },
           },
         },
       }),
@@ -96,7 +128,19 @@ describe("apply service", () => {
     try {
       await service.apply({
         config: {
-          chains: { bad: { steps: [{ model: "" }] } },
+          chains: {
+            bad: {
+              nodes: [
+                { id: "start", type: "start" },
+                { id: "a", type: "llm_call", model: 123 }, // invalid model type
+                { id: "end", type: "end" },
+              ],
+              edges: [
+                { from: "start", to: "a" },
+                { from: "a", to: "end" },
+              ],
+            },
+          },
         },
       });
     } catch (e) {

@@ -17,7 +17,7 @@ import { ERR_CONFIG_NOT_FOUND } from "./config/load.js";
 import { generateDefaultConfig } from "./config/defaults.js";
 import { createModelsWatcher } from "./config/watcher.js";
 import { persistConfig } from "./config/write.js";
-import { parseChains, chainToGraph } from "./orchestrator/parser.js";
+import { parseChains, configChainToGraph } from "./orchestrator/parser.js";
 import { createPipelineRegistry } from "./orchestrator/registry.js";
 import { validateGraph } from "./orchestrator/graph.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
@@ -88,9 +88,11 @@ const parsed = parseChains(config);
 // without a restart.
 const registry = createPipelineRegistry({
   chains: [...parsed.values()],
-  // Materialize the boot chains as graphs too, so the dashboard can load an
-  // existing config-defined pipeline into the editor (GET /api/ui/pipelines/:id).
-  graphs: [...parsed.values()].map(chainToGraph),
+  // The config now stores the canonical graph directly — no conversion from a
+  // linear shape needed. Feed the graph to the dashboard editor as-is.
+  graphs: Object.entries(config.chains).map(([name, chain]) =>
+    configChainToGraph(name, chain),
+  ),
 });
 
 // ── Models directory watcher (Slice A) ──
@@ -136,7 +138,12 @@ const applyService = createApplyService({
   reload: async () => {
     const cfg = await loadGatewayConfig();
     const fresh = parseChains(cfg);
-    await registry.reload([...fresh.values()].map(chainToGraph), [...fresh.values()]);
+    await registry.reload(
+      Object.entries(cfg.chains).map(([name, chain]) =>
+        configChainToGraph(name, chain),
+      ),
+      [...fresh.values()],
+    );
   },
   getCurrentChains: () => [...registry.asMap().keys()],
 });

@@ -207,17 +207,15 @@ export function layoutGraph(nodes, edges) {
 
 /**
  * Serialize the editor's internal node/edge state into the validate/apply
- * payload (`{nodes, edges}`). Only committed fields are included — the layout
- * `pos` is a UI-only concern and is deliberately dropped so the persisted
- * graph stays clean.
+ * payload (`{nodes, edges}`). Layout `pos` is preserved through the round-trip
+ * (config-load Req "pos is preserved"), so the persisted graph keeps the
+ * editor's layout positions.
  */
 export function buildPayload(state) {
   const strip = (n) => {
-    // Copy then drop the layout-only `pos` so it never round-trips into the
-    // persisted graph (validated/apply payload stays clean).
-    const out = { ...n };
-    delete out.pos;
-    return out;
+    // Copy the node as-is — `pos` stays, matching the schema field, so the
+    // layout survives config round-trips (apply does not lose positions).
+    return { ...n };
   };
   return {
     nodes: state.nodes.map(strip),
