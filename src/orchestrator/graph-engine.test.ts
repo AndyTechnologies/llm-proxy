@@ -412,3 +412,211 @@ describe("single-terminal streaming on the executed path", () => {
     expect(dones).toBe(1);
   });
 });
+
+// ── pipeline composition node (pipeline-composition spec) ──
+
+describe("pipeline composition node", () => {
+  /**
+   * Helper: create a simple child pipeline (graph) with one llm_call and an end.
+   * The child graph is what `getPipeline` resolves to at runtime.
+   */
+  function childPipeline(
+    id: string,
+    providerName: string,
+  ): GraphPipeline {
+    return graphWithId(
+      id,
+      [node("start", "start"), llm("llm", { provider: providerName }), node("end", "end")],
+      [edge("start", "llm"), edge("llm", "end")],
+    );
+  }
+
+  function depsWithPipelines(
+    _calls: Calls,
+    pipelines: GraphPipeline[],
+    ...providers: Array<{ name: string; provider: Provider }>
+  ): GraphEngineDeps {
+    const map = new Map<string, Provider>();
+    for (const p of providers) map.set(p.name, p.provider);
+    const pipelineMap = new Map<string, GraphPipeline>();
+    for (const pg of pipelines) pipelineMap.set(pg.id, pg);
+    return {
+      providers: map,
+      getPipeline: (name: string) => pipelineMap.get(name),
+    };
+  }
+
+  /** Build a pipeline with a specific id and name (makeGraph ignores overrides). */
+  function graphWithId(id: string, nodes: GraphNode[], edges: GraphEdge[]): GraphPipeline {
+    return { id, name: id, nodes, edges };
+  }
+
+  test("simple pipeline resolves and executes, output feeds parent lastResponse", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const child = childPipeline("child1", "cp");
+
+    // Parent graph: start → pipeline(child1) → end
+    const parent = graphWithId("parent",
+      [
+        node("start", "start"),
+        node("invoke", "pipeline", { pipeline: "child1" }),
+        node("end", "end"),
+      ],
+      [edge("start", "invoke"), edge("invoke", "end")],
+    );
+
+    const d = depsWithPipelines(calls, [child], { name: "cp", provider: fakeProvider("cp", calls, { content: "child-output" }) });
+    const res = await runGraphEngine(parent, d);
+    // The child pipeline's llm_call was invoked
+    expect(calls.chat).toContain("cp");
+    // The parent's lastContent should reflect the child's output
+    expect(res.lastContent).toBe("child-output");
+  });
+
+  test("unregistered pipeline name fails with a clear error", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+
+    const parent = graphWithId("parent",
+      [
+        node("start", "start"),
+        node("invoke", "pipeline", { pipeline: "nonexistent" }),
+        node("end", "end"),
+      ],
+      [edge("start", "invoke"), edge("invoke", "end")],
+    );
+
+    const d = depsWithPipelines(calls, [], { name: "p", provider: fakeProvider("p", calls) });
+    const res = await runGraphEngine(parent, d);
+    // The child was never invoked (the pipeline ref didn't resolve) → no llm calls.
+    expect(res.executedLlmNodes).toEqual([]);
+    expect(calls.chat).toEqual([]);
+    // Execution produced no response because the pipeline resolution failed.
+    expect(res.lastContent).toBe("");
+    expect(res.lastResponse).toBeNull();
+  });
+
+  test("params are merged into the invoked pipeline's input variables", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    // Child pipeline that captures the received payload via the provider.
+    let capturedPayload: Record<string, unknown> | null = null;
+    const spyProvider: Provider = {
+      name: "spy",
+      async chat(payload: Record<string, unknown>) {
+        capturedPayload = payload;
+        calls.chat.push("spy");
+        return { status: 200, choices: [{ message: { content: "ok" } }] };
+      },
+      async *chatStream() { /* noop */ },
+    };
+
+    const child = graphWithId(
+      "child",
+      [node("start", "start"), llm("llm", { provider: "spy" }), node("end", "end")],
+      [edge("start", "llm"), edge("llm", "end")],
+    );
+
+    const parent = graphWithId(
+      "parent",
+      [
+        node("start", "start"),
+        node("invoke", "pipeline", { pipeline: "child", params: { topic: "science" } }),
+        node("end", "end"),
+      ],
+      [edge("start", "invoke"), edge("invoke", "end")],
+    );
+
+    const d = depsWithPipelines(calls, [child], { name: "spy", provider: spyProvider });
+    const res = await runGraphEngine(parent, d);
+    // The child pipeline ran and received the parent's payload.
+    expect(calls.chat).toEqual(["spy"]);
+    expect(capturedPayload).not.toBeNull();
+    // The params passed on the pipeline node reach the child's input variables.
+    const childParams = (capturedPayload!.params as Record<string, unknown>) ?? {};
+    expect(childParams).toMatchObject({ topic: "science" });
+    // The child's output feeds back to the parent.
+    expect(res.lastContent).toBe("ok");
+  });
+
+  test("nested pipeline invocation within depth limit runs successfully", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const p3 = fakeProvider("p3", calls, { content: "deep-out" });
+
+    // leaf pipeline: start → llm → end
+    const leaf = graphWithId("leaf",
+      [node("start", "start"), llm("llm", { provider: "p3" }), node("end", "end")],
+      [edge("start", "llm"), edge("llm", "end")],
+    );
+
+    // mid pipeline: start → pipeline(leaf) → end
+    const mid = graphWithId("mid",
+      [
+        node("start", "start"),
+        node("invoke", "pipeline", { pipeline: "leaf" }),
+        node("end", "end"),
+      ],
+      [edge("start", "invoke"), edge("invoke", "end")],
+    );
+
+    // top pipeline: start → pipeline(mid) → end (depth 2, within default max 5)
+    const top = graphWithId("top",
+      [
+        node("start", "start"),
+        node("invoke", "pipeline", { pipeline: "mid" }),
+        node("end", "end"),
+      ],
+      [edge("start", "invoke"), edge("invoke", "end")],
+    );
+
+    const d = depsWithPipelines(calls, [leaf, mid], { name: "p3", provider: p3 });
+    const res = await runGraphEngine(top, d);
+    expect(calls.chat).toContain("p3");
+    expect(res.lastContent).toBe("deep-out");
+  });
+
+  test("composition exceeding depth limit fails with a clear error", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+
+    // Build a chain of pipelines deeper than the default max of 5.
+    // Each pipeline calls the next: p5→p4→p3→p2→p1→leaf (depth 6 from p5).
+    const leaf = graphWithId("leaf",
+      [node("start", "start"), llm("llm", { provider: "p" }), node("end", "end")],
+      [edge("start", "llm"), edge("llm", "end")],
+    );
+
+    const pipelines: GraphPipeline[] = [leaf];
+    let currentTarget = "leaf";
+    for (let i = 1; i <= 6; i++) {
+      const id = `depth-${i}`;
+      const pg = graphWithId(id,
+        [
+          node("start", "start"),
+          node("invoke", "pipeline", { pipeline: currentTarget }),
+          node("end", "end"),
+        ],
+        [edge("start", "invoke"), edge("invoke", "end")],
+      );
+      pipelines.push(pg);
+      currentTarget = id;
+    }
+
+    // The top-level pipeline is depth-6, which nests 7 levels deep (6 + leaf)
+    const top = graphWithId("top",
+      [
+        node("start", "start"),
+        node("invoke", "pipeline", { pipeline: "depth-6" }),
+        node("end", "end"),
+      ],
+      [edge("start", "invoke"), edge("invoke", "end")],
+    );
+
+    const d = depsWithPipelines(
+      calls,
+      [...pipelines, top],
+      { name: "p", provider: fakeProvider("p", calls) },
+    );
+    // Should NOT throw but should surface a depth error
+    const res = await runGraphEngine(top, d);
+    // The error state should indicate depth exceeded
+    expect(res.lastResponse).toBeNull();
+  });
+});

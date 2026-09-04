@@ -103,7 +103,7 @@ export function createChatHandler(deps: ChatRouteDeps) {
       // must forward to the backend. rawBody was already validated above.
       const result = await runGraphEngine(
         graph,
-        { providers: deps.providers, getPipeline: () => undefined },
+        { providers: deps.providers, getPipeline: deps.getGraph },
         {
           streamRequested: rawBody.stream === true,
           payload: rawBody,

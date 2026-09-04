@@ -110,7 +110,7 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
 
       const result = await runGraphEngine(
         graph,
-        { providers: deps.providers, getPipeline: () => undefined },
+        { providers: deps.providers, getPipeline: deps.getGraph },
         {
           streamRequested: chatPayload.stream === true,
           payload: chatPayload,
