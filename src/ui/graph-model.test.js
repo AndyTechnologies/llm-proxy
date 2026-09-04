@@ -20,6 +20,13 @@ import {
   buildCondition,
   requiredField,
   isCompleteNode,
+  moveNode,
+  deleteNode,
+  connectNodes,
+  NODE_W,
+  NODE_H,
+  socketPositions,
+  bezierEdge,
 } from "./graph-model.js";
 
 describe("graph-model: createNode defaults", () => {
@@ -76,6 +83,73 @@ describe("graph-model: layoutGraph", () => {
     expect(pos.has("a")).toBe(true);
     expect(pos.has("b")).toBe(true);
   });
+
+  it("respects a node position fixed by the user (drag) and only lays out the rest", () => {
+    const nodes = [
+      { id: "a", type: "start", pos: { x: 999, y: 123 } },
+      { id: "b", type: "end" },
+    ];
+    const pos = layoutGraph(nodes, [{ from: "a", to: "b" }]);
+    expect(pos.get("a")).toEqual({ x: 999, y: 123 });
+    // The end node (no pos) still gets laid out.
+    expect(pos.has("b")).toBe(true);
+  });
+
+  it("returns existing positions verbatim when every node has one", () => {
+    const nodes = [
+      { id: "a", type: "start", pos: { x: 1, y: 2 } },
+      { id: "b", type: "end", pos: { x: 3, y: 4 } },
+    ];
+    const pos = layoutGraph(nodes, []);
+    expect(pos.get("a")).toEqual({ x: 1, y: 2 });
+    expect(pos.get("b")).toEqual({ x: 3, y: 4 });
+  });
+});
+
+describe("graph-model: node manipulation helpers", () => {
+  it("moveNode returns an updated array with pos set", () => {
+    const next = moveNode([{ id: "a", type: "start" }], "a", 50, 60);
+    expect(next[0].pos).toEqual({ x: 50, y: 60 });
+    expect(next[0].type).toBe("start");
+  });
+
+  it("deleteNode removes the node and any touching edges", () => {
+    const nodes = [{ id: "a", type: "start" }, { id: "b", type: "end" }];
+    const edges = [{ from: "a", to: "b" }];
+    const { nodes: nn, edges: en } = deleteNode(nodes, edges, "a");
+    expect(nn).toHaveLength(1);
+    expect(en).toHaveLength(0);
+  });
+
+  it("connectNodes adds an edge", () => {
+    const next = connectNodes([], "a", "b");
+    expect(next).toEqual([{ from: "a", to: "b" }]);
+  });
+
+  it("connectNodes adds a guarded edge", () => {
+    const next = connectNodes([], "cond", "yes", "true");
+    expect(next).toEqual([{ from: "cond", to: "yes", guard: "true" }]);
+  });
+
+  it("connectNodes replaces an existing from→to edge and rejects self-edges", () => {
+    const edges = [{ from: "a", to: "b", guard: "true" }];
+    expect(connectNodes(edges, "a", "b")).toEqual([{ from: "a", to: "b" }]);
+    expect(connectNodes([], "a", "a")).toHaveLength(0);
+  });
+});
+
+describe("graph-model: sockets and bezier edges", () => {
+  it("socketPositions places out (right) and in (left) on the body midline", () => {
+    const p = socketPositions({ x: 100, y: 200 });
+    expect(p.out).toEqual({ x: 100 + NODE_W, y: 200 + NODE_H / 2 });
+    expect(p.in).toEqual({ x: 100, y: 200 + NODE_H / 2 });
+  });
+
+  it("bezierEdge produces a cubic path between two points", () => {
+    const d = bezierEdge(0, 10, 300, 40);
+    expect(d.startsWith("M 0 10 C ")).toBe(true);
+    expect(d.endsWith(", 300 40")).toBe(true);
+  });
 });
 
 describe("graph-model: buildPayload", () => {
@@ -89,6 +163,20 @@ describe("graph-model: buildPayload", () => {
     });
     expect(payload.nodes).toHaveLength(2);
     expect(payload.edges).toEqual([{ from: "a", to: "b" }]);
+  });
+
+  it("preserves node layout positions through round-trip (pos kept)", () => {
+    const payload = buildPayload({
+      nodes: [
+        { id: "a", type: "start", pos: { x: 1, y: 2 } },
+        { id: "b", type: "llm_call", model: "m", pos: { x: 30, y: 40 } },
+      ],
+      edges: [{ from: "a", to: "b" }],
+    });
+    expect(payload.nodes[0].pos).toEqual({ x: 1, y: 2 });
+    expect(payload.nodes[1].pos).toEqual({ x: 30, y: 40 });
+    // Other committed fields are still preserved.
+    expect(payload.nodes[1].model).toBe("m");
   });
 });
 

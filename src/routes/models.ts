@@ -1,5 +1,5 @@
 /**
- * GET /v1/models fetch handler (S2a — Bun.serve migration).
+ * GET /v1/models fetch handler (Bun.serve migration).
  *
  * Returns the list of available models: real models from the managed
  * llama-server backend PLUS virtual chain models. Virtual models use the
@@ -15,11 +15,11 @@
  * a Response.
  */
 import type { ModelInfo, ModelListResponse } from "../types/openai.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
+import type { GraphPipeline } from "../orchestrator/graph.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface ModelsRouteDeps {
-  chains: Map<string, ParsedChain>;
+  graphs: GraphPipeline[];
   manager: LlamaServeManager;
 }
 
@@ -29,13 +29,13 @@ export function createModelsHandler(deps: ModelsRouteDeps) {
     const data: ModelInfo[] = [];
 
     // ── Virtual chain models ──
-    for (const [name, chain] of deps.chains) {
+    for (const graph of deps.graphs) {
       data.push({
-        id: `gateway/${name}`,
+        id: `gateway/${graph.id}`,
         object: "model",
         created: now,
         owned_by: "gateway",
-        description: chain.displayName ?? name,
+        description: graph.name ?? graph.id,
       });
     }
 

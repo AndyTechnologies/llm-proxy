@@ -48,6 +48,27 @@ export interface GraphNode {
   pipeline?: string;
   /** Optional input parameters for a `pipeline` composition node. */
   params?: Record<string, string>;
+  /**
+   * `llm_call` message mode — how the payload messages are built from the
+   * original request + execution context (the graph twin of the linear
+   * `Step.type`). `generate` seeds with the user messages (plus optional
+   * `system`/`assistant`), `refine` re-feeds the previous step's content,
+   * `passthrough` forwards the original messages unchanged. Absent on
+   * non-`llm_call` nodes.
+   */
+  mode?: "generate" | "refine" | "passthrough";
+  /** Optional per-node context window override (tokens) → `params.ctx`. */
+  ctx?: number | string;
+  /** Optional system-message scaffold for `generate`/`refine` modes. */
+  system?: string;
+  /** Optional assistant-message scaffold for `generate`/`refine` modes. */
+  assistant?: string;
+  /** Optional user-message scaffold (unused by current modes; reserved). */
+  user?: string;
+  /** `llm_call` 429 fallback: target node id to route to on HTTP 429. */
+  on_429?: string;
+  /** `llm_call` tool-calls route: target node id when the response has tool_calls. */
+  tool_calls_route?: string;
 }
 
 /** A directed edge between nodes, with an optional condition guard. */
@@ -248,33 +269,6 @@ function isInsideSingleLoopBody(
     if (fromInBody && toInBody) return true;
   }
   return false;
-}
-
-// ── Hybrid compatibility (2.5) ────────────────────────────────────────────
-
-/**
- * Whether a graph is linear-compatible — i.e. reduces to a single sequential
- * path with no conditionals, branches, loops, joins, parallel subgraphs, or
- * pipeline composition. Linear-compatible graphs run on the existing
- * `runChain` linear engine; everything else goes to the graph engine.
- */
-export function isLinearCompatible(graph: GraphPipeline): boolean {
-  for (const n of graph.nodes) {
-    if (
-      n.type === "condition" ||
-      n.type === "loop" ||
-      n.type === "join" ||
-      n.type === "pipeline" ||
-      n.parallel
-    ) {
-      return false;
-    }
-  }
-  // No edge may carry a guard (a guarded edge implies a branch).
-  for (const e of graph.edges) {
-    if (e.guard) return false;
-  }
-  return true;
 }
 
 // ── Task 2.2: SAFE AST ────────────────────────────────────────────────────

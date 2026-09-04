@@ -29,9 +29,9 @@ export async function loadGatewayConfig(
   for (const [name, chain] of Object.entries(parsed.chains)) {
     chain.name = name;
     const defaultProvider = chain.provider ?? chain.defaultProvider ?? "llama-server";
-    for (const step of chain.steps) {
-      if (!step.provider) {
-        step.provider = defaultProvider;
+    for (const node of chain.nodes) {
+      if (!node.provider) {
+        node.provider = defaultProvider;
       }
     }
   }

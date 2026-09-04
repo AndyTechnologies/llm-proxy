@@ -1,15 +1,10 @@
 /**
- * POST /v1/chat/completions route handler (S2b — Bun.serve fetch handler).
+ * POST /v1/chat/completions route handler (Bun.serve fetch handler).
  *
  * Resolves whether the request targets a direct provider model or a
  * gateway chain (via `gateway/<name>` prefix or `X-Chain-ID` header),
  * then dispatches accordingly. Validates the request body with zod
  * before it reaches the proxy/orchestrator layer.
- *
- * Converted from an Express handler (req/res) to a plain fetch handler
- * returning `Promise<Response>` (S2b). The SSE idle-timeout disable
- * (`server.timeout(req, 0)`) is applied by the Bun.serve dispatcher in
- * server.ts, so this handler stays transport-agnostic.
  *
  * ROUTING (virtual-model-routing spec):
  *   model: "gateway/thinker" → run the "thinker" chain
@@ -17,20 +12,18 @@
  *   model: "SmolLM3-3B" → passthrough proxy to llama-server
  */
 import { chatCompletionRequestSchema } from "../types/zod.js";
-import { runChain, type ChainMap, type ProviderMap } from "../orchestrator/engine.js";
-import { createHybridSelector } from "../orchestrator/hybrid-selector.js";
+import type { ProviderMap } from "../orchestrator/engine.js";
 import { runGraphEngine } from "../orchestrator/graph-engine.js";
 import type { GraphPipeline } from "../orchestrator/graph.js";
 import { createPassthroughProxy } from "../middleware/proxy.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface ChatRouteDeps {
-  chains: ChainMap;
   providers: ProviderMap;
   manager: LlamaServeManager;
   requestTimeoutMs: number;
-  /** Optional graph pipeline lookup — enables graph-engine routing (Slice B). */
-  getGraph?: (id: string) => GraphPipeline | undefined;
+  /** Graph pipeline lookup — resolves chain name to graph for dispatch. */
+  getGraph: (id: string) => GraphPipeline | undefined;
 }
 
 /** Prefix that marks a model name as a chain invocation. */
@@ -76,16 +69,9 @@ export function createChatHandler(deps: ChatRouteDeps) {
     );
 
     if (chainId) {
-      // Slice B: route via the hybrid selector — a name registered as a
-      // linear chain runs on `runChain`; a complex graph runs on the graph
-      // engine. When no graph lookup is injected (backward-compatible routes),
-      // the selector degrades to chain-only resolution.
-      const hybrid = createHybridSelector({
-        getChain: (n) => deps.chains.get(n),
-        getGraph: (n) => deps.getGraph?.(n),
-      });
-      const dispatch = hybrid.resolve(chainId);
-      if (!dispatch) {
+      // Graph-only dispatch: resolve the chain name to a GraphPipeline.
+      const graph = deps.getGraph(chainId);
+      if (!graph) {
         return jsonError(
           `Chain "${chainId}" not found`,
           "invalid_request_error",
@@ -110,25 +96,14 @@ export function createChatHandler(deps: ChatRouteDeps) {
         );
       }
 
-      // ── Linear chain → runChain (engine returns the final Response) ──
+      // ── Graph engine dispatch ──
       // Use the RAW validated body, not the zod-parsed object: zod's
       // z.object() strips unknown keys by default, which drops
-      // OpenAI-compatible extras (tools, tool_choice) that chain steps
+      // OpenAI-compatible extras (tools, tool_choice) that graph steps
       // must forward to the backend. rawBody was already validated above.
-      if (dispatch.kind === "linear") {
-        return await runChain(
-          dispatch.chain,
-          deps.providers,
-          rawBody,
-          req.signal,
-          queryString(req),
-        );
-      }
-
-      // ── Complex graph → graph engine (last step streams; no buffering) ──
       const result = await runGraphEngine(
-        dispatch.graph,
-        { providers: deps.providers, getPipeline: () => undefined },
+        graph,
+        { providers: deps.providers, getPipeline: deps.getGraph },
         {
           streamRequested: rawBody.stream === true,
           payload: rawBody,
@@ -197,13 +172,4 @@ function modelExists(manager: LlamaServeManager, model: string): boolean {
   return manager.status().models.includes(model);
 }
 
-/**
- * Extract the raw query string (the part after `?`) from the client request,
- * so it is preserved on every chain-step upstream call. Returns undefined when
- * the request carries no query.
- */
-function queryString(req: Request): string | undefined {
-  const queryIndex = req.url.indexOf("?");
-  if (queryIndex < 0) return undefined;
-  return req.url.slice(queryIndex + 1);
-}
+

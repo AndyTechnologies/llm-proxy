@@ -39,11 +39,73 @@ export const conditionOps = ["compare", "logical", "not", "exists"];
  * Create a new node with type-appropriate default fields. The editor keeps
  * transient draft values (selected model, condition form) off the committed
  * node until the node is considered complete. Returns a plain object with the
- * committed `id`/`type` plus any type default.
+ * committed `id`/`type` plus any type default. No `pos` is assigned here —
+ * `layoutGraph` fills in initial positions for nodes without one at render
+ * time (pure layout, never persisted to the graph payload).
  */
 export function createNode(type, id) {
   const node = { id, type };
   return node;
+}
+
+/** Node body width in SVG units (used by layout, ports, and hit-testing). */
+export const NODE_W = 160;
+/** Node body height in SVG units. */
+export const NODE_H = 56;
+
+/**
+ * Center-points of the output (right) and input (left) sockets for a node at
+ * the given top-left position. The editor renders socket hit-areas here so
+ * connections can be dragged socket→socket (Blender/Godot style).
+ */
+export function socketPositions(p) {
+  return {
+    out: { x: p.x + NODE_W, y: p.y + NODE_H / 2 },
+    in: { x: p.x, y: p.y + NODE_H / 2 },
+  };
+}
+
+/**
+ * Cubic bezier path between two socket points, bowing horizontally so edges
+ * read as free-form curves (node-editor style) rather than stacked verticals.
+ */
+export function bezierEdge(x1, y1, x2, y2, bow = NODE_W * 0.55) {
+  const dx1 = Math.max(bow, (x2 - x1) * 0.5);
+  const dx2 = Math.max(bow, (x2 - x1) * 0.5);
+  return `M ${x1} ${y1} C ${x1 + dx1} ${y1}, ${x2 - dx2} ${y2}, ${x2} ${y2}`;
+}
+
+/**
+ * Move a node (by id) to an absolute `x`/`y` top-left position, returning a
+ * new nodes array (pure). Leaves the node's `pos` set so `layoutGraph` no
+ * longer relocates it.
+ */
+export function moveNode(nodes, id, x, y) {
+  return nodes.map((n) => (n.id === id ? { ...n, pos: { x, y } } : n));
+}
+
+/**
+ * Add or replace an edge from `from` to `to` (with optional guard), returning
+ * a new edges array (pure). Any existing outgoing edge from `from` is kept
+ * unless it targets the same `to`; a self-edge is rejected.
+ */
+export function connectNodes(edges, from, to, guard) {
+  if (from === to) return edges;
+  const next = edges.filter((e) => !(e.from === from && e.to === to));
+  next.push(guard ? { from, to, guard } : { from, to });
+  return next;
+}
+
+/**
+ * Remove a node (by id) together with every edge touching it, returning
+ * `{ nodes, edges }` (pure). The caller uses this for both the delete button
+ * and the Delete/Backspace shortcut.
+ */
+export function deleteNode(nodes, edges, id) {
+  return {
+    nodes: nodes.filter((n) => n.id !== id),
+    edges: edges.filter((e) => e.from !== id && e.to !== id),
+  };
 }
 
 /**
@@ -77,15 +139,29 @@ export function isCompleteNode(node) {
  * topological layer, stacking several nodes at the same layer vertically.
  * Returns a Map<id, {x,y}> of pixel positions.
  *
- * This is intentionally naive (no D3/xyflow) — it only needs to be readable
- * for the small graphs the editor targets (dashboard-ui Req "Vanilla
- * frontend": native SVG, no graph library).
+ * Nodes that already carry a `pos` (moved by the user) are respected and never
+ * relocated — the layout only fills in positions for nodes without one, so a
+ * freshly added node or a just-loaded pipeline gets readable coordinates the
+ * first time, after which the user's drags are the source of truth. This is
+ * intentionally naive (no D3/xyflow) — it only needs to be readable for the
+ * small graphs the editor targets (dashboard-ui Req "Vanilla frontend": native
+ * SVG, no graph library).
  */
 export function layoutGraph(nodes, edges) {
-  const COL = 180;
-  const ROW = 90;
+  const pos = new Map();
+  // Any node with a fixed position is taken verbatim.
+  for (const n of nodes) {
+    if (n.pos) pos.set(n.id, { x: n.pos.x, y: n.pos.y });
+  }
+
+  // Only nodes without a position participate in the layered pass.
+  const targets = nodes.filter((n) => !n.pos);
+  if (targets.length === 0) return pos;
+
+  const COL = NODE_W + 72;
+  const ROW = NODE_H + 34;
   const margin = 40;
-  const incoming = new Map(nodes.map((n) => [n.id, []]));
+  const incoming = new Map(targets.map((n) => [n.id, []]));
   for (const e of edges) {
     if (incoming.has(e.to)) incoming.get(e.to).push(e.from);
   }
@@ -102,23 +178,22 @@ export function layoutGraph(nodes, edges) {
       if (e.from === id) assign(e.to, depth + 1);
     }
   }
-  for (const n of nodes) {
+  for (const n of targets) {
     if (n.type === "start") assign(n.id, 0);
   }
   // Assign any remaining unvisited nodes (disconnected/end-only graphs).
-  for (const n of nodes) {
+  for (const n of targets) {
     if (!visited.has(n.id)) assign(n.id, 0);
   }
 
-  // Group ids by layer and stack vertically.
+  // Group unfixed ids by layer and stack vertically.
   const byLayer = new Map();
-  for (const n of nodes) {
+  for (const n of targets) {
     const l = layer.get(n.id) ?? 0;
     if (!byLayer.has(l)) byLayer.set(l, []);
     byLayer.get(l).push(n.id);
   }
 
-  const pos = new Map();
   for (const [l, ids] of byLayer) {
     const x = margin + l * COL;
     const n = ids.length;
@@ -132,11 +207,18 @@ export function layoutGraph(nodes, edges) {
 
 /**
  * Serialize the editor's internal node/edge state into the validate/apply
- * payload (`{nodes, edges}`). Only committed fields are included.
+ * payload (`{nodes, edges}`). Layout `pos` is preserved through the round-trip
+ * (config-load Req "pos is preserved"), so the persisted graph keeps the
+ * editor's layout positions.
  */
 export function buildPayload(state) {
+  const strip = (n) => {
+    // Copy the node as-is — `pos` stays, matching the schema field, so the
+    // layout survives config round-trips (apply does not lose positions).
+    return { ...n };
+  };
   return {
-    nodes: state.nodes.map((n) => ({ ...n })),
+    nodes: state.nodes.map(strip),
     edges: state.edges.map((e) => ({ ...e })),
   };
 }

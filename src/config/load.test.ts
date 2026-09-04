@@ -157,10 +157,19 @@ describe("loadGatewayConfig", () => {
       "chains:",
       "  demo:",
       "    provider: llama-server",
-      "    steps:",
-      "      - name: s1",
-      "        type: generate",
+      "    nodes:",
+      "      - id: start",
+      "        type: start",
+      "      - id: s1",
+      "        type: llm_call",
       "        model: SomeModel",
+      "      - id: end",
+      "        type: end",
+      "    edges:",
+      "      - from: start",
+      "        to: s1",
+      "      - from: s1",
+      "        to: end",
       "",
     ].join("\n");
     mockFileContents["/cwd/ok.yaml"] = yaml;
@@ -168,14 +177,23 @@ describe("loadGatewayConfig", () => {
       chains: {
         demo: {
           provider: "llama-server",
-          steps: [{ name: "s1", type: "generate", model: "SomeModel" }],
+          nodes: [
+            { id: "start", type: "start" },
+            { id: "s1", type: "llm_call", model: "SomeModel" },
+            { id: "end", type: "end" },
+          ],
+          edges: [
+            { from: "start", to: "s1" },
+            { from: "s1", to: "end" },
+          ],
         },
       },
     };
 
     const cfg = await loadGatewayConfig("/cwd/ok.yaml", testDeps());
     expect(cfg.chains["demo"].name).toBe("demo");
-    expect(cfg.chains["demo"].steps[0].provider).toBe("llama-server");
+    // default provider is injected onto graph nodes lacking one.
+    expect(cfg.chains["demo"].nodes[1].provider).toBe("llama-server");
   });
 
   test("removing dotenv: an already-exported process env value is not overwritten", async () => {

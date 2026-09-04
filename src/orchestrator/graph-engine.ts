@@ -1,9 +1,10 @@
 /**
  * Graph engine (Slice B — task 2.4).
  *
- * Immutable runtime for complex pipelines: graphs with conditionals, loops,
- * and opt-in parallel subgraphs. Linear-compatible graphs run on the existing
- * `runChain` (hybrid selector); this engine handles everything else.
+ * The single, canonical execution runtime for all pipelines. The linear
+ * engine (`runChain`) and hybrid selector were removed: every graph runs
+ * here regardless of shape (sequential, conditionals, loops, parallel, or
+ * composition).
  *
  * Semantics (graph-engine spec):
  *  - Node types: start / end / llm_call / condition / loop / fan(parallel) / join
@@ -21,8 +22,8 @@
  * branches hold independent copies and merge at the join (no shared mutable
  * state across branches).
  */
-import type { ProviderMap } from "./engine.js";
-import { buildStreamBody } from "./engine.js";
+import type { ProviderMap, StepContext } from "./engine.js";
+import { buildStepMessages, buildStreamBody, hasToolCalls } from "./engine.js";
 import { extractContent } from "../utils/extract.js";
 import { evaluateAst } from "./graph.js";
 import type { GraphPipeline, GraphNode, GraphEdge, AstExpr } from "./graph.js";
@@ -48,6 +49,8 @@ export interface GraphEngineDeps {
   getPipeline: (name: string) => GraphPipeline | undefined;
   /** Bound for loop execution (default 3). */
   maxLoopIterations?: number;
+  /** Maximum composition depth for nested pipeline invocations (default 5). */
+  maxPipelineDepth?: number;
 }
 
 /** Options controlling a single engine run. */
@@ -58,6 +61,8 @@ export interface GraphEngineOpts {
   payload?: Record<string, unknown>;
   signal?: AbortSignal;
   variables?: Record<string, unknown>;
+  /** @internal Current composition depth (set by recursive pipeline calls). */
+  _depth?: number;
 }
 
 /** Result of a graph engine run. */
@@ -81,6 +86,8 @@ const SSE_HEADERS = {
   "X-Accel-Buffering": "no",
 };
 const DEFAULT_LOOP_BOUND = 3;
+/** Maximum composition depth for nested pipeline invocations (anti-recursion). */
+const DEFAULT_MAX_PIPELINE_DEPTH = 5;
 
 /** Execute a graph and return the final Response plus execution metadata. */
 export async function runGraphEngine(
@@ -92,6 +99,7 @@ export async function runGraphEngine(
   const streamRequested = opts.streamRequested === true;
   const signal = opts.signal ?? new AbortController().signal;
   const maxLoops = deps.maxLoopIterations ?? DEFAULT_LOOP_BOUND;
+  const maxDepth = deps.maxPipelineDepth ?? DEFAULT_MAX_PIPELINE_DEPTH;
 
   const byId = new Map<string, GraphNode>();
   for (const n of graph.nodes) byId.set(n.id, n);
@@ -216,6 +224,7 @@ export async function runGraphEngine(
     nodeId: string,
     stopAt: Set<string>,
     st: GraphState,
+    depth = 0,
   ): Promise<{ state: GraphState; current: string | null; executed: string[] }> => {
     let cur: string | null = nodeId;
     let curState = st;
@@ -249,11 +258,7 @@ export async function runGraphEngine(
             // Last executed-path step: stream via buildStreamBody (one chunk).
             terminalStream = buildStreamBody(
               provider,
-              {
-                ...(opts.payload ?? {}),
-                model: n.model ?? "unknown",
-                stream: true,
-              },
+              payloadFor(n, opts.payload ?? {}, curState),
               signal,
               newCompletionId(),
               Math.floor(Date.now() / 1000),
@@ -264,10 +269,42 @@ export async function runGraphEngine(
             return { state: curState, current: null, executed: exec };
           }
 
-          const result = await provider.chat(payloadFor(n), graph.name);
+          let result: Record<string, unknown>;
+          try {
+            result = await provider.chat(payloadFor(n, opts.payload ?? {}, curState), graph.name);
+          } catch (err) {
+            // 429 fallback: reroute to the node named by `on_429` when present.
+            const status = (err as Error & { status?: number }).status;
+            if (status === 429 && n.on_429) {
+              const target = byId.get(n.on_429);
+              if (target) {
+                curState = { ...curState, lastStatus: 429 };
+                pushStep(n.id, curState);
+                exec.push(n.id);
+                cur = n.on_429;
+                break;
+              }
+            }
+            curState = {
+              ...curState,
+              error: String(err),
+            };
+            cur = null;
+            break;
+          }
           curState = applyLlmResult(curState, result);
           exec.push(n.id);
           pushStep(n.id, curState);
+
+          // tool_calls routing: reroute to `tool_calls_route` when present.
+          if (n.tool_calls_route && hasToolCalls(result)) {
+            const target = byId.get(n.tool_calls_route);
+            if (target) {
+              cur = n.tool_calls_route;
+              break;
+            }
+          }
+
           cur = nextId;
           break;
         }
@@ -286,7 +323,7 @@ export async function runGraphEngine(
           const loopBoundary = new Set([n.id]);
           // Run the body `maxLoops` times (bounded — prevents infinite cycles).
           for (let i = 0; i < Math.max(1, maxLoops); i++) {
-            const sub = await walk(bodyEntry, loopBoundary, curState);
+            const sub = await walk(bodyEntry, loopBoundary, curState, depth);
             curState = sub.state;
             exec.push(...sub.executed);
           }
@@ -299,7 +336,7 @@ export async function runGraphEngine(
             const joinSet = collectJoinSet(n.id);
             const branchStarts = outgoing.get(n.id)?.map((e) => e.to) ?? [];
             const results = await Promise.all(
-              branchStarts.map((b) => walk(b, joinSet, curState)),
+              branchStarts.map((b) => walk(b, joinSet, curState, depth)),
             );
             for (const r of results) {
               exec.push(...r.executed);
@@ -317,6 +354,59 @@ export async function runGraphEngine(
           cur = onlySuccessor(n.id);
           break;
 
+        case "pipeline": {
+          const childName = n.pipeline;
+          if (!childName) {
+            curState = { ...curState, error: `[graph-engine] pipeline node "${n.id}" has no pipeline reference` };
+            cur = null;
+            break;
+          }
+          const childPipeline = deps.getPipeline(childName);
+          if (!childPipeline) {
+            curState = {
+              ...curState,
+              error: `[graph-engine] pipeline "${childName}" not found (referenced by node "${n.id}")`,
+            };
+            cur = null;
+            break;
+          }
+          if (depth >= maxDepth) {
+            curState = {
+              ...curState,
+              error: `[graph-engine] composition depth ${depth + 1} exceeds maximum ${maxDepth} (pipeline "${childName}")`,
+            };
+            cur = null;
+            break;
+          }
+          // Merge parent variables with node params into the child's input.
+          const childVars = { ...curState.variables, ...(n.params ?? {}) };
+          try {
+            const childResult = await runGraphEngine(childPipeline, deps, {
+              streamRequested: false,
+              payload: opts.payload,
+              signal,
+              variables: childVars,
+              _depth: depth + 1,
+            });
+            curState = {
+              ...curState,
+              lastResponse: childResult.lastResponse,
+              lastContent: childResult.lastContent,
+              lastStatus: childResult.lastStatus,
+              error: null,
+            };
+          } catch (err) {
+            curState = {
+              ...curState,
+              error: `[graph-engine] pipeline "${childName}" failed: ${String(err)}`,
+            };
+            cur = null;
+            break;
+          }
+          cur = onlySuccessor(n.id);
+          break;
+        }
+
         default:
           cur = onlySuccessor(n.id);
           break;
@@ -326,7 +416,7 @@ export async function runGraphEngine(
     return { state: curState, current: cur, executed: exec };
   };
 
-  const final = await walk(start.id, new Set<string>(), state);
+  const final = await walk(start.id, new Set<string>(), state, opts._depth ?? 0);
   state = final.state;
   executed.push(...final.executed);
 
@@ -378,9 +468,47 @@ export async function runGraphEngine(
 
 // ── free helpers ───────────────────────────────────────────────────────────
 
-/** Build a per-llm_call payload (non-streaming). */
-function payloadFor(node: GraphNode): Record<string, unknown> {
-  return { model: node.model ?? "unknown", stream: false };
+/** Build a per-llm_call payload (non-streaming) from the original chat
+ * payload and the flowing execution context. Message construction reuses the
+ * linear engine's `buildStepMessages` so graph and linear engines produce
+ * IDENTICAL prompts for the same chain (parity gate). */
+function payloadFor(
+  node: GraphNode,
+  originalPayload: Record<string, unknown>,
+  ctx: GraphState,
+): Record<string, unknown> {
+  const stepContext: StepContext = {
+    lastResponse: ctx.lastResponse,
+    lastContent: ctx.lastContent,
+  };
+  const messages = buildStepMessages(
+    {
+      type: node.mode ?? "generate",
+      system: node.system,
+      assistant: node.assistant,
+      user: node.user,
+    },
+    originalPayload,
+    stepContext,
+  );
+  const payload: Record<string, unknown> = {
+    ...originalPayload,
+    model: node.model ?? "unknown",
+    messages,
+    stream: false,
+  };
+  // Expose the execution variables as `params` so downstream steps (including
+  // invoked `pipeline` subgraphs via their merged variables) can read them
+  // from their input variables. Node-level `ctx`/`params` win over flow vars.
+  const flowParams = { ...(ctx.variables ?? {}) };
+  if (node.ctx !== undefined) {
+    payload.params = { ...flowParams, ...(node.params ?? {}), ctx: node.ctx };
+  } else if (node.params && Object.keys(node.params).length > 0) {
+    payload.params = { ...flowParams, ...node.params };
+  } else if (Object.keys(flowParams).length > 0) {
+    payload.params = flowParams;
+  }
+  return payload;
 }
 
 /** Apply an llm_call result to the execution state. */

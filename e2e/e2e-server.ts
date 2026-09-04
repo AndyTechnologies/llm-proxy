@@ -18,7 +18,6 @@
 import { join } from "node:path";
 import { createApp } from "../src/server.js";
 import type { ServerDeps } from "../src/server.js";
-import type { ParsedChain } from "../src/orchestrator/parser.js";
 import type { LlamaServeManager } from "../src/backend/manager.js";
 import type { GraphPipeline } from "../src/orchestrator/graph.js";
 import { createDashboardRouter } from "../src/dashboard/router.js";
@@ -130,7 +129,6 @@ function buildDeps(): ServerDeps {
       llama: { requestTimeoutMs: 5000 },
       chains: {},
     } as unknown as ServerDeps["config"],
-    chains: new Map<string, ParsedChain>(),
     providers: new Map(),
     manager: fakeManager(),
     dashboard: { handler: dashboardHandler },

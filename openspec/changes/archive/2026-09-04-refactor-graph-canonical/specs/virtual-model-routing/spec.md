@@ -1,14 +1,11 @@
-# Virtual Model Routing Specification
+# Delta for Virtual Model Routing
 
-## Purpose
-
-Expose pipeline chains as virtual models invocable via the `model` field with a `gateway/` prefix or via the `X-Chain-ID` HTTP header.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Virtual model invocation via model prefix
 
-The system SHALL treat any request whose `model` field starts with `gateway/` as a pipeline invocation. The text after `gateway/` SHALL be the pipeline identifier. The pipeline SHALL be resolved from the unified `graphMap` registry.
+The system SHALL treat any request whose `model` field starts with `gateway/` as a pipeline invocation. The text after `gateway/` SHALL be the pipeline identifier. The pipeline SHALL be resolved from the unified `graphMap` registry (not from a `chainMap` + `graphMap` union).
+(Previously: Virtual models were resolved from a union of `chainMap` and `graphMap`.)
 
 #### Scenario: Gateway-prefixed model invokes pipeline
 
@@ -25,6 +22,7 @@ The system SHALL treat any request whose `model` field starts with `gateway/` as
 ### Requirement: Virtual model invocation via X-Chain-ID header
 
 The system SHALL accept an `X-Chain-ID` HTTP header as an alternative invocation mechanism. When present, it SHALL override the `model` field for pipeline resolution from `graphMap`.
+(Previously: header resolved from union registry.)
 
 #### Scenario: X-Chain-ID header routes to pipeline
 
@@ -41,6 +39,7 @@ The system SHALL accept an `X-Chain-ID` HTTP header as an alternative invocation
 ### Requirement: Virtual models appear in /v1/models listing
 
 The system SHALL include all configured virtual pipelines in the `GET /v1/models` response. Each virtual model entry SHALL have `id: "gateway/<pipeline-name>"` and `owned_by: "gateway"`. The listing SHALL be derived from `graphMap` only.
+(Previously: listing merged from both `chainMap` and `graphMap`.)
 
 #### Scenario: Models list includes virtual pipelines
 
@@ -52,6 +51,7 @@ The system SHALL include all configured virtual pipelines in the `GET /v1/models
 ### Requirement: Virtual model passthrough support
 
 The system SHALL support a `passthrough` node type that forwards the request directly to a provider without transformation, used for final stages in multi-step pipelines.
+(Previously: passthrough was a step type; now it is a node type in the graph.)
 
 #### Scenario: Passthrough node streams directly
 

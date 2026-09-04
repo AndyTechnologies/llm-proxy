@@ -7,7 +7,6 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { GatewayConfig } from "../config/schema.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 import { createHealthHandler } from "./health.js";
 
@@ -55,14 +54,13 @@ function req(path = "/health"): Request {
 
 describe("GET /health aggregate (legacy preserved)", () => {
   test("reports status ok, chains, defaultChain, backend state/pid/models", async () => {
-    const chains = new Map<string, ParsedChain>();
     const config = baseConfig({ chains: { demo: {} as never } });
     const manager = fakeManager({
       state: "running",
       pid: 9001,
       models: ["M1", "M2"],
     });
-    const handler = createHealthHandler({ config, chains, manager });
+    const handler = createHealthHandler({ config, manager });
 
     const res = handler(req());
     const body = (await res.json()) as {
@@ -85,7 +83,6 @@ describe("GET /health aggregate (legacy preserved)", () => {
     const manager = fakeManager({ state: "stopped", pid: null, models: [] });
     const handler = createHealthHandler({
       config: baseConfig(),
-      chains: new Map(),
       manager,
     });
 
@@ -102,7 +99,6 @@ describe("GET /health/live (S3.1 liveness — always 200 while process is up)", 
   test("returns 200 regardless of backend state", async () => {
     const handler = createHealthHandler({
       config: baseConfig(),
-      chains: new Map(),
       manager: fakeManager({ state: "starting" }),
     });
 
@@ -115,7 +111,6 @@ describe("GET /health/live (S3.1 liveness — always 200 while process is up)", 
   test("returns 200 even when the backend is stopped", async () => {
     const handler = createHealthHandler({
       config: baseConfig(),
-      chains: new Map(),
       manager: fakeManager({ state: "error" }),
     });
 
@@ -129,7 +124,6 @@ describe("GET /health/ready (S3.1 readiness — gated on backend running)", () =
   test("returns 200 when backend state is running", async () => {
     const handler = createHealthHandler({
       config: baseConfig(),
-      chains: new Map(),
       manager: fakeManager({ state: "running" }),
     });
 
@@ -143,7 +137,6 @@ describe("GET /health/ready (S3.1 readiness — gated on backend running)", () =
   test("returns 503 with the backend state when starting", async () => {
     const handler = createHealthHandler({
       config: baseConfig(),
-      chains: new Map(),
       manager: fakeManager({ state: "starting" }),
     });
 
@@ -157,7 +150,6 @@ describe("GET /health/ready (S3.1 readiness — gated on backend running)", () =
   test("returns 503 with the backend state when stopped", async () => {
     const handler = createHealthHandler({
       config: baseConfig(),
-      chains: new Map(),
       manager: fakeManager({ state: "stopped" }),
     });
 
@@ -170,7 +162,6 @@ describe("GET /health/ready (S3.1 readiness — gated on backend running)", () =
   test("returns 503 with the backend state when error", async () => {
     const handler = createHealthHandler({
       config: baseConfig(),
-      chains: new Map(),
       manager: fakeManager({ state: "error" }),
     });
 
@@ -183,10 +174,9 @@ describe("GET /health/ready (S3.1 readiness — gated on backend running)", () =
 
 describe("GET /health dispatch preserves legacy aggregate", () => {
   test("legacy /health still returns the aggregate shape, not a live/ready payload", async () => {
-    const chains = new Map<string, ParsedChain>();
     const config = baseConfig({ chains: { demo: {} as never } });
     const manager = fakeManager({ state: "running", pid: 42, models: ["A"] });
-    const handler = createHealthHandler({ config, chains, manager });
+    const handler = createHealthHandler({ config, manager });
 
     const res = handler(req("/health"));
     expect(res.status).toBe(200);

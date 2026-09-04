@@ -8,7 +8,6 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import type { LlamaServeManager } from "../backend/manager.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
 import { createPipelineRegistry } from "../orchestrator/registry.js";
 import type { AstExpr, GraphEdge, GraphNode, GraphPipeline } from "../orchestrator/graph.js";
 import type { Provider } from "../providers/types.js";
@@ -101,7 +100,6 @@ function fakeManager(): LlamaServeManager {
 function deps(provider: Provider, _calls: Calls): ServerDeps {
   const registry = createPipelineRegistry({
     graphs: [conditionalGraph()],
-    chains: [],
   });
   return {
     config: {
@@ -109,7 +107,6 @@ function deps(provider: Provider, _calls: Calls): ServerDeps {
       llama: { requestTimeoutMs: 5000 },
     } as unknown as ServerDeps["config"],
     registry,
-    chains: new Map<string, ParsedChain>(),
     providers: new Map<string, Provider>([
       ["p", provider],
       ["fake", provider],
@@ -173,6 +170,37 @@ describe("graph pipeline via /v1/chat/completions (hybrid selector, 2.6)", () =>
     const dones = out.match(/data: \[DONE\]/g) ?? [];
     expect(dones.length).toBe(1);
     expect(calls.chat).toContain("p");
+    expect(calls.stream).toContain("p");
+  });
+
+  test("X-Chain-ID header overrides the model field for chain resolution", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const provider = fakeProvider("p", calls);
+    const app = createApp(deps(provider, calls));
+    const s = mount((req, server) => {
+      server.timeout(req, 0);
+      return app(req, server);
+    });
+
+    // model is a non-gateway model, but X-Chain-ID routes to "graphy"
+    const res = await fetch(`http://127.0.0.1:${s.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Chain-ID": "graphy",
+      },
+      body: JSON.stringify({
+        model: "gpt-4",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const out = await readAll(res);
+    const dones = out.match(/data: \[DONE\]/g) ?? [];
+    expect(dones.length).toBe(1);
     expect(calls.stream).toContain("p");
   });
 

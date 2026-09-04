@@ -14,7 +14,6 @@ import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { join } from "node:path";
 import { createApp } from "../server.js";
 import type { ServerDeps } from "../server.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 function fakeManager(): LlamaServeManager {
@@ -40,7 +39,6 @@ function makeDeps(): ServerDeps {
       llama: { requestTimeoutMs: 5000 },
       chains: {},
     } as unknown as ServerDeps["config"],
-    chains: new Map<string, ParsedChain>(),
     providers: new Map(),
     manager: fakeManager(),
     uiDir: UI_DIR,

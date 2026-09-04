@@ -46,7 +46,7 @@ llama:
     ubatch: 512
     tools: all
     parallel: 1
-  # Model registry — each key is the friendly id used by chains (step.model).
+  # Model registry — each key is the friendly id used by chain llm_call nodes.
   # A preset INI is generated from this on every start.
   models:
     SmolLM3-3B:
@@ -93,108 +93,225 @@ defaultChain: orchestrator
 #   dashboard, which atomically persists and reloads).
 
 # Chain definitions — virtual models invocable via "gateway/<name>" or X-Chain-ID.
-# Each chain is an ordered list of steps executed sequentially.
+# Each chain is a directed pipeline graph of `nodes` + `edges`: a `start` node,
+# one `llm_call` node per orchestration step, and an `end` node. `edges` join
+# start → … → end in execution order.
 #
-# Step types:
-#   generate  — seed with original user messages (optionally prepend system/assistant).
-#   refine    — refeed previous step's output for verification/improvement.
+# llm_call modes:
+#   generate  — seed with original user messages (optionally prefix system/assistant).
+#   refine    — refeed previous node's output for verification/improvement.
 #   passthrough — forward request to provider without transformation.
 #
-# Conditional routing:
-#   on_429           — step name to execute when this step returns HTTP 429.
-#   tool_calls_route — step name to execute when response contains tool_calls.
+# Conditional routing (fields on the llm_call node):
+#   on_429           — node id to execute when this node returns HTTP 429.
+#   tool_calls_route — node id to execute when response contains tool_calls.
+#
+# `pos` (editor layout position) is optional — the dashboard derives a layout
+# for nodes that lack one and preserves positions through apply round-trips.
 chains:
   orchestrator:
     displayName: "Orchestrator"
     provider: llama-server
-    steps:
-      - name: generate
-        type: generate
+    nodes:
+      - id: start
+        type: start
+      - id: generate
+        type: llm_call
+        mode: generate
         model: SmolLM3-3B
-      - name: refine-coder
-        type: refine
+      - id: refine-coder
+        type: llm_call
+        mode: refine
         model: Qwen2.5-Coder-3B-Instruct
-      - name: refine-phi
-        type: refine
+      - id: refine-phi
+        type: llm_call
+        mode: refine
         model: Phi-4-Mini-Instruct
-      - name: refine-llama
-        type: refine
+      - id: refine-llama
+        type: llm_call
+        mode: refine
         model: Llama3.2-3B-Instruct
+      - id: end
+        type: end
+    edges:
+      - from: start
+        to: generate
+      - from: generate
+        to: refine-coder
+      - from: refine-coder
+        to: refine-phi
+      - from: refine-phi
+        to: refine-llama
+      - from: refine-llama
+        to: end
 
   thinker:
     displayName: "Thinker"
     provider: llama-server
-    steps:
-      - name: refine
-        type: refine
+    nodes:
+      - id: start
+        type: start
+      - id: refine
+        type: llm_call
+        mode: refine
         model: Phi-4-Mini-Instruct
-      - name: generate
-        type: generate
+      - id: generate
+        type: llm_call
+        mode: generate
         model: Llama3.2-3B-Instruct
+      - id: end
+        type: end
+    edges:
+      - from: start
+        to: refine
+      - from: refine
+        to: generate
+      - from: generate
+        to: end
 
   coder:
     displayName: "Coder"
     provider: llama-server
-    steps:
-      - name: generate
-        type: generate
+    nodes:
+      - id: start
+        type: start
+      - id: generate
+        type: llm_call
+        mode: generate
         model: Qwen2.5-Coder-3B-Instruct
-      - name: refine-phi
-        type: refine
+      - id: refine-phi
+        type: llm_call
+        mode: refine
         model: Phi-4-Mini-Instruct
-      - name: refine-coder
-        type: refine
+      - id: refine-coder
+        type: llm_call
+        mode: refine
         model: Qwen2.5-Coder-3B-Instruct
-      - name: refine-llama
-        type: refine
+      - id: refine-llama
+        type: llm_call
+        mode: refine
         model: Llama3.2-3B-Instruct
+      - id: end
+        type: end
+    edges:
+      - from: start
+        to: generate
+      - from: generate
+        to: refine-phi
+      - from: refine-phi
+        to: refine-coder
+      - from: refine-coder
+        to: refine-llama
+      - from: refine-llama
+        to: end
 
   verifier:
     displayName: "Judge"
     provider: llama-server
-    steps:
-      - name: generate
-        type: generate
+    nodes:
+      - id: start
+        type: start
+      - id: generate
+        type: llm_call
+        mode: generate
         model: SmolLM3-3B
-      - name: refine-coder
-        type: refine
+      - id: refine-coder
+        type: llm_call
+        mode: refine
         model: Qwen2.5-Coder-3B-Instruct
-      - name: refine-phi
-        type: refine
+      - id: refine-phi
+        type: llm_call
+        mode: refine
         model: Phi-4-Mini-Instruct
-      - name: refine-llama
-        type: refine
+      - id: refine-llama
+        type: llm_call
+        mode: refine
         model: Llama3.2-3B-Instruct
+      - id: end
+        type: end
+    edges:
+      - from: start
+        to: generate
+      - from: generate
+        to: refine-coder
+      - from: refine-coder
+        to: refine-phi
+      - from: refine-phi
+        to: refine-llama
+      - from: refine-llama
+        to: end
 
 # Example: conditional routing (coverage for pipeline-orchestration scenarios)
-#   fallback-demo — on_429 fallback when the primary step returns HTTP 429:
-#     - name: primary
-#       type: generate
-#       model: SmolLM3-3B
-#       on_429: fallback
-#     - name: fallback
-#       type: generate
-#       model: Phi-4-Mini-Instruct
+#
+#   fallback-demo — on_429 fallback when the primary node returns HTTP 429:
+#     nodes:
+#       - id: start
+#         type: start
+#       - id: primary
+#         type: llm_call
+#         mode: generate
+#         model: SmolLM3-3B
+#         on_429: fallback
+#       - id: fallback
+#         type: llm_call
+#         mode: generate
+#         model: Phi-4-Mini-Instruct
+#       - id: end
+#         type: end
+#     edges:
+#       - from: start
+#         to: primary
+#       - from: primary
+#         to: fallback
+#       - from: fallback
+#         to: end
 #
 #   tool-demo — tool_calls routing when the response carries tool_calls:
-#     - name: planner
-#       type: generate
-#       model: Llama3.2-3B-Instruct
-#       tool_calls_route: tool_executor
-#     - name: tool_executor
-#       type: refine
-#       model: Phi-4-Mini-Instruct
+#     nodes:
+#       - id: start
+#         type: start
+#       - id: planner
+#         type: llm_call
+#         mode: generate
+#         model: Llama3.2-3B-Instruct
+#         tool_calls_route: tool_executor
+#       - id: tool_executor
+#         type: llm_call
+#         mode: refine
+#         model: Phi-4-Mini-Instruct
+#       - id: end
+#         type: end
+#     edges:
+#       - from: start
+#         to: planner
+#       - from: planner
+#         to: tool_executor
+#       - from: tool_executor
+#         to: end
 
 # Example: chain with conditional routing (commented reference)
 #   tool-orchestrator:
 #     displayName: "Tool Orchestrator"
 #     provider: llama-server
-#     steps:
-#       - name: planner
-#         type: generate
+#     nodes:
+#       - id: start
+#         type: start
+#       - id: planner
+#         type: llm_call
+#         mode: generate
 #         model: Qwen2.5-Coder-3B-Instruct
 #         tool_calls_route: tool_executor
-#       - name: tool_executor
-#         type: refine
+#       - id: tool_executor
+#         type: llm_call
+#         mode: refine
 #         model: Phi-4-Mini-Instruct
 #         on_429: planner
+#       - id: end
+#         type: end
+#     edges:
+#       - from: start
+#         to: planner
+#       - from: planner
+#         to: tool_executor
+#       - from: tool_executor
+#         to: end

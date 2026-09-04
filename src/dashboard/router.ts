@@ -46,10 +46,22 @@ export interface DashboardRouterDeps {
    */
   chainSummaries: () => PipelineSummary[];
   /**
+   * Resolve a single pipeline's full graph by id (for the editor to load an
+   * existing pipeline and edit/visualize it). Returns `undefined` when no
+   * pipeline is registered under the id — the route returns 404.
+   */
+  getPipeline: (id: string) => GraphPipeline | undefined;
+  /**
    * Resolve the registered (config.llama.models) model file names. A function
    * so re-applied configs update the list live.
    */
   registeredModels: () => string[];
+  /**
+   * Per-model runtime tuning (config.llama.models[<id>]) — context window
+   * (`ctx`) and temperature (`temp`) where set. Used by the editor to show the
+   * current context of a model and drive the context-window selector.
+   */
+  modelDetails: () => { id: string; file?: string; ctx?: number; temp?: number }[];
   /** Resolve the detected (candidate-only) `.gguf` files from the watcher. */
   detectedModels: () => string[];
   /** The models directory (for the models list payload). */
@@ -162,12 +174,39 @@ export function createDashboardRouter(deps: DashboardRouterDeps) {
         return json(deps.chainSummaries());
       }
 
+      // ── GET /api/ui/pipelines/:id ──
+      // Full graph for a single pipeline, so the editor can load an existing
+      // pipeline and render/edit its nodes + edges. 404 when not registered
+      // (mirrors the summary list's chainSummaries source).
+      if (req.method === "GET" && sub.length === 2 && sub[0] === "pipelines") {
+        const id = decodeURIComponent(sub[1]);
+        const graph = deps.getPipeline(id);
+        if (!graph) {
+          return notFound(`Pipeline "${id}" not found`);
+        }
+        return json({
+          id: graph.id,
+          name: graph.name ?? null,
+          nodes: graph.nodes.map((n) => ({ id: n.id, type: n.type, ...pickGraphNode(n) })),
+          edges: graph.edges.map((e) => ({ from: e.from, to: e.to, ...(e.guard ? { guard: e.guard } : {}) })),
+        });
+      }
+
       // ── GET /api/ui/models ──
       if (req.method === "GET" && sub.length === 1 && sub[0] === "models") {
         const seen = new Set<string>();
-        const models: { id: string; file: string; loaded: boolean }[] = [];
+        const byId = new Map(
+          deps.modelDetails().map((m) => [m.id, m]),
+        );
+        const models: { id: string; file: string; loaded: boolean; ctx?: number; temp?: number }[] = [];
         for (const file of deps.registeredModels()) {
-          models.push({ id: file, file, loaded: true });
+          models.push({
+            id: file,
+            file,
+            loaded: true,
+            ctx: byId.get(file)?.ctx,
+            temp: byId.get(file)?.temp,
+          });
           seen.add(file);
         }
         for (const file of deps.detectedModels()) {
@@ -347,6 +386,23 @@ function normalizeGraph(id: string, raw: unknown): GraphPipeline {
   }
   // Fall back to an empty/stub graph — a missing-structure draft is invalid.
   return { id, nodes: [], edges: [] };
+}
+
+/**
+ * Pick the editor-relevant fields off a graph node for the /pipelines/:id
+ * payload, omitting undefined fields so the editor gets a clean shape it can
+ * round-trip back through validate/apply.
+ */
+function pickGraphNode(n: GraphPipeline["nodes"][number]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (n.model !== undefined) out.model = n.model;
+  if (n.provider !== undefined) out.provider = n.provider;
+  if (n.condition !== undefined) out.condition = n.condition;
+  if (n.body !== undefined) out.body = n.body;
+  if (n.pipeline !== undefined) out.pipeline = n.pipeline;
+  if (n.params !== undefined) out.params = n.params;
+  if (n.parallel !== undefined) out.parallel = n.parallel;
+  return out;
 }
 
 /** Build the SSE Response wiring bus events to a stream with keepalive. */

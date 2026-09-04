@@ -1,0 +1,234 @@
+{
+  "orchestrator": [
+    {
+      "provider": "llama-server",
+      "model": "SmolLM3-3B",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Qwen2.5-Coder-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Phi-4-Mini-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Llama3.2-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    }
+  ],
+  "thinker": [
+    {
+      "provider": "llama-server",
+      "model": "Phi-4-Mini-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Llama3.2-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  ],
+  "coder": [
+    {
+      "provider": "llama-server",
+      "model": "Qwen2.5-Coder-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Phi-4-Mini-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Qwen2.5-Coder-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Llama3.2-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    }
+  ],
+  "verifier": [
+    {
+      "provider": "llama-server",
+      "model": "SmolLM3-3B",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Qwen2.5-Coder-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Phi-4-Mini-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Llama3.2-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    }
+  ],
+  "fallback-demo": [
+    {
+      "provider": "llama-server",
+      "model": "SmolLM3-3B",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Phi-4-Mini-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  ],
+  "tool-demo": [
+    {
+      "provider": "llama-server",
+      "model": "Llama3.2-3B-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    },
+    {
+      "provider": "llama-server",
+      "model": "Phi-4-Mini-Instruct",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        },
+        {
+          "role": "user",
+          "content": "out-llama-server"
+        }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { createApp } from "../server.js";
 import type { ServerDeps } from "../server.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 import { createDashboardRouter } from "./router.js";
 import { createExecutionTracker } from "./execution-tracker.js";
@@ -29,7 +28,6 @@ function baseDeps(): ServerDeps {
       llama: { requestTimeoutMs: 5000 },
       chains: {},
     } as unknown as ServerDeps["config"],
-    chains: new Map<string, ParsedChain>(),
     providers: new Map(),
     manager: fakeManager(),
   } as ServerDeps;
@@ -53,7 +51,19 @@ function dashboardDeps(): NonNullable<ServerDeps["dashboard"]> {
     chainSummaries: () => [
       { id: "c1", description: "desc", nodeCount: 3, lastExecution: null },
     ],
+    getPipeline: (id) =>
+      id === "c1"
+        ? {
+            id: "c1",
+            nodes: [
+              { id: "a", type: "start" },
+              { id: "b", type: "end" },
+            ],
+            edges: [{ from: "a", to: "b" }],
+          }
+        : undefined,
     registeredModels: () => ["m1.gguf"],
+    modelDetails: () => [{ id: "m1.gguf", file: "m1.gguf", ctx: 4096 }],
     detectedModels: () => [],
     modelsDir: "/models",
     autoRefresh: true,
