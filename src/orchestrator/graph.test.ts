@@ -15,7 +15,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   evaluateAst,
-  isLinearCompatible,
   sanitizeAst,
   validateGraph,
   type AstContext,
@@ -46,8 +45,6 @@ function node(
 const MODEL = { model: "gemma" };
 const llm = (id: string, extra: Partial<GraphNode> = {}) =>
   node(id, "llm_call", { ...MODEL, ...extra });
-const cond = (id: string, condition: AstExpr) =>
-  node(id, "condition", { condition });
 
 // ── Task 2.1: graph validation ──
 
@@ -334,40 +331,5 @@ describe("safe AST — sanitizeAst rejects unsafe input (RED: unsafe-input-rejec
       ],
     };
     expect(sanitizeAst(ok)).toEqual(ok);
-  });
-});
-
-// ── Hybrid compatibility (2.5 building block) ──
-
-describe("isLinearCompatible", () => {
-  test("a single sequential path is linear-compatible", () => {
-    const graph = makeGraph(
-      [node("start", "start"), llm("a"), node("end", "end")],
-      [
-        { from: "start", to: "a" },
-        { from: "a", to: "end" },
-      ],
-    );
-    expect(isLinearCompatible(graph)).toBe(true);
-  });
-
-  test("a graph with a condition node is NOT linear-compatible (routes to graph engine)", () => {
-    const graph = makeGraph(
-      [
-        node("start", "start"),
-        cond("c", { op: "compare", field: "lastResponse.status", op2: "==", value: 200 }),
-        llm("a"),
-        llm("b"),
-        node("end", "end"),
-      ],
-      [
-        { from: "start", to: "c" },
-        { from: "c", to: "a", guard: "true" },
-        { from: "c", to: "b", guard: "false" },
-        { from: "a", to: "end" },
-        { from: "b", to: "end" },
-      ],
-    );
-    expect(isLinearCompatible(graph)).toBe(false);
   });
 });

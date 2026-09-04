@@ -1,7 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { createApp } from "../server.js";
 import type { ServerDeps } from "../server.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 import { createDashboardRouter } from "./router.js";
 import { createExecutionTracker } from "./execution-tracker.js";
@@ -29,7 +28,6 @@ function baseDeps(): ServerDeps {
       llama: { requestTimeoutMs: 5000 },
       chains: {},
     } as unknown as ServerDeps["config"],
-    chains: new Map<string, ParsedChain>(),
     providers: new Map(),
     manager: fakeManager(),
   } as ServerDeps;

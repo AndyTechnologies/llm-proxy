@@ -1,9 +1,10 @@
 /**
  * Graph engine (Slice B — task 2.4).
  *
- * Immutable runtime for complex pipelines: graphs with conditionals, loops,
- * and opt-in parallel subgraphs. Linear-compatible graphs run on the existing
- * `runChain` (hybrid selector); this engine handles everything else.
+ * The single, canonical execution runtime for all pipelines. The linear
+ * engine (`runChain`) and hybrid selector were removed: every graph runs
+ * here regardless of shape (sequential, conditionals, loops, parallel, or
+ * composition).
  *
  * Semantics (graph-engine spec):
  *  - Node types: start / end / llm_call / condition / loop / fan(parallel) / join
@@ -21,9 +22,8 @@
  * branches hold independent copies and merge at the join (no shared mutable
  * state across branches).
  */
-import type { ProviderMap } from "./engine.js";
+import type { ProviderMap, StepContext } from "./engine.js";
 import { buildStepMessages, buildStreamBody, hasToolCalls } from "./engine.js";
-import type { StepContext } from "../types/chain.js";
 import { extractContent } from "../utils/extract.js";
 import { evaluateAst } from "./graph.js";
 import type { GraphPipeline, GraphNode, GraphEdge, AstExpr } from "./graph.js";

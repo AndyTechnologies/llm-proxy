@@ -14,7 +14,6 @@ import { ERR_CONFIG_NOT_FOUND } from "./config/load.js";
 import { generateDefaultConfig } from "./config/defaults.js";
 import { createModelsWatcher } from "./config/watcher.js";
 import { persistConfig } from "./config/write.js";
-import { configChainToGraph } from "./orchestrator/parser.js";
 import { createPipelineRegistry } from "./orchestrator/registry.js";
 import { validateGraph } from "./orchestrator/graph.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
@@ -28,7 +27,8 @@ import { createMetricsCollector } from "./dashboard/metrics.js";
 import { createApplyService } from "./dashboard/service.js";
 import { createDashboardRouter } from "./dashboard/router.js";
 import { runStepRetry } from "./dashboard/retry.js";
-import type { GatewayConfig } from "./config/schema.js";
+import type { GatewayConfig, ChainConfig } from "./config/schema.js";
+import type { GraphPipeline } from "./orchestrator/graph.js";
 
 // ── Structured JSON logging (S3.1 — health-endpoints Req 4) ──
 // Startup, shutdown, and fatal-error lines are emitted as single-line JSON
@@ -76,6 +76,23 @@ try {
 }
 
 // ── Register graph pipelines from config (graph is canonical) ──
+// A chain config is already a graph: `nodes`+`edges` parsed directly by zod.
+// (The removed parser's `configChainToGraph` was a thin structural mapping;
+//  the config graph passes straight through with an edge `guard` narrowing.
+//  Branches are the only guards the engine evaluates, so the cast is the
+//  boundary narrowing.)
+function configChainToGraph(
+  name: string,
+  cfg: ChainConfig,
+): GraphPipeline {
+  return {
+    id: cfg.name ?? name,
+    name: cfg.displayName ?? cfg.name ?? name,
+    nodes: cfg.nodes,
+    edges: cfg.edges as GraphPipeline["edges"],
+  };
+}
+
 const registry = createPipelineRegistry({
   graphs: Object.entries(config.chains).map(([name, chain]) =>
     configChainToGraph(name, chain),

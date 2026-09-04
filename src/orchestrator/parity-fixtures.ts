@@ -1,20 +1,12 @@
 /**
- * Parity fixtures (refactor-graph-canonical — Phases 2 & 4).
+ * Parity fixtures (refactor-graph-canonical — Phase 7).
  *
- * Shares the 6 migrated chains and a call-recording fake provider between the
- * linear baseline capture and the graph parity gate, so both engines run the
- * SAME chains and produce comparable call sequences.
- *
- * Every chain is expressed twice:
- *   - as a `ParsedChain` (linear-engine input; the Phase 2 baseline), and
- *   - as a `GraphPipeline` (graph-engine input; the Phase 4 parity check).
- *
- * The graph's `start → llm_call* → end` shape mirrors the linear steps and
- * each `llm_call` node carries a `mode` matching the linear step's `type` so
- * message construction is identical across engines (both call
- * `buildStepMessages`).
+ * Shares the 6 migrated chains and a call-recording fake provider for the
+ * graph parity approval test. Each chain is expressed as a `GraphPipeline`
+ * and paired with a recording provider that captures `(provider, model,
+ * messages)` call sequences for comparison against the committed golden
+ * snapshot.
  */
-import type { ParsedChain } from "./parser.js";
 import type { Provider } from "../providers/types.js";
 import type { GraphNode, GraphEdge, GraphPipeline } from "./graph.js";
 
@@ -58,28 +50,7 @@ export function recordingProvider(name: string, calls: RecordedCall[]): Provider
   };
 }
 
-/** Build a linear chain from an ordered list of step specs. */
-function linearChain(
-  name: string,
-  displayName: string,
-  steps: Array<{
-    name: string;
-    type: "generate" | "refine" | "passthrough";
-    model: string;
-    on_429?: string;
-    tool_calls_route?: string;
-  }>,
-): ParsedChain {
-  return {
-    name,
-    displayName,
-    defaultProvider: "llama-server",
-    provider: "llama-server",
-    steps: steps.map((s) => ({ ...s, provider: "llama-server" })),
-  };
-}
-
-/** Build the graph twin of a linear chain (start → llm_call* → end). */
+/** Build a graph pipeline (start → llm_call* → end). */
 function graphTwin(
   name: string,
   displayName: string,
@@ -113,12 +84,11 @@ function graphTwin(
 }
 
 /**
- * The 6 migrated chains. Each entry exposes its linear `ParsedChain`, its
- * graph `GraphPipeline`, and the provider map (all point at `llama-server`).
+ * The 6 migrated chains. Each entry exposes its graph `GraphPipeline` and
+ * the provider map (all point at `llama-server`).
  */
 export interface ParityChain {
   id: string;
-  chain: ParsedChain;
   graph: GraphPipeline;
   /** The provider map — all resolve `llama-server` to a recording provider. */
   providers: Map<string, Provider>;
@@ -198,7 +168,7 @@ const STEP_SETS: Array<{
   },
 ];
 
-/** All 6 parity chains as linear + graph twins with a shared provider map. */
+/** All 6 parity chains as graph pipelines with a shared provider map. */
 export function parityChains(): ParityChain[] {
   return STEP_SETS.map(({ id, display, steps }) => {
     const calls: RecordedCall[] = [];
@@ -206,7 +176,6 @@ export function parityChains(): ParityChain[] {
     providers.set("llama-server", recordingProvider("llama-server", calls));
     return {
       id,
-      chain: linearChain(id, display, steps),
       graph: graphTwin(id, display, steps),
       providers,
       calls,

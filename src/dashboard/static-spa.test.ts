@@ -16,7 +16,6 @@ import { join } from "node:path";
 import { createApp } from "../server.js";
 import { resolveUiAsset, contentTypeFor } from "../server.js";
 import type { ServerDeps } from "../server.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 function fakeManager(): LlamaServeManager {
@@ -39,7 +38,6 @@ function baseDeps(uiDir: string): ServerDeps {
       llama: { requestTimeoutMs: 5000 },
       chains: {},
     } as unknown as ServerDeps["config"],
-    chains: new Map<string, ParsedChain>(),
     providers: new Map(),
     manager: fakeManager(),
     // The static SPA directory (Slice D — added to ServerDeps in task 4.4).

@@ -1,44 +1,24 @@
 /**
- * Chain execution engine.
+ * Shared engine utilities for graph pipeline execution.
  *
- * Runs chain steps sequentially with:
- *  - Context refeed: each step receives the previous step's full response
- *  - 429 fallback: when a step raises HTTP 429 (the provider adapter throws
- *    with err.status=429), the engine reroutes to the step named by `on_429`
- *  - tool_calls routing: when a response contains tool_calls, the engine
- *    reroutes to the step named by `tool_calls_route`
- *  - Streaming: only the LAST step streams to the client. The streaming core
- *    (`buildStreamBody`) returns a `ReadableStream<Uint8Array>` whose frames
- *    are `data: {...}\n\n` SSE messages; `runChain` wraps that stream in a
- *    `Response` (S2b) so the Bun.serve fetch handler returns it directly.
- *  - Abort: client disconnect cancels the upstream request via the stream's
- *    cancellation propagating to the provider's async generator.
- *
- * DESIGN DECISION (from design.md): the engine is bespoke (~40 lines of
- * core loop) rather than using LangChain/Mastra — the current needs are
- * exactly sequential steps + 2 conditionals. Framework overhead is
- * unjustified.
+ * The linear engine (`runChain`) has been removed — all pipeline execution
+ * now goes through the graph engine (`runGraphEngine`). This module retains
+ * the shared helpers that the graph engine imports:
+ *  - `buildStepMessages` — message construction for generate/refine/passthrough
+ *  - `buildStreamBody` — SSE streaming core
+ *  - `hasToolCalls` — tool_calls response detection
  */
-import type { ParsedChain } from "./parser.js";
 import type { Provider } from "../providers/types.js";
-import type { StepContext } from "../types/chain.js";
-import { extractContent } from "../utils/extract.js";
 
 /** Map of provider name → Provider instance (injected by the server). */
 export type ProviderMap = Map<string, Provider>;
 
-/** Map of chain name → ParsedChain (from parser). */
-export type ChainMap = Map<string, ParsedChain>;
-
-/**
- * Execute a single step non-streaming and return the parsed response.
- */
-async function runStepNonStream(
-  provider: Provider,
-  payload: Record<string, unknown>,
-  chainName: string,
-): Promise<Record<string, unknown>> {
-  return provider.chat(payload, chainName);
+/** Resolved per-execution context flowing between steps. */
+export interface StepContext {
+  /** Full response body of the most recent executed step. */
+  lastResponse: unknown;
+  /** Extracted textual content from the last response (context refeed). */
+  lastContent: string;
 }
 
 /**
@@ -147,182 +127,6 @@ export function buildStreamBody(
     },
   });
 }
-
-/**
- * Execute the final step streaming into the given ReadableStream, returning
- * it so the caller (route / server) can serve it as an SSE Response.
- */
-function runStepStream(
-  provider: Provider,
-  payload: Record<string, unknown>,
-  signal: AbortSignal,
-  completionId: string,
-  created: number,
-  modelName: string,
-): ReadableStream<Uint8Array> {
-  return buildStreamBody(provider, payload, signal, completionId, created, modelName);
-}
-
-/** SSE response headers for streaming chain steps (Bun.serve). */
-const SSE_HEADERS = {
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
-  Connection: "keep-alive",
-  "X-Accel-Buffering": "no",
-};
-
-/** JSON response headers for non-streaming chain results. */
-const JSON_HEADERS = { "Content-Type": "application/json" };
-
-/** Generate a stable-but-unique OpenAI chat completion id for a chain. */
-function newCompletionId(): string {
-  return `chatcmpl-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
-}
-
-/** Whether the payload requests a streaming response. */
-function isStreamRequest(payload: Record<string, unknown>): boolean {
-  return payload.stream === true;
-}
-
-/**
- * Run a full chain: sequential steps, context refeed, conditional routing,
- * streaming only on the final step. Returns the final `Response` (SSE stream
- * for streaming chains, JSON body otherwise) ready for the Bun.serve fetch
- * handler to return directly.
- */
-export async function runChain(
-  chain: ParsedChain,
-  providers: ProviderMap,
-  originalPayload: Record<string, unknown>,
-  signal: AbortSignal,
-  query?: string,
-): Promise<Response> {
-  const steps = chain.steps;
-  const displayName = chain.displayName ?? chain.name;
-
-  let context: StepContext = {
-    lastResponse: null,
-    lastContent: "",
-  };
-
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    const isLast = i === steps.length - 1;
-
-    // Resolve provider — fallback to first available if name not found.
-    const provider =
-      providers.get(step.provider) ?? providers.values().next().value;
-    if (!provider) {
-      throw new Error(
-        `[engine] no provider "${step.provider}" available for chain "${chain.name}" step ${i}`,
-      );
-    }
-
-    // Build messages for this step based on its type.
-    const messages = buildStepMessages(step, originalPayload, context);
-
-    const payload: Record<string, unknown> = {
-      ...originalPayload,
-      model: step.model,
-      messages,
-      stream: isLast ? originalPayload.stream : false,
-    };
-
-    // Preserve the original request query (e.g. `?autoload=false`) so the
-    // provider appends it to the upstream URL on every chain step.
-    if (query) {
-      payload.__gatewayQuery = query;
-    }
-
-    console.log(
-      `[engine] chain "${displayName}" step ${i + 1}/${steps.length}: ` +
-        `${step.type} → ${step.model} (${provider.name})` +
-        (isLast ? " [STREAM]" : ""),
-    );
-
-    try {
-      if (isLast && isStreamRequest(originalPayload)) {
-        // Final streaming step — wrap the SSE ReadableStream in a Response.
-        const stream = runStepStream(
-          provider,
-          payload,
-          signal,
-          newCompletionId(),
-          Math.floor(Date.now() / 1000),
-          displayName,
-        );
-        return new Response(stream as ReadableStream, {
-          status: 200,
-          headers: SSE_HEADERS,
-        });
-      }
-
-      // Non-streaming step: get the full response and refeed.
-      const response = await runStepNonStream(provider, payload, chain.name);
-
-      context = {
-        lastResponse: response,
-        lastContent: extractContent(response),
-      };
-
-      // ── tool_calls routing ──
-      if (step.tool_calls_route && hasToolCalls(response)) {
-        const routeIdx = steps.findIndex(
-          (s) =>
-            (s.name ?? `step-${steps.indexOf(s)}`) === step.tool_calls_route,
-        );
-        if (routeIdx >= 0) {
-          console.log(
-            `[engine] tool_calls detected on step ${i}, routing to "${step.tool_calls_route}"`,
-          );
-          i = routeIdx - 1; // -1 because the for-loop will i++ next.
-          continue;
-        }
-      }
-    } catch (err) {
-      // If the error carries a status (e.g. 429 from provider adapter),
-      // check on_429 before re-throwing.
-      const errStatus = (err as Error & { status?: number }).status;
-      if (errStatus === 429 && step.on_429) {
-        const fallbackIdx = steps.findIndex(
-          (s) => (s.name ?? `step-${steps.indexOf(s)}`) === step.on_429,
-        );
-        if (fallbackIdx >= 0) {
-          console.log(
-            `[engine] 429 error on step ${i}, falling back to "${step.on_429}"`,
-          );
-          i = fallbackIdx - 1;
-          continue;
-        }
-      }
-      throw err;
-    }
-  }
-
-  // Non-streaming chain: return the final response as JSON.
-  const finalResponse = context.lastResponse as Record<string, unknown>;
-  if (finalResponse) {
-    finalResponse.model = displayName;
-    return new Response(JSON.stringify(finalResponse), {
-      status: 200,
-      headers: JSON_HEADERS,
-    });
-  }
-
-  return new Response(
-    JSON.stringify({
-      error: {
-        message: "Chain produced no response",
-        type: "server_error",
-        param: null,
-        code: null,
-      },
-    }),
-    { status: 500, headers: JSON_HEADERS },
-  );
-}
-
-// ── Helpers ──
 
 /**
  * Build the messages array for a step based on its type and context.
