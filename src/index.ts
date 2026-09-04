@@ -2,22 +2,19 @@
 /**
  * Gateway entry point.
  *
- * Boots config → validate backend → spawn llama-server → parse chains →
+ * Boots config → validate backend → spawn llama-server → register graphs →
  * create providers → mount Bun.serve (fetch handler) → listen.
  *
  * The managed backend MUST be ready (start()) BEFORE Bun.serve listens so
  * traffic never hits an unready upstream. Shutdown stops the backend and
  * drains in-flight requests before exiting.
- *
- * S2a: Bun.serve serves GET /health + GET /v1/models. SSE chat/completions
- * routes are migrated in S2b.
  */
 import { loadGatewayConfig } from "./config/index.js";
 import { ERR_CONFIG_NOT_FOUND } from "./config/load.js";
 import { generateDefaultConfig } from "./config/defaults.js";
 import { createModelsWatcher } from "./config/watcher.js";
 import { persistConfig } from "./config/write.js";
-import { parseChains, configChainToGraph } from "./orchestrator/parser.js";
+import { configChainToGraph } from "./orchestrator/parser.js";
 import { createPipelineRegistry } from "./orchestrator/registry.js";
 import { validateGraph } from "./orchestrator/graph.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
@@ -78,18 +75,8 @@ try {
   process.exit(1);
 }
 
-// ── Parse chains (fails fast on invalid config) ──
-const parsed = parseChains(config);
-
-// ── Mutable chain registry (Slice A) ──
-// The registry supersedes the frozen `parseChains` Map as the source of truth
-// for chain resolution. Routes read chains via `registry.asMap()`, which also
-// allows a later atomic `reload()` (dashboard-api apply) to swap chains
-// without a restart.
+// ── Register graph pipelines from config (graph is canonical) ──
 const registry = createPipelineRegistry({
-  chains: [...parsed.values()],
-  // The config now stores the canonical graph directly — no conversion from a
-  // linear shape needed. Feed the graph to the dashboard editor as-is.
   graphs: Object.entries(config.chains).map(([name, chain]) =>
     configChainToGraph(name, chain),
   ),
@@ -137,43 +124,34 @@ const applyService = createApplyService({
   // config file so the new chains go live without a restart.
   reload: async () => {
     const cfg = await loadGatewayConfig();
-    const fresh = parseChains(cfg);
     await registry.reload(
       Object.entries(cfg.chains).map(([name, chain]) =>
         configChainToGraph(name, chain),
       ),
-      [...fresh.values()],
     );
   },
-  getCurrentChains: () => [...registry.asMap().keys()],
+  getCurrentChains: () => registry.listGraphs().map((g) => g.id),
 });
 
 // Resolve a node's runtime type for retry gating: graph pipelines expose their
-// node types directly; linear chains treat every step as an llm_call.
+// node types directly.
 function nodeTypeFor(pipelineId: string, nodeId: string): string | undefined {
   const graph = registry.getGraph(pipelineId);
-  if (graph) {
-    return graph.nodes.find((n) => n.id === nodeId)?.type;
-  }
-  return registry.asMap().has(pipelineId) ? "llm_call" : undefined;
+  return graph?.nodes.find((n) => n.id === nodeId)?.type;
 }
 
 // Non-streaming retry of a failed llm_call step (task 3.7). The provider is
-// the managed llama-server backend; the model comes from the graph/chain.
+// the managed llama-server backend; the model comes from the graph.
 const getModel = registry.getGraph.bind(registry);
 
 const dashboardHandler = createDashboardRouter({
   chainSummaries: () =>
-    [...registry.asMap().keys()].map((id) => {
-      const graph = registry.getGraph(id);
-      const chain = registry.asMap().get(id);
-      return {
-        id,
-        description: null,
-        nodeCount: graph?.nodes.length ?? chain?.steps.length ?? 0,
-        lastExecution: tracker.get(id)?.id ? new Date().toISOString() : null,
-      };
-    }),
+    registry.listGraphs().map((graph) => ({
+      id: graph.id,
+      description: null,
+      nodeCount: graph.nodes.length,
+      lastExecution: tracker.get(graph.id)?.id ? new Date().toISOString() : null,
+    })),
   getPipeline: (id) => registry.getGraph(id),
   registeredModels: () => Object.keys(config.llama.models ?? {}),
   modelDetails: () =>
@@ -207,7 +185,7 @@ const dashboardHandler = createDashboardRouter({
     }
     return runStepRetry({
       tracker,
-      // The retry runs a NON-streaming chat call through the real provider.
+      // The retry runs a NON-streamING chat call through the real provider.
       provider: { chat: (payload) => provider.chat(payload) },
       getNodeType: nodeTypeFor,
       requestPayload: () => ({}),
@@ -224,7 +202,6 @@ const dashboardHandler = createDashboardRouter({
 const app = createApp({
   config,
   registry,
-  chains: registry.asMap(),
   providers,
   manager,
   dashboard: { handler: dashboardHandler },
@@ -248,7 +225,7 @@ log(
 log(
   "info",
   "virtual models",
-  { models: [...registry.asMap().keys()].map((n) => `gateway/${n}`) },
+  { models: registry.listGraphs().map((g) => `gateway/${g.id}`) },
 );
 log("info", "backend", { baseUrl: manager.status().baseUrl });
 

@@ -60,7 +60,7 @@ function joinUIPath(dir: string, file: string): string {
 }
 
 /**
- * Bun.serve application factory (S2.3 — createApp → Bun.serve fetch handler).
+ * Bun.serve application factory (createApp → Bun.serve fetch handler).
  *
  * Replaces the Express app with a single fetch handler mounted on Bun.serve.
  * Middleware and routes are plain functions returning Response:
@@ -71,14 +71,9 @@ function joinUIPath(dir: string, file: string): string {
  *  5. Route handlers (health, models, chat/completions SSE)
  *  6. Error normalization (OpenAI envelope)
  *
- * SLICE BOUNDARY: GET /health and GET /v1/models are fully wired in S2a.
- * POST /v1/chat/completions and POST /v1/completions (SSE) are migrated in
- * S2b: the dispatcher applies `server.timeout(req, 0)` on those stream routes
- * (ADR-2 — idleTimeout disabled per-request so silent SSE streams survive),
- * then hands off to the chat/completions fetch handlers.
+ * Graph-only dispatch: routes resolve chains via `getGraph` from the registry.
  */
 import type { GatewayConfig } from "./config/schema.js";
-import type { ParsedChain } from "./orchestrator/parser.js";
 import type { PipelineRegistry } from "./orchestrator/registry.js";
 import type { Provider } from "./providers/types.js";
 import type { LlamaServeManager } from "./backend/manager.js";
@@ -93,13 +88,10 @@ import { createCompletionsHandler } from "./routes/completions.js";
 export interface ServerDeps {
   config: GatewayConfig;
   /**
-   * Mutable registry — the source of truth for chain resolution (Slice A).
-   * When present, the routes read their chains from `registry.asMap()`; when
-   * absent (backward-compatible tests), they fall back to the frozen `chains`
-   * map. This keeps the registry additive/Map-compatible per the design.
+   * Mutable graph registry — the source of truth for chain resolution.
+   * Routes read graphs via `getGraph` and `listGraphs`.
    */
   registry?: PipelineRegistry;
-  chains: Map<string, ParsedChain>;
   providers: Map<string, Provider>;
   manager: LlamaServeManager;
   /**
@@ -152,33 +144,26 @@ function corsHeaders(deps: ServerDeps): Record<string, string> {
 export function createApp(
   deps: ServerDeps,
 ): (req: Request, server: BunServer) => Promise<Response> {
-  // Slice A: the mutable registry is the source of truth for chain resolution.
-  // Routes read the current chains via `registry.asMap()` so a runtime `reload()`
-  // can swap chains without a restart. When no registry is injected (existing
-  // route tests), fall back to the frozen `chains` map — registry is additive.
-  const chains = deps.registry?.asMap() ?? deps.chains;
-  // Slice B: graph pipelines are also resolved through the registry so complex
-  // graphs route to the graph engine via the hybrid selector (2.6).
-  const getGraph = deps.registry ? (id: string) => deps.registry!.getGraph(id) : undefined;
+  // Graph-only dispatch: all chains resolve via the registry's getGraph.
+  const getGraph = deps.registry
+    ? (id: string) => deps.registry!.getGraph(id)
+    : (() => undefined);
 
   const modelsHandler = createModelsHandler({
-    chains,
+    graphs: deps.registry?.listGraphs() ?? [],
     manager: deps.manager,
   });
   const healthHandler = createHealthHandler({
     config: deps.config,
-    chains,
     manager: deps.manager,
   });
   const chatHandler = createChatHandler({
-    chains,
     providers: deps.providers,
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,
     getGraph,
   });
   const completionsHandler = createCompletionsHandler({
-    chains,
     providers: deps.providers,
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,

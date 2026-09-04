@@ -1,5 +1,5 @@
 /**
- * Health fetch handler (S2.3 + S3.1 — Bun.serve migration + live/ready).
+ * Health fetch handler (Bun.serve migration + live/ready).
  *
  * Routes three health endpoints by pathname:
  *  - GET /health       → legacy aggregate (backend state, pid, models, chains)
@@ -12,12 +12,10 @@
  * The legacy /health aggregate shape is preserved unchanged (Req 3).
  */
 import type { GatewayConfig } from "../config/schema.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface HealthRouteDeps {
   config: GatewayConfig;
-  chains: Map<string, ParsedChain>;
   manager: LlamaServeManager;
 }
 

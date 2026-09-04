@@ -6,7 +6,7 @@
  * models (owned_by "llama-server").
  */
 import { describe, expect, test } from "bun:test";
-import type { ParsedChain } from "../orchestrator/parser.js";
+import type { GraphPipeline } from "../orchestrator/graph.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 import { createModelsHandler } from "./models.js";
 
@@ -27,18 +27,15 @@ function req(): Request {
 
 describe("GET /v1/models", () => {
   test("lists gateway virtual models + real llama-server models", async () => {
-    const chains = new Map<string, ParsedChain>();
-    chains.set("orchestrator", {
-      name: "orchestrator",
-      displayName: "Orchestrator",
-      steps: [],
-    } as ParsedChain);
-    chains.set("quick", { name: "quick", steps: [] } as ParsedChain);
+    const graphs: GraphPipeline[] = [
+      { id: "orchestrator", name: "Orchestrator", nodes: [], edges: [] },
+      { id: "quick", name: "quick", nodes: [], edges: [] },
+    ];
 
     const manager = fakeManager({
       models: ["SmolLM3-3B", "Llama3.2-3B-Instruct"],
     });
-    const handler = createModelsHandler({ chains, manager });
+    const handler = createModelsHandler({ graphs, manager });
 
     const res = handler(req());
     expect(res.status).toBe(200);
@@ -61,9 +58,9 @@ describe("GET /v1/models", () => {
     expect(orch?.description).toBe("Orchestrator");
   });
 
-  test("empty chains + empty backend yields object list with zero data", async () => {
+  test("empty graphs + empty backend yields object list with zero data", async () => {
     const handler = createModelsHandler({
-      chains: new Map(),
+      graphs: [],
       manager: fakeManager({ models: [] }),
     });
     const body = (await handler(req()).json()) as { object: string; data: unknown[] };

@@ -19,7 +19,8 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import type { LlamaServeManager } from "../backend/manager.js";
-import type { ParsedChain } from "../orchestrator/parser.js";
+import type { GraphPipeline } from "../orchestrator/graph.js";
+import { createPipelineRegistry } from "../orchestrator/registry.js";
 import type { Provider } from "../providers/types.js";
 import { createApp, type ServerDeps } from "./../server.js";
 
@@ -74,12 +75,20 @@ function fakeManager(baseUrl = "http://127.0.0.1:8080"): LlamaServeManager {
   } as unknown as LlamaServeManager;
 }
 
-function chatChain(): ParsedChain {
+function chatGraph(): GraphPipeline {
   return {
-    name: "thinker",
-    displayName: "Thinker",
-    steps: [{ type: "passthrough", provider: "fake", model: "fake-model" }],
-  } as ParsedChain;
+    id: "thinker",
+    name: "Thinker",
+    nodes: [
+      { id: "start", type: "start" },
+      { id: "call", type: "llm_call", model: "fake-model", provider: "fake" },
+      { id: "end", type: "end" },
+    ],
+    edges: [
+      { from: "start", to: "call" },
+      { from: "call", to: "end" },
+    ],
+  };
 }
 
 async function readAll(res: Response): Promise<string> {
@@ -100,7 +109,7 @@ function deps(over: Partial<ServerDeps> = {}): ServerDeps {
       server: { port: 0, host: "127.0.0.1", corsOrigins: [] },
       llama: { requestTimeoutMs: 5000 },
     } as unknown as ServerDeps["config"],
-    chains: new Map<string, ParsedChain>([["thinker", chatChain()]]),
+    registry: createPipelineRegistry({ graphs: [chatGraph()] }),
     providers: new Map<string, Provider>(),
     manager: fakeManager(),
     ...over,

@@ -1,5 +1,5 @@
 /**
- * POST /v1/completions route handler (S2b — Bun.serve fetch handler).
+ * POST /v1/completions route handler (Bun.serve fetch handler).
  *
  * Legacy text completions endpoint. Converts the prompt-based request into
  * a chat-formatted request internally (prompt → messages[{role:"user"}]),
@@ -16,20 +16,17 @@
  */
 import { completionRequestSchema } from "../types/zod.js";
 import { createPassthroughProxy } from "../middleware/proxy.js";
-import type { ChainMap, ProviderMap } from "../orchestrator/engine.js";
-import { runChain } from "../orchestrator/engine.js";
-import { createHybridSelector } from "../orchestrator/hybrid-selector.js";
+import type { ProviderMap } from "../orchestrator/engine.js";
 import { runGraphEngine } from "../orchestrator/graph-engine.js";
 import type { GraphPipeline } from "../orchestrator/graph.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface CompletionsRouteDeps {
-  chains: ChainMap;
   providers: ProviderMap;
   manager: LlamaServeManager;
   requestTimeoutMs: number;
-  /** Optional graph pipeline lookup — enables graph-engine routing (Slice B). */
-  getGraph?: (id: string) => GraphPipeline | undefined;
+  /** Graph pipeline lookup — resolves chain name to graph for dispatch. */
+  getGraph: (id: string) => GraphPipeline | undefined;
 }
 
 const CHAIN_PREFIX = "gateway/";
@@ -87,15 +84,9 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
     );
 
     if (chainId) {
-      // Slice B: route via the hybrid selector — linear chains run on
-      // `runChain`, complex graphs on the graph engine. Without a graph
-      // lookup the selector degrades to chain-only resolution.
-      const hybrid = createHybridSelector({
-        getChain: (n) => deps.chains.get(n),
-        getGraph: (n) => deps.getGraph?.(n),
-      });
-      const dispatch = hybrid.resolve(chainId);
-      if (!dispatch) {
+      // Graph-only dispatch: resolve the chain name to a GraphPipeline.
+      const graph = deps.getGraph(chainId);
+      if (!graph) {
         return jsonError(
           `Chain "${chainId}" not found`,
           "invalid_request_error",
@@ -106,7 +97,7 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
       }
 
       // Backend availability gate for chains (external-mode: must 503 like
-      // passthrough, not surface a raw fetch TypeError as 500).
+      // passthrough, not surface a raw fetch TypeError as a 500).
       if (!backendAvailable(deps.manager)) {
         return jsonError(
           "Backend not available",
@@ -117,18 +108,8 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
         );
       }
 
-      if (dispatch.kind === "linear") {
-        return await runChain(
-          dispatch.chain,
-          deps.providers,
-          chatPayload,
-          req.signal,
-          queryString(req),
-        );
-      }
-
       const result = await runGraphEngine(
-        dispatch.graph,
+        graph,
         { providers: deps.providers, getPipeline: () => undefined },
         {
           streamRequested: chatPayload.stream === true,
@@ -183,9 +164,4 @@ function modelExists(manager: LlamaServeManager, model: string): boolean {
   return manager.status().models.includes(model);
 }
 
-/** Extract the raw query string after `?` from the client request. */
-function queryString(req: Request): string | undefined {
-  const queryIndex = req.url.indexOf("?");
-  if (queryIndex < 0) return undefined;
-  return req.url.slice(queryIndex + 1);
-}
+
