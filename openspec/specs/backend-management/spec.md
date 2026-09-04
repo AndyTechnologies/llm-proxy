@@ -58,11 +58,11 @@ The system MUST use llama-server's native router-mode swap (autoload on-demand),
 - WHEN a request targeting it arrives
 - THEN llama-server autoloads it on demand and serves the request
 
-#### Scenario: Model field injected per step
+#### Scenario: Model field injected per node
 
-- GIVEN a chain with steps targeting different models
-- WHEN each step is issued
-- THEN the outbound request carries that step's target `model`
+- GIVEN a chain with `llm_call` nodes targeting different models
+- WHEN each node is issued
+- THEN the outbound request carries that node's target `model`
 
 ### Requirement: Boot-time readiness gate
 

@@ -2,35 +2,57 @@
 
 ## Purpose
 
-Runtime execution of complex pipelines — graphs with conditionals and multiple branches — using a safe AST interpreter, while reusing the existing linear engine for linear-compatible graphs.
+Runtime execution of all pipelines as directed graphs — including sequential, conditional, parallel, looping, and composable pipelines — using a safe AST interpreter and a single unified graph engine (`runGraphEngine`).
 
 ## Requirements
 
-### Requirement: Hybrid execution selection
+### Requirement: Unified graph execution
 
-The system SHALL run a linear-compatible graph on the existing linear engine and a complex graph (conditionals + multiple branches) on the graph engine. Selection SHALL be automatic based on the admitted graph shape.
+The system SHALL execute ALL pipelines through the graph engine (`runGraphEngine`). There is no separate linear engine. The graph engine traverses nodes following directed edges, propagating `lastResponse`/`variables` along the executed branch.
 
-#### Scenario: Linear graph runs on the linear engine
+#### Scenario: Linear graph runs on the graph engine
 
 - GIVEN a graph that reduces to a single sequential path with no conditionals or branches
 - WHEN it is invoked
-- THEN it executes on the existing `runChain` linear engine
+- THEN it executes on the graph engine and produces the expected output
 
 #### Scenario: Complex graph runs on the graph engine
 
 - GIVEN a graph containing a `condition` node and multiple branches
 - WHEN it is invoked
-- THEN it executes on the graph engine
+- THEN it executes on the graph engine and the executed branch's output is returned
 
 ### Requirement: Node types
 
-The graph engine SHALL support node types `start`, `end`, `llm_call`, `condition` (if-else), and `loop`, each with its required fields validated at admission.
+The graph engine SHALL support node types `start`, `end`, `llm_call`, `condition` (if-else), `loop`, `fan` (parallel opt-in), `join` (parallel recombine), and `pipeline` (composition invocation), each with its required fields validated at admission.
 
 #### Scenario: Every node type is executable
 
 - GIVEN a graph containing each supported node type
 - WHEN it is invoked
 - THEN each node executes according to its type semantics
+
+### Requirement: Node fields for llm_call
+
+Each `llm_call` node SHALL support the following optional fields: `on_429` (429 fallback target node id), `tool_calls_route` (tool_calls reroute target node id), `ctx` (per-node context window override passed as `params.ctx`), `mode` (`generate`/`refine`/`passthrough`), `system`/`assistant` (message scaffolds).
+
+#### Scenario: on_429 triggers fallback on HTTP 429
+
+- GIVEN an `llm_call` node with `on_429: "fallback"`
+- WHEN the provider throws a 429 error
+- THEN execution reroutes to the `fallback` node
+
+#### Scenario: tool_calls_route reroutes when tool_calls present
+
+- GIVEN an `llm_call` node with `tool_calls_route: "handler"`
+- WHEN the response contains non-empty `tool_calls`
+- THEN execution reroutes to the `handler` node instead of following the normal edge
+
+#### Scenario: ctx override passes context window to the provider
+
+- GIVEN an `llm_call` node with `ctx: 4096`
+- WHEN the node is invoked
+- THEN `params.ctx` is set to 4096 on the payload sent to the provider
 
 ### Requirement: Sequential-guarded branch semantics
 

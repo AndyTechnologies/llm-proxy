@@ -2,121 +2,115 @@
 
 ## Purpose
 
-Configurable chain engine that runs sequential steps with conditional logic, context passing between steps, 429 fallback routing, runtime-reloadable chain registry, atomic graph/AST admission, and streaming on the final executed step.
+Configurable graph engine that runs pipeline graphs with sequential nodes, conditional logic, 429 fallback routing, tool_calls rerouting, context passing between nodes, runtime-reloadable pipeline registry, atomic graph/AST admission, composition with bounded depth, and streaming on the final executed node.
 
 ## Requirements
 
 ### Requirement: Chain configuration format
 
-The system SHALL load chain definitions from JSON or YAML config files. Each chain SHALL define an ordered list of steps, where each step specifies a provider/model target and optional conditional routing.
+The system SHALL load chain definitions from JSON or YAML config files. Each chain SHALL define a graph with ordered `nodes` and `edges`, where each node specifies a type (`start`, `end`, `llm_call`, `condition`, `loop`, `pipeline`, `fan`, `join`) and optional fields for provider/model targets, conditional routing, and context overrides.
 
 #### Scenario: Valid chain config loads successfully
 
-- GIVEN a config file containing a chain with 3 steps
+- GIVEN a config file containing a chain with nodes and edges
 - WHEN the system starts
-- THEN the chain is registered and each step's provider/model mapping is resolved
+- THEN the chain is registered and each node's provider/model mapping is resolved
 
 #### Scenario: Invalid chain config fails startup
 
-- GIVEN a config file with a chain referencing a non-existent provider
+- GIVEN a config file with a chain referencing a non-existent model
 - WHEN the system starts
 - THEN the system logs an error and refuses to serve that chain
 
-### Requirement: Sequential step execution
+### Requirement: Graph execution
 
-The system SHALL execute chain steps in order. Each step SHALL receive the previous step's response as input context. The final step's response SHALL be returned to the client. When a pipeline is a complex graph, execution SHALL instead be delegated to the graph engine, which propagates `lastResponse`/`variables` along the executed branch.
+The system SHALL execute all pipelines through the graph engine (`runGraphEngine`). The graph engine traverses nodes following directed edges, propagating `lastResponse`/`variables` along the executed branch. There is no separate linear engine; all execution is graph-native.
 
-#### Scenario: Three-step chain executes in order
+#### Scenario: Linear graph executes nodes in order
 
-- GIVEN a chain with steps A -> B -> C
-- WHEN the chain is invoked
-- THEN step B receives A's response, step C receives B's response, and the client receives C's output
+- GIVEN a graph with nodes start → A → B → end
+- WHEN the graph is invoked
+- THEN node B receives A's response, and the client receives B's output
 
-#### Scenario: Step failure stops the chain
+#### Scenario: Node failure stops the graph
 
-- GIVEN a chain with steps A -> B -> C
-- WHEN step B returns a non-2xx response
-- THEN step C is not executed and the error is returned to the client
+- GIVEN a graph with nodes A → B → C
+- WHEN node B returns a non-2xx response or throws an error
+- THEN node C is not executed and the error is returned to the client
 
-#### Scenario: Complex pipeline delegates to the graph engine
+#### Scenario: Complex graph with condition branches
 
-- GIVEN a pipeline with a condition node and multiple branches
-- WHEN the pipeline is invoked
-- THEN execution runs on the graph engine and the executed branch's final output is returned
+- GIVEN a graph with a condition node and multiple branches
+- WHEN the graph is invoked
+- THEN the executed branch's final output is returned
 
 ### Requirement: Conditional routing on 429 status
 
-The system SHALL support a fallback step triggered when a step returns HTTP 429 (rate limited). The fallback SHALL be specified per step via an `on_429` field.
+The system SHALL support a fallback node triggered when an `llm_call` node's provider throws an HTTP 429 error. The fallback SHALL be specified per node via an `on_429` field naming the target node id.
 
-#### Scenario: 429 triggers fallback step
+#### Scenario: 429 triggers fallback node
 
-- GIVEN a chain where step A has `on_429: step_A_fallback`
-- WHEN step A returns HTTP 429
-- THEN the system executes `step_A_fallback` instead of aborting
+- GIVEN an `llm_call` node A with `on_429: "fallback"`
+- WHEN A's provider throws a 429 error
+- THEN the system executes the `fallback` node instead of aborting
 
 #### Scenario: Non-429 error does not trigger fallback
 
-- GIVEN a chain where step A has `on_429: step_A_fallback`
-- WHEN step A returns HTTP 500
-- THEN `step_A_fallback` is NOT executed and the error propagates
+- GIVEN an `llm_call` node A with `on_429: "fallback"`
+- WHEN A's provider throws a 500 error
+- THEN `fallback` is NOT executed and the error propagates
 
 ### Requirement: Conditional routing on tool_calls in response
 
-The system SHALL support routing based on whether the step response contains `tool_calls`. A step MAY specify a `tool_calls_route` field naming the next step to execute when tool_calls are present.
+The system SHALL support routing based on whether an `llm_call` node's response contains `tool_calls`. A node MAY specify a `tool_calls_route` field naming the target node id to execute when tool_calls are present.
 
 #### Scenario: tool_calls route activated
 
-- GIVEN a step with `tool_calls_route: "tool_handler"`
-- WHEN the step response includes a non-empty `tool_calls` array
-- THEN the system executes `tool_handler` next
+- GIVEN an `llm_call` node with `tool_calls_route: "tool_handler"`
+- WHEN the node's response includes a non-empty `tool_calls` array
+- THEN the system executes `tool_handler` next instead of following the normal edge
 
 #### Scenario: No tool_calls continues normal flow
 
-- GIVEN a step with `tool_calls_route: "tool_handler"`
-- WHEN the step response has no `tool_calls` or an empty array
-- THEN the system continues to the next sequential step
+- GIVEN an `llm_call` node with `tool_calls_route: "tool_handler"`
+- WHEN the node's response has no `tool_calls` or an empty array
+- THEN the system continues to the next node via the normal edge
 
-### Requirement: Context passing between steps
+### Requirement: Context passing between nodes
 
-The system SHALL pass the full response body of each step to the next step as context. The engine SHALL NOT lose or truncate intermediate results. For complex graphs, the executed branch SHALL carry a `lastResponse` that becomes the invoked pipeline's output, and a failed step SHALL record a failed execution available for manual retry.
+The system SHALL pass the full response body of each `llm_call` node to the next node as `lastResponse`/`lastContent` context. The engine SHALL NOT lose or truncate intermediate results. A failed step SHALL record a failed execution available for manual retry.
 
-#### Scenario: Large context survives full chain
+#### Scenario: Large context survives full graph
 
-- GIVEN a chain where step A produces a 4KB response
-- WHEN step B is invoked
-- THEN step B receives the complete 4KB response as its input context
+- GIVEN a graph where node A produces a 4KB response
+- WHEN node B is invoked
+- THEN node B receives the complete 4KB response as its input context
 
-### Requirement: Runtime-reloadable chain registry
+### Requirement: Runtime-reloadable pipeline registry
 
-The system MUST expose chains through a mutable in-memory registry that keeps a `Map<string, ParsedChain>`-compatible surface. The registry SHALL support an atomic `reload()` that recompiles and validates all chains and swaps the active reference only when every chain validates successfully.
+The system MUST expose pipelines through a mutable in-memory registry (`PipelineRegistry`) storing `GraphPipeline` objects. The registry SHALL support an atomic `reload()` that validates all graphs and swaps the active reference only when every graph validates successfully.
 
 #### Scenario: Apply swaps the active registry without restart
 
-- GIVEN a running gateway with a mutable registry and a valid new chain draft
-- WHEN an apply calls `reload()` with the built chains
-- THEN the new chain becomes available under `gateway/<name>` immediately with no process restart
+- GIVEN a running gateway with a mutable registry and a valid new pipeline draft
+- WHEN an apply calls `reload()` with the built graphs
+- THEN the new pipeline becomes available under `gateway/<name>` immediately with no process restart
 
 #### Scenario: Failed reload keeps the previous registry
 
-- GIVEN a running gateway with chain `A`, and an apply that yields an invalid chain `B`
+- GIVEN a running gateway with pipeline `A`, and an apply that yields an invalid pipeline `B`
 - WHEN `reload()` fails to validate `B`
-- THEN chain `A` remains active, chain `B` is not served, and the error is returned without swapping the registry
+- THEN pipeline `A` remains active, pipeline `B` is not served, and the error is returned without swapping the registry
 
 ### Requirement: Atomic graph/AST admission gate
 
-The system MUST admit a pipeline only after graph and condition-AST validation succeeds. A pipeline whose graph is linear-compatible SHALL be served as a `ParsedChain` for the linear engine; a pipeline with conditionals and multiple branches SHALL be routed to the graph engine. Unsafe conditions (any `eval`/`new Function`/URL/file/network access) MUST be rejected at admission.
+The system MUST admit a pipeline only after graph and condition-AST validation succeeds. All pipelines are served and executed as `GraphPipeline` objects through the graph engine. Unsafe conditions (any `eval`/`new Function`/URL/file/network access) MUST be rejected at admission.
 
-#### Scenario: Linear-compatible graph routes to the linear engine
+#### Scenario: Valid graph is admitted
 
-- GIVEN an editor draft whose graph reduces to a single sequential step path with no branches
+- GIVEN a draft with a valid acyclic graph and safe AST conditions
 - WHEN validation and admission run
-- THEN the pipeline is served as a `ParsedChain` and executed by the existing `runChain` linear engine
-
-#### Scenario: Complex graph with a condition routes to the graph engine
-
-- GIVEN a draft with a `condition` node and multiple branches
-- WHEN the pipeline is admitted and invoked
-- THEN it executes on the graph engine, not the linear engine
+- THEN the pipeline is registered as a `GraphPipeline` and served by the graph engine
 
 #### Scenario: Unsafe AST condition is rejected
 
@@ -124,21 +118,15 @@ The system MUST admit a pipeline only after graph and condition-AST validation s
 - WHEN the pipeline is validated
 - THEN admission fails with a normalized error and the pipeline is not registered
 
-### Requirement: Streaming on the final executed step
+### Requirement: Streaming on the final executed node
 
-The system SHALL stream only the LAST step of the executed path with a single terminal chunk, and MUST NOT buffer or transform `/v1/*` streams. Intermediate steps of a complex graph SHALL run non-streaming to the client and emit progress events (`step:*`).
+The system SHALL stream only the LAST `llm_call` node of the executed path with a single terminal chunk, and MUST NOT buffer or transform `/v1/*` streams. Intermediate nodes of a complex graph SHALL run non-streaming to the client and emit progress events (`step:*`).
 
-#### Scenario: Linear chain streams only the final step
+#### Scenario: Graph streams only the final step
 
-- GIVEN a linear chain requested with `stream: true`
-- WHEN the chain is invoked
-- THEN only the last step streams to the client with exactly one terminal `[DONE]` chunk
-
-#### Scenario: Complex graph streams only the last step of the executed path
-
-- GIVEN a complex pipeline requested with `stream: true` whose executed path has three steps
-- WHEN the pipeline runs
-- THEN the first two steps run non-streaming and emit `step:*` progress events, and only the third step streams
+- GIVEN a graph requested with `stream: true` whose executed path has three `llm_call` nodes
+- WHEN the graph runs
+- THEN the first two nodes run non-streaming and emit `step:*` events, and only the third node streams
 
 #### Scenario: /v1/* streams are never buffered or transformed
 

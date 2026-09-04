@@ -204,6 +204,167 @@ describe("parallel opt-in with explicit join", () => {
   });
 });
 
+describe("on_429 fallback routing", () => {
+  test("a 429 from the provider reroutes to the on_429 target node", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const primary = {
+      name: "p",
+      async chat() {
+        calls.chat.push("p");
+        const err = new Error("rate limited") as Error & { status: number };
+        err.status = 429;
+        throw err;
+      },
+      async *chatStream() { /* noop */ },
+    } satisfies Provider;
+    const fallback = fakeProvider("fb", calls, { content: "fallback-out" });
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { provider: "p", on_429: "fb" }),
+        llm("fb", { provider: "fb" }),
+        node("end", "end"),
+      ],
+      [
+        edge("start", "a"),
+        edge("a", "fb"),
+        edge("fb", "end"),
+      ],
+    );
+    const d = deps(calls, { name: "p", provider: primary }, { name: "fb", provider: fallback });
+    const res = await run(g, d);
+    // primary threw 429 → rerouted to fb
+    expect(calls.chat).toContain("p");
+    expect(calls.chat).toContain("fb");
+    expect(res.executedLlmNodes).toContain("a");
+    expect(res.executedLlmNodes).toContain("fb");
+    expect(res.lastContent).toBe("fallback-out");
+  });
+
+  test("a non-429 error does NOT trigger the on_429 fallback", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const primary = {
+      name: "p",
+      async chat() {
+        calls.chat.push("p");
+        const err = new Error("server error") as Error & { status: number };
+        err.status = 500;
+        throw err;
+      },
+      async *chatStream() { /* noop */ },
+    } satisfies Provider;
+    const fallback = fakeProvider("fb", calls);
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { provider: "p", on_429: "fb" }),
+        llm("fb", { provider: "fb" }),
+        node("end", "end"),
+      ],
+      [
+        edge("start", "a"),
+        edge("a", "fb"),
+        edge("fb", "end"),
+      ],
+    );
+    const d = deps(calls, { name: "p", provider: primary }, { name: "fb", provider: fallback });
+    const res = await run(g, d);
+    // primary threw 500 → no fallback, execution stops; node not in executedLlmNodes
+    expect(res.executedLlmNodes).toEqual([]);
+    expect(calls.chat).not.toContain("fb");
+    expect(res.lastContent).toBe("");
+  });
+});
+
+describe("tool_calls_route routing", () => {
+  test("a response with tool_calls reroutes to the tool_calls_route node", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const toolProvider = {
+      name: "tp",
+      async chat() {
+        calls.chat.push("tp");
+        return {
+          status: 200,
+          choices: [{ message: { content: "", tool_calls: [{ id: "tc1", type: "function", function: { name: "search", arguments: "{}" } }] } }],
+        };
+      },
+      async *chatStream() { /* noop */ },
+    } satisfies Provider;
+    const handler = fakeProvider("th", calls, { content: "handled" });
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { provider: "tp", tool_calls_route: "th" }),
+        llm("th", { provider: "th" }),
+        node("end", "end"),
+      ],
+      [
+        edge("start", "a"),
+        edge("a", "th"),
+        edge("th", "end"),
+      ],
+    );
+    const d = deps(calls, { name: "tp", provider: toolProvider }, { name: "th", provider: handler });
+    const res = await run(g, d);
+    expect(calls.chat).toContain("tp");
+    expect(calls.chat).toContain("th");
+    expect(res.executedLlmNodes).toEqual(["a", "th"]);
+    expect(res.lastContent).toBe("handled");
+  });
+
+  test("a response without tool_calls continues the normal path", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const normal = fakeProvider("p", calls, { content: "normal-out" });
+    const handler = fakeProvider("th", calls);
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { provider: "p", tool_calls_route: "th" }),
+        llm("th", { provider: "th" }),
+        node("end", "end"),
+      ],
+      [
+        edge("start", "a"),
+        edge("a", "th"),
+        edge("th", "end"),
+      ],
+    );
+    const d = deps(calls, { name: "p", provider: normal }, { name: "th", provider: handler });
+    const res = await run(g, d);
+    // no tool_calls in response → normal path, both execute sequentially
+    expect(res.executedLlmNodes).toEqual(["a", "th"]);
+    expect(calls.chat).toContain("p");
+  });
+});
+
+describe("ctx per-node override", () => {
+  test("ctx is passed as params.ctx on the payload", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    let capturedPayload: Record<string, unknown> | null = null;
+    const spy = {
+      name: "spy",
+      async chat(payload: Record<string, unknown>) {
+        capturedPayload = payload;
+        calls.chat.push("spy");
+        return { status: 200, choices: [{ message: { content: "ok" } }] };
+      },
+      async *chatStream() { /* noop */ },
+    } satisfies Provider;
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { provider: "spy", ctx: 4096 }),
+        node("end", "end"),
+      ],
+      [edge("start", "a"), edge("a", "end")],
+    );
+    const d = deps(calls, { name: "spy", provider: spy });
+    await run(g, d);
+    expect(capturedPayload).not.toBeNull();
+    expect((capturedPayload!.params as Record<string, unknown>)?.ctx).toBe(4096);
+  });
+});
+
 describe("single-terminal streaming on the executed path", () => {
   test("only the LAST executed step streams; intermediates run non-streaming + step events", async () => {
     const calls: Calls = { chat: [], stream: [] };

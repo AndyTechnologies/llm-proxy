@@ -50,7 +50,7 @@ The system SHALL expose `GET /api/ui/executions?limit=N` returning `[{id, pipeli
 
 ### Requirement: Pipeline validate endpoint
 
-The system SHALL expose `POST /api/ui/pipelines/:id/validate` accepting `{steps:[...]}` or `{nodes:[...],edges:[...]}` and returning `{valid:true}` or `{valid:false,errors:[...]}`. Validation MUST check acyclicity (except loop boundaries), valid references, model existence, exactly one `start` and ≥1 `end`, required fields per node type, and bounded composition depth.
+The system SHALL expose `POST /api/ui/pipelines/:id/validate` accepting `{nodes:[...],edges:[...]}` and returning `{valid:true}` or `{valid:false,errors:[...]}`. Validation MUST check acyclicity (except loop boundaries), valid references, model existence, exactly one `start` and ≥1 `end`, required fields per node type, and bounded composition depth.
 
 #### Scenario: Valid graph passes
 
