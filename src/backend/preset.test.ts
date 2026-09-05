@@ -30,6 +30,7 @@ function configWithModels(models: LlamaConfig["models"]): LlamaConfig {
     maxRestartAttempts: 5,
     modelsDir: MODELS_DIR,
     autoload: true,
+    lifecycle: { ttl: 600, vram: { mode: "dynamic", freeGb: 1, capGb: 5 } },
     router: {
       ctx: 8192,
       n: 2048,
@@ -95,6 +96,23 @@ describe("renderPresetIni (pure render, unchanged)", () => {
     const ini = renderPresetIni(cfg, MODELS_DIR);
     expect(ini).toContain(`model = ${path.join(MODELS_DIR, "rel.gguf")}`);
     expect(ini).toContain("model = /data/abs.gguf");
+  });
+
+  test("effective ctx from the resolver overrides config ctx per section", () => {
+    const cfg = configWithModels({
+      m1: { file: "m1.gguf", ctx: 65536 },
+      m2: { file: "m2.gguf", ctx: 4096 },
+      m3: { file: "m3.gguf" },
+    });
+    // m1 gets an effective value; m2/m3 fall back (undefined resolver result
+    // → config ctx; no ctx key at all when neither is known).
+    const ini = renderPresetIni(cfg, MODELS_DIR, (id) =>
+      id === "m1" ? 32768 : undefined,
+    );
+    expect(ini).toContain("[m1]\nmodel = " + path.join(MODELS_DIR, "m1.gguf") + "\nctx-size = 32768");
+    expect(ini).toContain("[m2]\nmodel = " + path.join(MODELS_DIR, "m2.gguf") + "\nctx-size = 4096");
+    expect(ini).toContain("[m3]\nmodel = " + path.join(MODELS_DIR, "m3.gguf") + "\n");
+    expect(ini.match(/ctx-size = /g)).toHaveLength(2);
   });
 });
 

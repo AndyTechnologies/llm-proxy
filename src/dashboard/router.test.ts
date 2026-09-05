@@ -5,6 +5,7 @@ import { createExecutionTracker } from "./execution-tracker.js";
 import { createEventBus } from "./events.js";
 import { createMetricsCollector } from "./metrics.js";
 import { createApplyService } from "./service.js";
+import { validateGraph } from "../orchestrator/graph.js";
 
 function makeDeps(overrides: Partial<DashboardRouterDeps> = {}): DashboardRouterDeps {
   const tracker = createExecutionTracker({ maxHistory: 100 });
@@ -39,10 +40,14 @@ function makeDeps(overrides: Partial<DashboardRouterDeps> = {}): DashboardRouter
         : undefined,
     registeredModels: () => ["m1.gguf", "m2.gguf"],
     modelDetails: () => [
-      { id: "m1.gguf", file: "m1.gguf", ctx: 4096, temp: 0.1 },
-      { id: "m2.gguf", file: "m2.gguf", ctx: 8192, temp: 0.7 },
+      { id: "m1.gguf", file: "m1.gguf", ctx: 4096, temp: 0.1, ggufContextLength: 8192, hardwareMaxCtx: 16384, effectiveCtx: 4096 },
+      { id: "m2.gguf", file: "m2.gguf", ctx: 8192, temp: 0.7, ggufContextLength: null, hardwareMaxCtx: 16384, effectiveCtx: 8192 },
     ],
     detectedModels: () => ["m3.gguf"],
+    fileModelDetails: (fileName) =>
+      fileName === "m3.gguf"
+        ? { ggufContextLength: 65536, hardwareMaxCtx: 32768, effectiveCtx: 32768 }
+        : undefined,
     modelsDir: "/models",
     autoRefresh: true,
     tracker,
@@ -92,14 +97,23 @@ interface ModelSummary {
   id: string;
   file: string;
   loaded: boolean;
+  /** F2: a live worker process was observed for this model. */
+  processLoaded: boolean;
+  /** F2: ISO timestamp of the last tracked activity, or null. */
+  lastUsed: string | null;
   ctx?: number;
   temp?: number;
+  ggufContextLength: number | null;
+  hardwareMaxCtx?: number;
+  effectiveCtx?: number;
 }
 
 interface ModelListPayload {
   models: ModelSummary[];
   modelsDir: string;
   autoRefresh: boolean;
+  /** F2: lifecycle state block (null when the controller is absent). */
+  lifecycle: unknown;
 }
 
 interface ExecutionListItem {
@@ -163,10 +177,41 @@ describe("dashboard router", () => {
     expect(data.modelsDir).toBe("/models");
     expect(data.autoRefresh).toBe(true);
     expect(data.models).toHaveLength(3);
-    expect(data.models[0]).toEqual({ id: "m1.gguf", file: "m1.gguf", loaded: true, ctx: 4096, temp: 0.1 });
-    expect(data.models[1]).toEqual({ id: "m2.gguf", file: "m2.gguf", loaded: true, ctx: 8192, temp: 0.7 });
-    // Detected model is a candidate, not loaded.
-    expect(data.models[2]).toEqual({ id: "m3.gguf", file: "m3.gguf", loaded: false });
+    expect(data.models[0]).toEqual({ id: "m1.gguf", file: "m1.gguf", loaded: true, processLoaded: false, lastUsed: null, ctx: 4096, temp: 0.1, ggufContextLength: 8192, hardwareMaxCtx: 16384, effectiveCtx: 4096 });
+    expect(data.models[1]).toEqual({ id: "m2.gguf", file: "m2.gguf", loaded: true, processLoaded: false, lastUsed: null, ctx: 8192, temp: 0.7, ggufContextLength: null, hardwareMaxCtx: 16384, effectiveCtx: 8192 });
+    // Detected model carries its REAL parsed metadata (GGUF native window +
+    // hardware ceiling from the per-file resolver).
+    expect(data.models[2]).toEqual({ id: "m3.gguf", file: "m3.gguf", loaded: false, processLoaded: false, lastUsed: null, ggufContextLength: 65536, hardwareMaxCtx: 32768, effectiveCtx: 32768 });
+  });
+
+  it("GET /api/ui/models dedupes a registered model against its detected file", async () => {
+    // Registered key is a short id, but the physical file is what the watcher
+    // reports — the same model must appear once, as the loaded entry.
+    const deps = makeDeps({
+      registeredModels: () => ["short-id"],
+      modelDetails: () => [
+        { id: "short-id", file: "SmolLM3-3B-Q4_K_M.gguf", ctx: 4096, temp: 0.1, ggufContextLength: 8192, hardwareMaxCtx: 16384, effectiveCtx: 4096 },
+      ],
+      detectedModels: () => ["SmolLM3-3B-Q4_K_M.gguf", "other-model.gguf"],
+    });
+    const res = await call(deps, "GET", "/api/ui/models");
+    expect(res.status).toBe(200);
+    const data = await jsonBody<ModelListPayload>(res);
+    expect(data.models).toHaveLength(2);
+    expect(data.models[0]).toEqual({
+      id: "short-id",
+      file: "SmolLM3-3B-Q4_K_M.gguf",
+      loaded: true,
+      processLoaded: false,
+      lastUsed: null,
+      ctx: 4096,
+      temp: 0.1,
+      ggufContextLength: 8192,
+      hardwareMaxCtx: 16384,
+      effectiveCtx: 4096,
+    });
+    // Detected model without parsed metadata yet → no fabricated ceiling.
+    expect(data.models[1]).toEqual({ id: "other-model.gguf", file: "other-model.gguf", loaded: false, processLoaded: false, lastUsed: null, ggufContextLength: null });
   });
 
   it("GET /api/ui/executions returns bounded recent executions", async () => {
@@ -208,6 +253,26 @@ describe("dashboard router", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ valid: false, errors: ["missing start"] });
+  });
+
+  it("POST validate accepts an array payload and validates it with the real validator", async () => {
+    // Regression: normalizeGraph previously rejected ARRAY `nodes` (isRecord
+    // returns false for arrays), so every draft collapsed to an empty graph and
+    // even valid pipelines reported "exactly one start node (found 0)".
+    const deps = makeDeps({ validateGraph });
+    const res = await call(deps, "POST", "/api/ui/pipelines/g-1/validate", {
+      nodes: [
+        { id: "s", type: "start" },
+        { id: "b", type: "llm_call", model: "m1.gguf" },
+        { id: "e", type: "end" },
+      ],
+      edges: [
+        { from: "s", to: "b" },
+        { from: "b", to: "e" },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ valid: true });
   });
 
   it("POST /api/ui/apply returns applied with reloaded chains", async () => {

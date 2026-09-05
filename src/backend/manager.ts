@@ -64,6 +64,12 @@ export interface ManagerDeps {
   spawnFn?: SpawnFn;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Resolve the EFFECTIVE context (tokens) for a model id — the per-model
+   * value written into the preset INI section. When absent, the raw config
+   * `ctx` (or nothing) is used, preserving the legacy behavior.
+   */
+  modelContextFor?: (id: string) => number | undefined;
 }
 
 /** Initial restart backoff; growth and cap come from config (healthPoll/backoffCap). */
@@ -72,9 +78,31 @@ const BACKOFF_INITIAL_MS = 1000;
 const MAX_STDERR_BYTES = 4096;
 /** Health-poll fetch timeout — a hung socket must not stall readiness. */
 const HEALTH_FETCH_TIMEOUT_MS = 2000;
+/** Router-API unload fetch timeout (F2) — a hung router must not stall a tick. */
+const UNLOAD_API_TIMEOUT_MS = 3000;
+/** After a router-API unload (async on the router side) the child has up to
+ *  `stop_timeout` (default 10s) to exit; we bound our own wait at 3s then
+ *  SIGKILL so the lifecycle sees the worker gone within one tick. */
+const WORKER_EXIT_GRACE_MS = 3000;
+/** Liveness poll cadence while waiting for a worker process to exit. */
+const WORKER_EXIT_POLL_MS = 300;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Process liveness via signal 0 (no signal is delivered). Real PID only —
+ * the worker processes are NOT children of this Bun process, so Bun's
+ * Subprocess surface does not apply to them.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function defaultSpawn(
@@ -101,6 +129,7 @@ export class LlamaServeManager {
   private readonly spawnFn: SpawnFn;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly modelContextFor?: (id: string) => number | undefined;
   private child: SpawnedProc | null = null;
   private intentionallyStopped = false;
   private backoffMs = BACKOFF_INITIAL_MS;
@@ -120,6 +149,7 @@ export class LlamaServeManager {
     this.spawnFn = deps.spawnFn ?? defaultSpawn;
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? defaultSleep;
+    this.modelContextFor = deps.modelContextFor;
     this.port = deps.config.port;
     this._status = {
       state: "stopped",
@@ -132,6 +162,15 @@ export class LlamaServeManager {
   /** Current backend status (call after start() for running state). */
   status(): BackendStatus {
     return { ...this._status };
+  }
+
+  /**
+   * Resolve the EFFECTIVE context (tokens) for a model id, when the entry
+   * point provided the mapping. `undefined` means "no effective value known" —
+   * callers fall back to the raw config ctx.
+   */
+  modelContext(id: string): number | undefined {
+    return this.modelContextFor?.(id);
   }
 
   /** Full startup sequence: validate → preset → spawn → wait-ready. */
@@ -152,8 +191,13 @@ export class LlamaServeManager {
       return;
     }
 
-    // 2. Generate preset INI (Bun.file write)
-    const presetPath = await writePresetIni(this.config, this.modelsDir);
+    // 2. Generate preset INI (Bun.file write). Per-model `ctx-size` sections
+    //    are rendered from the effective context when a resolver is provided.
+    const presetPath = await writePresetIni(
+      this.config,
+      this.modelsDir,
+      this.modelContextFor,
+    );
 
     // 3. Spawn llama serve
     this._status = { ...this._status, state: "starting" };
@@ -209,7 +253,97 @@ export class LlamaServeManager {
     this.log("[manager] backend stopped");
   }
 
+  /**
+   * Unload a model worker process (F2 lifecycle): SIGTERM → wait ~2s → SIGKILL.
+   *
+   * The llama.cpp router runs each loaded model in its own isolated child;
+   * the lifecycle controller kills that child to unload the model and the
+   * router respawns it on the next request (autoload is the default).
+   *
+   * @returns true when the process is no longer alive after the attempt
+   *   (including "already gone" — the goal state) — false only when a signal
+   *   could not be delivered to a still-alive process.
+   */
+  async unloadWorker(pid: number): Promise<boolean> {
+    if (!isProcessAlive(pid)) return true; // already gone — nothing to do
+
+    try {
+      process.kill(pid, "SIGTERM");
+      this.log(`[manager] SIGTERM sent to worker pid=${pid}`);
+    } catch (err) {
+      this.log(`[manager] worker kill failed (pid=${pid}): ${(err as Error).message}`);
+      return false;
+    }
+
+    if (await this.waitForWorkerExit(pid, 2000)) return true; // clean exit
+
+    try {
+      process.kill(pid, "SIGKILL");
+      this.log(`[manager] SIGKILL sent to worker pid=${pid}`);
+    } catch {
+      // already gone — fine
+    }
+    return true;
+  }
+
+  /**
+   * F2: unload a model worker preferring the llama-server router's HTTP API
+   * (`POST /models/unload` with `{"model": <id>}` — verified against
+   * llama.cpp server.cpp router mode) so the router's model state map and SSE
+   * clients stay consistent. The router-side unload is async (the child exits
+   * on the monitor thread, force-killed after `stop_timeout`, default 10s);
+   * we bound our own wait, then SIGKILL a lingering child — the router marks
+   * it UNLOADED on exit either way.
+   *
+   * Falls back to the signal path (unloadWorker) when the router is
+   * unreachable, the endpoint is absent (older build), or the API errors.
+   *
+   * @returns true when the worker is no longer alive after the attempt
+   *   (including "already gone") — false only when the kill fallback could
+   *   not deliver a signal to a still-alive process.
+   */
+  async unloadModel(modelId: string, pid: number): Promise<boolean> {
+    if (!isProcessAlive(pid)) return true; // goal state already reached
+    const baseUrl = this._status.baseUrl;
+    if (!baseUrl) return this.unloadWorker(pid);
+
+    try {
+      const res = await fetch(`${baseUrl}/models/unload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelId }),
+        signal: AbortSignal.timeout(UNLOAD_API_TIMEOUT_MS),
+      });
+      if (!res.ok) return this.unloadWorker(pid); // e.g. "model is not found"
+
+      this.log(`[manager] router API unload: model=${modelId}`);
+      if (await this.waitForWorkerExit(pid, WORKER_EXIT_GRACE_MS)) return true;
+
+      try {
+        process.kill(pid, "SIGKILL");
+        this.log(`[manager] SIGKILL after API unload timeout: model=${modelId}, pid=${pid}`);
+      } catch {
+        // already gone — fine
+      }
+      return true;
+    } catch {
+      // Router unreachable / endpoint absent (older build) → signal path.
+      return this.unloadWorker(pid);
+    }
+  }
+
   // ── Private ──
+
+  /** Poll the process liveness until it exits or the grace budget is spent. */
+  private async waitForWorkerExit(pid: number, graceMs: number): Promise<boolean> {
+    let waited = 0;
+    while (waited < graceMs) {
+      await this.sleep(WORKER_EXIT_POLL_MS);
+      waited += WORKER_EXIT_POLL_MS;
+      if (!isProcessAlive(pid)) return true;
+    }
+    return false;
+  }
 
   private async spawnAndWaitReady(presetPath: string): Promise<void> {
     const args = this.buildSpawnArgs(presetPath);
@@ -337,7 +471,12 @@ export class LlamaServeManager {
       "--port", String(this.port),
       "--models-dir", this.modelsDir,
       "--models-preset", presetPath,
-      "--ctx-size", String(r.ctx),
+      // NO global `--ctx-size` here: in router mode llama.cpp overlays the
+      // router's own CLI args on top of every model preset section, so a
+      // global `--ctx-size` would override each section's `ctx-size` with one
+      // value for all models (verified against server-models.cpp
+      // `preset.merge(base_preset)` + common/preset.cpp merge-overwrite).
+      // Per-model windows live in the preset sections rendered by preset.ts.
       "--n-predict", String(r.n),
       "--n-gpu-layers", String(r.nGpuLayers),
       "--cache-type-k", r.cacheTypeK,

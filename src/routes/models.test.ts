@@ -3,7 +3,10 @@
  *
  * Verifies GET /v1/models shape after the migration: object "list" with
  * gateway/* virtual chain models (owned_by "gateway") plus real backend
- * models (owned_by "llama-server").
+ * models (owned_by "llama-server"), each carrying `meta.context_length` =
+ * the model's EFFECTIVE context when the resolver knows it (per model id —
+ * never the first model's value), and virtual chains reporting the smallest
+ * effective ctx among their underlying backend models.
  */
 import { describe, expect, test } from "bun:test";
 import type { GraphPipeline } from "../orchestrator/graph.js";
@@ -21,6 +24,10 @@ function fakeManager(status: Partial<ReturnType<LlamaServeManager["status"]>>): 
   return { status: () => full } as unknown as LlamaServeManager;
 }
 
+/** Per-model effective-context resolver (model id → tokens). */
+const modelContext = (id: string): number | undefined =>
+  id === "SmolLM3-3B" ? 8192 : id === "Llama3.2-3B-Instruct" ? 32768 : undefined;
+
 function req(): Request {
   return new Request("http://localhost/v1/models");
 }
@@ -35,7 +42,7 @@ describe("GET /v1/models", () => {
     const manager = fakeManager({
       models: ["SmolLM3-3B", "Llama3.2-3B-Instruct"],
     });
-    const handler = createModelsHandler({ graphs, manager });
+    const handler = createModelsHandler({ graphs, manager, modelContext });
 
     const res = handler(req());
     expect(res.status).toBe(200);
@@ -62,9 +69,49 @@ describe("GET /v1/models", () => {
     const handler = createModelsHandler({
       graphs: [],
       manager: fakeManager({ models: [] }),
+      modelContext,
     });
     const body = (await handler(req()).json()) as { object: string; data: unknown[] };
     expect(body.object).toBe("list");
     expect(body.data).toEqual([]);
+  });
+
+  test("reports per-model effective context in meta.context_length", async () => {
+    const graphs: GraphPipeline[] = [];
+    const handler = createModelsHandler({
+      graphs,
+      manager: fakeManager({ models: ["SmolLM3-3B", "Llama3.2-3B-Instruct"] }),
+      modelContext: (id) => (id === "SmolLM3-3B" ? 8192 : undefined),
+    });
+    const body = (await handler(req()).json()) as {
+      data: Array<{ id: string; meta?: { context_length?: number } }>;
+    };
+    const smol = body.data.find((m) => m.id === "SmolLM3-3B");
+    expect(smol?.meta).toEqual({ context_length: 8192 });
+    // Unknown/not-yet-probed models omit meta entirely.
+    const llama = body.data.find((m) => m.id === "Llama3.2-3B-Instruct");
+    expect(llama?.meta).toBeUndefined();
+  });
+
+  test("virtual chain models report the smallest effective ctx among their steps", async () => {
+    const graphs: GraphPipeline[] = [
+      {
+        id: "hybrid",
+        name: "Hybrid",
+        nodes: [
+          { id: "a", type: "llm_call", model: "SmolLM3-3B" },
+          { id: "b", type: "llm_call", model: "Llama3.2-3B-Instruct" },
+          { id: "c", type: "llm_call", model: "missing-model" },
+        ],
+        edges: [],
+      },
+    ];
+    const handler = createModelsHandler({ graphs, manager: fakeManager({ models: [] }), modelContext });
+    const body = (await handler(req()).json()) as {
+      data: Array<{ id: string; meta?: { context_length?: number } }>;
+    };
+    const hybrid = body.data.find((m) => m.id === "gateway/hybrid");
+    // min(8192, 32768) — the missing model's undefined ctx is skipped.
+    expect(hybrid?.meta).toEqual({ context_length: 8192 });
   });
 });

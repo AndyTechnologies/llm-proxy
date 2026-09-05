@@ -67,6 +67,7 @@ function baseConfig(over: Partial<LlamaConfig> = {}): LlamaConfig {
     maxRestartAttempts: 5,
     modelsDir: path.join(tmpDir, "models"),
     autoload: true,
+    lifecycle: { ttl: 600, vram: { mode: "dynamic", freeGb: 1, capGb: 5 } },
     router: {
       ctx: 8192,
       n: 2048,
@@ -288,7 +289,6 @@ describe("startup and readiness (S1.1)", () => {
         "--port", String(server.port),
         "--models-dir", cfg.modelsDir,
         "--models-preset", path.resolve(".llm-proxy", "models.ini"),
-        "--ctx-size", "8192",
         "--n-predict", "2048",
         "--n-gpu-layers", "-1",
         "--cache-type-k", "q8_0",
@@ -521,6 +521,190 @@ describe("supervision and restart (S1.2)", () => {
       expect(manager.status().state).toBe("stopped");
     } finally {
       server.stop();
+    }
+  });
+});
+
+// ── F2: unloadWorker (kill a model worker by pid) ────────────────────────────
+
+/** Liveness probe matching the manager's implementation (signal 0). */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("unloadWorker (F2 worker unload)", () => {
+  test("kills a real child process: SIGTERM → wait → exit", async () => {
+    const logs: string[] = [];
+    const manager = createLlamaServeManager({
+      config: baseConfig(),
+      logger: (m) => logs.push(m),
+    });
+    const child = Bun.spawn({
+      cmd: ["sleep", "30"],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      expect(child.pid).toBeGreaterThan(0);
+      const ok = await manager.unloadWorker(child.pid);
+      expect(ok).toBe(true);
+      await Bun.sleep(50); // let the OS reap/settle the exit
+      expect(processAlive(child.pid)).toBe(false);
+      expect(logs.join("\n")).toContain("SIGTERM sent to worker");
+    } finally {
+      if (processAlive(child.pid)) child.kill("SIGKILL");
+      await child.exited.catch(() => {});
+    }
+  });
+
+  test("already-gone pid resolves true (goal state reached, nothing to kill)", async () => {
+    const logs: string[] = [];
+    const manager = createLlamaServeManager({
+      config: baseConfig(),
+      logger: (m) => logs.push(m),
+    });
+    // 2^22 == the max default pid_t — kill(pid, 0) must ESRCH on Linux.
+    expect(await manager.unloadWorker(2 ** 22)).toBe(true);
+    expect(logs.join("\n")).not.toContain("SIGTERM");
+  });
+
+  test("SIGKILL fallback when the child ignores SIGTERM", async () => {
+    const logs: string[] = [];
+    const manager = createLlamaServeManager({
+      config: baseConfig(),
+      logger: (m) => logs.push(m),
+      // Fast sleep so the 2s grace is not spent in real time.
+      sleep: async (ms) => Bun.sleep(ms / 100),
+    });
+    const child = Bun.spawn({
+      cmd: ["sh", "-c", "trap '' TERM; sleep 30"],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      expect(child.pid).toBeGreaterThan(0);
+      // Race guard: the trap must be installed BEFORE the manager's SIGTERM —
+      // otherwise sh dies on the default disposition and the fallback never
+      // fires. 150ms >> shell startup; the test then polls under 100x fast sleep.
+      await Bun.sleep(150);
+      const ok = await manager.unloadWorker(child.pid);
+      expect(ok).toBe(true);
+      await Bun.sleep(50);
+      expect(processAlive(child.pid)).toBe(false);
+      expect(logs.join("\n")).toContain("SIGKILL sent to worker");
+    } finally {
+      if (processAlive(child.pid)) child.kill("SIGKILL");
+      await child.exited.catch(() => {});
+    }
+  });
+});
+
+// ── F2: unloadModel (router-API-first unload) ─────────────────────────────────
+
+describe("unloadModel (F2 router-API-first unload)", () => {
+  test("router API 200 → waits for the worker, escalates to SIGKILL when it lingers", async () => {
+    const logs: string[] = [];
+    const routerApi = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        if (
+          req.method === "POST" &&
+          new URL(req.url).pathname === "/models/unload"
+        ) {
+          return new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const manager = createLlamaServeManager({
+      config: baseConfig({ port: routerApi.port }),
+      logger: (m) => logs.push(m),
+      // Fast sleep so the 3s exit grace is not spent in real time.
+      sleep: async (ms) => Bun.sleep(ms / 100),
+    });
+    const child = Bun.spawn({
+      cmd: ["sleep", "30"],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      // The router accepted the unload but the child outlives the API grace
+      // (router-side unload is async) → the manager escalates to SIGKILL.
+      const ok = await manager.unloadModel("m1", child.pid);
+      expect(ok).toBe(true);
+      await Bun.sleep(50); // let the OS reap/settle the exit
+      expect(processAlive(child.pid)).toBe(false);
+      expect(logs.join("\n")).toContain("router API unload: model=m1");
+      expect(logs.join("\n")).toContain("SIGKILL after API unload timeout");
+    } finally {
+      if (processAlive(child.pid)) child.kill("SIGKILL");
+      await child.exited.catch(() => {});
+      routerApi.stop();
+    }
+  });
+
+  test("router API non-2xx (e.g. 'model is not found') → SIGTERM kill fallback", async () => {
+    const logs: string[] = [];
+    const routerApi = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(JSON.stringify({ error: "model is not found" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+    const manager = createLlamaServeManager({
+      config: baseConfig({ port: routerApi.port }),
+      logger: (m) => logs.push(m),
+      sleep: async (ms) => Bun.sleep(ms / 100),
+    });
+    const child = Bun.spawn({
+      cmd: ["sleep", "30"],
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      const ok = await manager.unloadModel("m1", child.pid);
+      expect(ok).toBe(true);
+      await Bun.sleep(50);
+      expect(processAlive(child.pid)).toBe(false);
+      expect(logs.join("\n")).toContain("SIGTERM sent to worker");
+      expect(logs.join("\n")).not.toContain("router API unload");
+    } finally {
+      if (processAlive(child.pid)) child.kill("SIGKILL");
+      await child.exited.catch(() => {});
+      routerApi.stop();
+    }
+  });
+
+  test("already-gone pid resolves true without touching the router", async () => {
+    const logs: string[] = [];
+    let apiHits = 0;
+    const routerApi = Bun.serve({
+      port: 0,
+      fetch: () => {
+        apiHits++;
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      },
+    });
+    const manager = createLlamaServeManager({
+      config: baseConfig({ port: routerApi.port }),
+      logger: (m) => logs.push(m),
+    });
+    try {
+      expect(await manager.unloadModel("m1", 2 ** 22)).toBe(true);
+      expect(apiHits).toBe(0);
+      expect(logs.join("\n")).not.toContain("SIGTERM");
+    } finally {
+      routerApi.stop();
     }
   });
 });

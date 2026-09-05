@@ -21,6 +21,14 @@
  * The friendly id from config IS the section name, so chains' `model: SmolLM3-3B`
  * maps 1:1 to the registered router id with no name normalization.
  *
+ * Per-model context: when an `effectiveCtxFor` resolver is provided (the
+ * gateway wires the per-model GGUF/hardware-aware value), its value wins over
+ * the raw config `ctx` — the per-model section is the ONLY place to set a
+ * per-model window in router mode, because a global `--ctx-size` on the router
+ * process would override every section (llama.cpp overlays the router's own
+ * CLI args on top of each preset — that flag is deliberately absent from the
+ * manager's spawn args).
+ *
  * Global router args form the `[server]` section default; per-model keys
  * override. The adapter in preset.ts isolates INI syntax drift from the
  * rest of the system.
@@ -68,6 +76,7 @@ function renderModelSection(
   id: string,
   model: ModelConfig,
   modelsDir: string,
+  effectiveCtxFor?: (id: string) => number | undefined,
 ): string[] {
   const lines: string[] = [];
 
@@ -79,8 +88,14 @@ function renderModelSection(
   lines.push(`[${id}]`);
   lines.push(`model = ${filePath}`);
 
-  if (model.ctx !== undefined) {
-    lines.push(`ctx-size = ${model.ctx}`);
+  // The per-model EFFECTIVE context (resolved by the gateway from user ctx,
+  // GGUF native window, and the hardware ceiling) wins over the raw config
+  // value. `undefined` from the resolver means "no effective value known" and
+  // falls back to model.ctx (or no key at all → llama.cpp loads the native
+  // window from the file, i.e. ctx 0).
+  const ctx = effectiveCtxFor?.(id) ?? model.ctx;
+  if (ctx !== undefined) {
+    lines.push(`ctx-size = ${ctx}`);
   }
 
   if (model.temp !== undefined) {
@@ -99,15 +114,20 @@ function renderModelSection(
 /**
  * Render the models config to llama.cpp preset INI content.
  * Pure function — no side effects, easy to test.
+ *
+ * @param effectiveCtxFor per-model effective context (tokens); when provided
+ *   its value is written as `ctx-size` for that section, overriding the raw
+ *   config `ctx`. Absent/undefined → the config `ctx` is used as before.
  */
 export function renderPresetIni(
   config: LlamaConfig,
   modelsDir: string,
+  effectiveCtxFor?: (id: string) => number | undefined,
 ): string {
   const lines: string[] = [];
 
   for (const [id, model] of Object.entries(config.models)) {
-    lines.push(...renderModelSection(id, model, modelsDir));
+    lines.push(...renderModelSection(id, model, modelsDir, effectiveCtxFor));
   }
 
   return lines.join("\n");
@@ -127,8 +147,9 @@ export function renderPresetIni(
 export async function writePresetIni(
   config: LlamaConfig,
   modelsDir: string,
+  effectiveCtxFor?: (id: string) => number | undefined,
 ): Promise<string> {
-  const content = renderPresetIni(config, modelsDir);
+  const content = renderPresetIni(config, modelsDir, effectiveCtxFor);
   const presetDir = path.resolve(PRESET_DIR);
 
   if (!fs.existsSync(presetDir)) {

@@ -19,6 +19,16 @@ import { validateGraph } from "./orchestrator/graph.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
 import { createApp } from "./server.js";
 import { createLlamaServeManager } from "./backend/manager.js";
+import {
+  createModelLifecycle,
+  buildRegisteredIndex,
+  resolveModelId,
+  readChildrenPids,
+  readProcCmdline,
+  modelIdFromCmdline,
+  parseVramLine,
+  type WorkerInfo,
+} from "./backend/lifecycle.js";
 import { logJson } from "./utils/logger.js";
 import { shutdown } from "./shutdown.js";
 import { createExecutionTracker } from "./dashboard/execution-tracker.js";
@@ -27,6 +37,14 @@ import { createMetricsCollector } from "./dashboard/metrics.js";
 import { createApplyService } from "./dashboard/service.js";
 import { createDashboardRouter } from "./dashboard/router.js";
 import { runStepRetry } from "./dashboard/retry.js";
+import {
+  parseGgufHeader,
+  hardwareMaxCtx,
+  effectiveCtx,
+  DEFAULT_EFFECTIVE_CTX,
+} from "./utils/gguf.js";
+import path from "node:path";
+import { statSync } from "node:fs";
 import type { GatewayConfig, ChainConfig } from "./config/schema.js";
 import type { GraphPipeline } from "./orchestrator/graph.js";
 
@@ -61,8 +79,106 @@ function loadConfig(): Promise<GatewayConfig> {
 const config = await loadConfig();
 log("info", "config loaded", { chains: Object.keys(config.chains).length });
 
+// ── GGUF metadata cache (boot parse + lazy parse for detected files) ──
+// parseGgufHeader reads ≤256KB per model. Parsing once at boot and serving
+// from cache avoids blocking the event loop on every /api/ui/models request;
+// files the config does NOT register but the watcher detects (granite, grok,
+// …) are parsed lazily the first time the watcher reports them, so the
+// dashboard shows REAL metadata for every model on disk, not fixed stubs.
+// (RDD #26 — event-loop-blocking GGUF parsing.)
+//
+// The cache also holds the per-model EFFECTIVE context. That value drives the
+// preset INI sections (manager.modelContextFor), /v1/models meta.context_length,
+// and the dashboard model list — one computation, three consumers.
+interface GgufMeta {
+  ggufContextLength: number | null;
+  architecture: string | null;
+  blockCount: number | null;
+  headCountKv: number | null;
+  fileType: number | null;
+  /** True when the GGUF header was structurally parsed (magic OK). */
+  parsed: boolean;
+  /** Hardware ceiling from hardwareMaxCtx (VRAM budget, model file size). */
+  hardwareMaxCtx: number;
+  /** Effective context with no userCtx — parsed signals + hardware only. */
+  effectiveCtx: number;
+}
+const ggufMetaCache = new Map<string, GgufMeta>(); // key: lowercased file name
+const ggufParseInFlight = new Map<string, Promise<void>>();
+
+async function ensureGgufMeta(fileName: string): Promise<GgufMeta | undefined> {
+  const key = fileName.toLowerCase();
+  const cached = ggufMetaCache.get(key);
+  if (cached) return cached;
+  const inFlight = ggufParseInFlight.get(key);
+  if (inFlight) {
+    await inFlight;
+    return ggufMetaCache.get(key);
+  }
+  const run = (async (): Promise<void> => {
+    try {
+      const filePath = path.join(config.llama.modelsDir, fileName);
+      const gguf = await parseGgufHeader(filePath);
+      const modelBytes = statSync(filePath).size;
+      const hw = hardwareMaxCtx({ modelBytes });
+      ggufMetaCache.set(key, {
+        ggufContextLength: gguf.ggufContextLength,
+        architecture: gguf.architecture,
+        blockCount: gguf.blockCount,
+        headCountKv: gguf.headCountKv,
+        fileType: gguf.fileType,
+        parsed: gguf.parsed,
+        hardwareMaxCtx: hw,
+        effectiveCtx: effectiveCtx({
+          ggufContextLength: gguf.ggufContextLength,
+          ggufParsed: gguf.parsed,
+          hardwareMaxCtx: hw,
+          name: fileName,
+        }),
+      });
+    } catch {
+      // Unreadable file — leave the cache empty; consumers fall back to
+      // null metadata + DEFAULT_EFFECTIVE_CTX.
+    }
+  })();
+  ggufParseInFlight.set(key, run);
+  try {
+    await run;
+  } finally {
+    ggufParseInFlight.delete(key);
+  }
+  return ggufMetaCache.get(key);
+}
+
+/** Effective context for a REGISTERED model id (user ctx + parsed + hw). */
+function effectiveForId(id: string): number | undefined {
+  const m = config.llama.models?.[id];
+  if (!m) return undefined;
+  const meta = ggufMetaCache.get(m.file.toLowerCase());
+  if (!meta) return undefined;
+  return effectiveCtx({
+    userCtx: m.ctx,
+    ggufContextLength: meta.ggufContextLength,
+    ggufParsed: meta.parsed,
+    hardwareMaxCtx: meta.hardwareMaxCtx,
+    name: `${m.file} ${id}`,
+  });
+}
+
+for (const [id, m] of Object.entries(config.llama.models ?? {})) {
+  await ensureGgufMeta(m.file);
+  void effectiveForId(id); // warm the registered-id computation
+}
+log("info", "gguf metadata cached", { files: ggufMetaCache.size });
+
 // ── Backend manager ──
-const manager = createLlamaServeManager({ config: config.llama });
+// The effective-context map flows into the preset generator: each model gets
+// its own `ctx-size` section instead of a global `--ctx-size` on the router
+// (a global value would override every section — see preset.ts/manager.ts).
+const manager = createLlamaServeManager({
+  config: config.llama,
+  modelContextFor: (id) => effectiveForId(id),
+});
 
 try {
   await manager.start();
@@ -106,19 +222,120 @@ const watcher = createModelsWatcher({ modelsDir: config.llama.modelsDir });
 
 // Latest candidate set, kept live by the watcher's `models:changed` event so
 // the dashboard /api/ui/models list reflects newly detected `.gguf` files
-// without the router awaiting an async scan at request time.
+// without the router awaiting an async scan at request time. Detected files
+// are ALSO parsed (lazily, memoized) — the dashboard shows real metadata for
+// them, not fixed stubs.
 let detectedModels: string[] = [];
 watcher.on("models:changed", (files) => {
   detectedModels = files;
+  for (const file of files) {
+    if (!ggufMetaCache.has(file.toLowerCase())) void ensureGgufMeta(file);
+  }
 });
 
 // ── Providers ──
+// ── F2: Model lifecycle controller ──
+// Watches the router's worker processes (/proc), tracks per-model activity,
+// and unloads idle/over-VRAM models on a 5s tick. All IO seams wired here:
+// the manager kills workers; nvidia-smi samples VRAM; llama config is read
+// LIVE from the `config` object — and `config.llama` is re-assigned on apply,
+// so dashboard edits take effect without a restart.
+const registeredIndex = () => buildRegisteredIndex(config.llama.models ?? {});
+const listWorkers = (): WorkerInfo[] => {
+  const routerPid = manager.status().pid;
+  if (!routerPid) return [];
+  const index = registeredIndex();
+  const out: WorkerInfo[] = [];
+  for (const pid of readChildrenPids(routerPid)) {
+    const cmdline = readProcCmdline(pid);
+    if (!cmdline) continue;
+    const hit = modelIdFromCmdline(cmdline, index.byFile);
+    if (!hit) continue;
+    out.push({ modelId: hit.modelId, pid, sizeMiB: modelFileSizeMiB(hit.file) });
+  }
+  return out;
+};
+/** Model file size in MiB (0 when unknown) — LRU credit for the VRAM pass. */
+function modelFileSizeMiB(file: string): number {
+  if (!file) return 0;
+  try {
+    return Math.max(1, Math.round(statSync(path.join(config.llama.modelsDir, file)).size / (1024 * 1024)));
+  } catch {
+    return 0;
+  }
+}
+/** nvidia-smi VRAM sample (async spawn — never blocks the event loop).
+ *  Bounded: a hung nvidia-smi must not wedge the lifecycle tick, so the read
+ *  races a short timer and the spawn is killed either way. */
+const NVIDIA_SMI_TIMEOUT_MS = 3000;
+
+/** One-shot nvidia-smi query; the subprocess is always reaped in `finally`. */
+async function readNVidiaSmi(): Promise<string> {
+  const res = Bun.spawn({
+    cmd: ["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader"],
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  try {
+    return await new Response(res.stdout).text();
+  } finally {
+    try {
+      res.kill();
+    } catch {
+      // already gone — fine
+    }
+  }
+}
+
+async function sampleVramMiB(): Promise<{ totalMiB: number; usedMiB: number } | null> {
+  try {
+    const stdout = await Promise.race([
+      readNVidiaSmi(),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("nvidia-smi timed out")),
+          NVIDIA_SMI_TIMEOUT_MS,
+        );
+        timer.unref?.();
+      }),
+    ]);
+    return parseVramLine(stdout.trim().split("\n")[0] ?? "");
+  } catch {
+    return null;
+  }
+}
+
+const lifecycle = createModelLifecycle({
+  getConfig: () => config.llama.lifecycle,
+  logger: log,
+  listWorkers,
+  // F2 unload: prefer the router's HTTP API (verified: POST /models/unload in
+  // llama.cpp server.cpp router mode) so the router's state map and SSE clients
+  // stay consistent; unloadWorker's signal-kill covers older binaries.
+  unloadModelId: (modelId, pid) => manager.unloadModel(modelId, pid),
+  killWorker: (pid) => manager.unloadWorker(pid),
+  sampleVram: sampleVramMiB,
+});
+
+/**
+ * F2 request tracking seam: resolves the raw request model to the lifecycle
+ * id, starts the in-flight marker, and returns the end-callback (release).
+ * Passed to the passthrough proxy (via server routes) AND to the provider,
+ * so every request pass-through point — direct or chain — is tracked.
+ */
+const noteActivityFor = (rawModel: string): (() => void) | void => {
+  const modelId = resolveModelId(rawModel, registeredIndex());
+  lifecycle.beginRequest(modelId);
+  return () => lifecycle.endRequest(modelId);
+};
+
 const providers = new Map([
   [
     "llama-server",
     makeLlamaServerProvider({
       getBaseUrl: () => manager.status().baseUrl,
       requestTimeoutMs: config.llama.requestTimeoutMs,
+      noteActivity: noteActivityFor,
     }),
   ],
 ]);
@@ -141,6 +358,10 @@ const applyService = createApplyService({
   // config file so the new chains go live without a restart.
   reload: async () => {
     const cfg = await loadGatewayConfig();
+    // F2: the lifecycle controller reads llama config via a live getter —
+    // re-point it at the applied values so TTL/VRAM edits take effect NOW
+    // (no backend restart needed).
+    config.llama = cfg.llama;
     await registry.reload(
       Object.entries(cfg.chains).map(([name, chain]) =>
         configChainToGraph(name, chain),
@@ -172,12 +393,32 @@ const dashboardHandler = createDashboardRouter({
   getPipeline: (id) => registry.getGraph(id),
   registeredModels: () => Object.keys(config.llama.models ?? {}),
   modelDetails: () =>
-    Object.entries(config.llama.models ?? {}).map(([id, m]) => ({
-      id,
-      file: m.file,
-      ctx: m.ctx,
-      temp: m.temp,
-    })),
+    Object.entries(config.llama.models ?? {}).map(([id, m]) => {
+      const meta = ggufMetaCache.get(m.file.toLowerCase());
+      return {
+        id,
+        file: m.file,
+        ctx: m.ctx,
+        temp: m.temp,
+        ggufContextLength: meta?.ggufContextLength ?? null,
+        // Missing (unreadable/not-yet-parsed) → the UI treats it as "no
+        // ceiling", so the unsafe dimming never fires on fabricated numbers.
+        hardwareMaxCtx: meta?.hardwareMaxCtx,
+        effectiveCtx: effectiveForId(id) ?? meta?.effectiveCtx ?? DEFAULT_EFFECTIVE_CTX,
+      };
+    }),
+  // Per-FILE metadata for watcher-detected models (not in the config), so the
+  // dashboard list shows their REAL parsed values instead of fixed stubs.
+  fileModelDetails: (fileName: string) => {
+    const meta = ggufMetaCache.get(fileName.toLowerCase());
+    return meta
+      ? {
+          ggufContextLength: meta.ggufContextLength,
+          hardwareMaxCtx: meta.hardwareMaxCtx,
+          effectiveCtx: meta.effectiveCtx,
+        }
+      : undefined;
+  },
   detectedModels: () => detectedModels,
   modelsDir: config.llama.modelsDir,
   autoRefresh: true,
@@ -213,6 +454,12 @@ const dashboardHandler = createDashboardRouter({
     });
   },
   getNodeType: nodeTypeFor,
+  backendBaseUrl: manager.status().baseUrl || undefined,
+  // F2: live config for the Backend editor + lifecycle state/actions.
+  getConfig: () => config,
+  lifecycleStatus: () => lifecycle.status(),
+  unloadModel: (modelId) => lifecycle.unload(modelId, "manual"),
+  unloadAllModels: () => lifecycle.unloadAll("manual-all"),
 });
 
 // ── Bun.serve fetch handler ──
@@ -221,6 +468,7 @@ const app = createApp({
   registry,
   providers,
   manager,
+  noteActivity: noteActivityFor,
   dashboard: { handler: dashboardHandler },
   // Static SPA served at /ui (Slice D). Running from source this resolves to
   // src/ui in the repo root; UI_DIR overrides the location (e.g. when the
@@ -256,6 +504,13 @@ try {
   });
 }
 
+// ── F2 lifecycle ticker (5s, unref'd — never blocks shutdown) ──
+lifecycle.start();
+log("info", "model lifecycle active", {
+  ttl: config.llama.lifecycle.ttl,
+  vramMode: config.llama.lifecycle.vram.mode,
+});
+
 // ── Graceful shutdown ──
 // `shutdown` lives in src/shutdown.ts (pure, side-effect-free, importable by
 // tests). Idempotency is enforced HERE at the signal-handler call-site via the
@@ -263,28 +518,25 @@ try {
 // very real repeated signals (SIGTERM + SIGINT) would double-stop the backend.
 let shuttingDown = false;
 
-process.on("SIGINT", () => {
+/** Single entry point for every shutdown path: the idempotent guard, the F2
+ *  lifecycle must not leave timers behind (stop() clears the tick/VRAM loops),
+ *  then the pure drain (src/shutdown.ts). */
+function beginShutdown(reason: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
-  void shutdown("SIGINT", server, manager, log, process.exit as (code?: number) => never);
-});
+  lifecycle.stop();
+  void shutdown(reason, server, manager, log, process.exit as (code?: number) => never);
+}
 
-process.on("SIGTERM", () => {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  void shutdown("SIGTERM", server, manager, log, process.exit as (code?: number) => never);
-});
+process.on("SIGINT", () => beginShutdown("SIGINT"));
+process.on("SIGTERM", () => beginShutdown("SIGTERM"));
 
 process.on("unhandledRejection", (reason) => {
   log("error", "unhandledRejection", { reason: String(reason) });
-  if (shuttingDown) return;
-  shuttingDown = true;
-  void shutdown("unhandledRejection", server, manager, log, process.exit as (code?: number) => never);
+  beginShutdown("unhandledRejection");
 });
 
 process.on("uncaughtException", (err) => {
   log("fatal", "uncaughtException", { message: (err as Error).message });
-  if (shuttingDown) return;
-  shuttingDown = true;
-  void shutdown("uncaughtException", server, manager, log, process.exit as (code?: number) => never);
+  beginShutdown("uncaughtException");
 });

@@ -44,6 +44,33 @@ export const routerConfigSchema = z.object({
   parallel: z.number().int().positive().default(1),
 });
 
+/** VRAM policy modes for the model lifecycle (F2). */
+export const vramModeSchema = z.enum(["dynamic", "margin", "cap"]);
+
+/**
+ * Model lifecycle settings (F2 — idle TTL unload + VRAM pressure unload).
+ *
+ * PRICING (as the user approved):
+ *  - dynamic: `VRAM total − freeGb` is the ceiling for VRAM *used*,
+ *    reserving the free margin below the GPU's capacity.
+ *  - margin:  identical formula — VRAM total minus an explicit free margin.
+ *  - cap:     a FIXED ceiling on VRAM used (capGb), independent of the GPU.
+ *
+ * The lifecycle tick unloads workers by LRU while `used > limit`; the TTL
+ * unloads a model idle for more than `ttl` seconds. `ttl = 0` disables the
+ * TTL pass (VRAM policy still applies).
+ */
+export const lifecycleConfigSchema = z.object({
+  ttl: z.coerce.number().int().min(0).default(600),
+  vram: z
+    .object({
+      mode: vramModeSchema.default("dynamic"),
+      freeGb: z.coerce.number().min(0).max(64).default(1),
+      capGb: z.coerce.number().min(0.5).max(64).default(5),
+    })
+    .default({}),
+});
+
 /** Managed llama-server backend config. */
 export const llamaConfigSchema = z.object({
   binary: z.string().default("llama"),
@@ -64,6 +91,9 @@ export const llamaConfigSchema = z.object({
   autoload: z.boolean().default(true),
   router: routerConfigSchema.default({}),
   models: z.record(modelConfigSchema).default({}),
+  // F2 — per-model worker lifecycle (TTL + VRAM). Defaults keep the pre-F2
+  // behavior: TTL on after 10min, dynamic VRAM ceiling reserving 1GB.
+  lifecycle: lifecycleConfigSchema.default({}),
 });
 
 /**
@@ -188,7 +218,7 @@ export const chainConfigSchema = z
     displayName: z.string().optional(),
     defaultProvider: z.string().optional(),
     provider: z.string().optional(),
-    nodes: z.array(graphNodeSchema).min(1, "chain.nodes must not be empty"),
+    nodes: z.array(graphNodeSchema).min(1, "chain.nodes no debe estar vacío"),
     edges: z.array(graphEdgeSchema).default([]),
   })
   // Strict so a stray legacy `steps` key (or any unknown shape) is rejected —
@@ -207,6 +237,9 @@ export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type ModelConfig = z.infer<typeof modelConfigSchema>;
 export type RouterConfig = z.infer<typeof routerConfigSchema>;
 export type LlamaConfig = z.infer<typeof llamaConfigSchema>;
+export type LifecycleConfig = z.infer<typeof lifecycleConfigSchema>;
+export type VramConfig = z.infer<typeof lifecycleConfigSchema>["vram"];
+export type VramMode = z.infer<typeof vramModeSchema>;
 export type GraphNodeConfig = z.infer<typeof graphNodeSchema>;
 export type GraphEdgeConfig = z.infer<typeof graphEdgeSchema>;
 export type ChainConfig = z.infer<typeof chainConfigSchema>;

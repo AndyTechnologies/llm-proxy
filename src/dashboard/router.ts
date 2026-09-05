@@ -8,6 +8,9 @@
  *   - POST /api/ui/pipelines/:id/validate → graph validation result
  *   - POST /api/ui/apply                → atomic config apply
  *   - POST /api/ui/executions/:execId/steps/:nodeId/retry → manual step retry
+ *   - GET  /api/ui/config               → live gateway config (F2 editor backend)
+ *   - POST /api/ui/models/:id/unload    → unload ONE loaded model (F2)
+ *   - POST /api/ui/models/unload-all    → unload every loaded worker (F2)
  *   - GET  /api/ui/events               → SSE event stream
  *
  * Every `/api/ui/*` error returns the normalized `{error:{message,type,param,
@@ -21,10 +24,23 @@
  * without touching disk or network.
  */
 import type { GraphPipeline } from "../orchestrator/graph.js";
+import type { LifecycleStatus } from "../backend/lifecycle.js";
+import type { GatewayConfig } from "../config/schema.js";
 import type { ExecutionTracker } from "./execution-tracker.js";
 import type { DashboardEventBus } from "./events.js";
 import type { MetricsCollector } from "./metrics.js";
 import type { ApplyService } from "./service.js";
+import type { GatewayModel, ModelLimits } from "./agent-config.js";
+import {
+  expandHome,
+  opencodeProviderStatus,
+  patchOpenCode,
+  patchPi,
+  piProviderStatus,
+  writeJsonAtomic,
+  DEFAULT_LIMITS,
+} from "./agent-config.js";
+import fs from "node:fs";
 
 /** A server handle the SSE route uses to disable the idle timeout. */
 interface ServerHandle {
@@ -58,12 +74,23 @@ export interface DashboardRouterDeps {
   registeredModels: () => string[];
   /**
    * Per-model runtime tuning (config.llama.models[<id>]) — context window
-   * (`ctx`) and temperature (`temp`) where set. Used by the editor to show the
-   * current context of a model and drive the context-window selector.
+   * (`ctx`) and temperature (`temp`) where set, plus the per-model EFFECTIVE
+   * context (`effectiveCtx`, the value actually written into the preset INI)
+   * when the entry point computed it. Used by the editor to show the current
+   * context of a model and drive the context-window selector.
    */
-  modelDetails: () => { id: string; file?: string; ctx?: number; temp?: number }[];
+  modelDetails: () => { id: string; file?: string; ctx?: number; temp?: number; ggufContextLength: number | null; hardwareMaxCtx?: number; effectiveCtx?: number }[];
   /** Resolve the detected (candidate-only) `.gguf` files from the watcher. */
   detectedModels: () => string[];
+  /**
+   * Per-FILE parsed metadata (GGUF + hardware) for models the watcher detects
+   * but the config does not register. `undefined` when the file has not been
+   * parsed yet (or is unreadable) — the model list shows the file without
+   * context hints instead of a fabricated ceiling.
+   */
+  fileModelDetails?: (
+    fileName: string,
+  ) => { ggufContextLength: number | null; hardwareMaxCtx: number; effectiveCtx?: number } | undefined;
   /** The models directory (for the models list payload). */
   modelsDir: string;
   /** Whether the dashboard polls/refreshes models automatically. */
@@ -88,6 +115,36 @@ export interface DashboardRouterDeps {
   }) => Promise<RetryRunResult>;
   /** Resolve a node's type for a given execution (retry gating). */
   getNodeType: (executionId: string, nodeId: string) => string | undefined;
+  /**
+   * Internal base URL of this gateway's OpenAI-compatible API (e.g.
+   * `http://localhost:8090/v1`), used by the Agents routes to fetch the
+   * registered gateway models. When omitted it is derived from the incoming
+   * request URL — the dashboard and the API are served by the same
+   * Bun.serve instance, so the request origin IS the API origin.
+   */
+  baseURL?: string;
+  /**
+   * Internal base URL of the managed llama-server backend (e.g.
+   * `http://127.0.0.1:8080`). When present, the Agents configure route probes
+   * its `/v1/models` to write the REAL context/output limits into the agent
+   * configs. When absent (or the probe fails) a sane default is used.
+   */
+  backendBaseUrl?: string;
+  /**
+   * Live gateway config (F2 Backend editor): the full GatewayConfig so the UI
+   * can load the current `llama.lifecycle` values and POST them back through
+   * `/api/ui/apply`. Absent → the route 404s (feature not wired).
+   */
+  getConfig?: () => GatewayConfig;
+  /** F2 lifecycle status: loaded ids, per-model last-used, VRAM state, log. */
+  lifecycleStatus?: () => LifecycleStatus;
+  /**
+   * F2 manual unload of ONE model (by dashboard model id). Resolves true when
+   * a worker was found and killed, false when nothing is loaded under the id.
+   */
+  unloadModel?: (modelId: string) => Promise<boolean>;
+  /** F2 unload every observed worker. Resolves the number killed. */
+  unloadAllModels?: () => Promise<number>;
 }
 
 /** A pipeline summary for the /pipelines list. */
@@ -96,6 +153,44 @@ export interface PipelineSummary {
   description: string | null;
   nodeCount: number;
   lastExecution: string | null;
+}
+
+/** Agents supported by the dashboard Agents view. */
+export type AgentId = "opencode" | "pi";
+
+/** Static metadata for a supported agent. */
+interface AgentMeta {
+  id: AgentId;
+  label: string;
+  /** Config file path, may contain a leading `~`. */
+  configPath: string;
+  /** API key used when the proxy requires no auth. */
+  defaultApiKey: string;
+}
+
+const AGENTS: readonly AgentMeta[] = [
+  {
+    id: "opencode",
+    label: "OpenCode",
+    configPath: "~/.config/opencode/opencode.json",
+    defaultApiKey: "no-key",
+  },
+  {
+    id: "pi",
+    label: "Pi",
+    configPath: "~/.pi/agent/models.json",
+    defaultApiKey: "sk-local",
+  },
+];
+
+/** Agent status payload for GET /api/ui/agents/status. */
+interface AgentStatus {
+  id: AgentId;
+  label: string;
+  configPath: string;
+  exists: boolean;
+  providerPresent: boolean;
+  modelCount: number;
 }
 
 /** JSON response helper. */
@@ -193,31 +288,113 @@ export function createDashboardRouter(deps: DashboardRouterDeps) {
       }
 
       // ── GET /api/ui/models ──
+      // Merge registered + detected models WITHOUT duplicates: a registered
+      // model is keyed by its config id (short name) but its physical file is
+      // `detail.file`; the watcher returns bare `.gguf` filenames. Dedupe on
+      // the actual file name (case-insensitively) so a registered model and
+      // its detected file collapse into a single entry.
       if (req.method === "GET" && sub.length === 1 && sub[0] === "models") {
         const seen = new Set<string>();
         const byId = new Map(
           deps.modelDetails().map((m) => [m.id, m]),
         );
-        const models: { id: string; file: string; loaded: boolean; ctx?: number; temp?: number }[] = [];
-        for (const file of deps.registeredModels()) {
+        // F2: per-model runtime state (a worker process observed for the id).
+        const lifecycle = deps.lifecycleStatus?.();
+        const loadedSet = new Set(lifecycle?.loaded ?? []);
+        const lastUsedAt = lifecycle?.lastUsed ?? {};
+        const models: {
+          id: string;
+          file: string;
+          loaded: boolean;
+          processLoaded: boolean;
+          lastUsed: string | null;
+          ctx?: number;
+          temp?: number;
+          ggufContextLength: number | null;
+          hardwareMaxCtx?: number;
+          effectiveCtx?: number;
+        }[] = [];
+        for (const id of deps.registeredModels()) {
+          const detail = byId.get(id);
+          const file = detail?.file ?? id;
+          models.push({
+            id,
+            file,
+            loaded: true,
+            processLoaded: loadedSet.has(id) || loadedSet.has(file),
+            lastUsed: lastUsedAt[id] ?? lastUsedAt[file] ?? null,
+            ctx: detail?.ctx,
+            temp: detail?.temp,
+            ggufContextLength: detail?.ggufContextLength ?? null,
+            hardwareMaxCtx: detail?.hardwareMaxCtx,
+            effectiveCtx: detail?.effectiveCtx,
+          });
+          seen.add(file.toLowerCase());
+        }
+        for (const file of deps.detectedModels()) {
+          if (seen.has(file.toLowerCase())) continue;
+          const meta = deps.fileModelDetails?.(file);
           models.push({
             id: file,
             file,
-            loaded: true,
-            ctx: byId.get(file)?.ctx,
-            temp: byId.get(file)?.temp,
+            loaded: false,
+            processLoaded: loadedSet.has(file),
+            lastUsed: lastUsedAt[file] ?? null,
+            ggufContextLength: meta?.ggufContextLength ?? null,
+            // No parsed metadata → no ceiling to dim against (the UI treats
+            // a missing value like "no signal"), NOT a fabricated number.
+            hardwareMaxCtx: meta?.hardwareMaxCtx,
+            effectiveCtx: meta?.effectiveCtx,
           });
-          seen.add(file);
-        }
-        for (const file of deps.detectedModels()) {
-          if (seen.has(file)) continue;
-          models.push({ id: file, file, loaded: false });
         }
         return json({
           models,
           modelsDir: deps.modelsDir,
           autoRefresh: deps.autoRefresh,
+          lifecycle: lifecycle
+            ? {
+                vramPolicyActive: lifecycle.vramPolicyActive,
+                lastVramSample: lifecycle.lastVramSample,
+                recentUnloads: lifecycle.recentUnloads,
+              }
+            : null,
         });
+      }
+
+      // ── GET /api/ui/config (F2 Backend editor) ──
+      // Full live config so the UI can read current lifecycle values and POST
+      // them back via /api/ui/apply (atomic persist + reload).
+      if (req.method === "GET" && sub.length === 1 && sub[0] === "config") {
+        if (!deps.getConfig) return notFound();
+        return json(deps.getConfig());
+      }
+
+      // ── POST /api/ui/models/:id/unload (F2 manual unload) ──
+      if (
+        req.method === "POST" &&
+        sub.length === 3 &&
+        sub[0] === "models" &&
+        sub[2] === "unload"
+      ) {
+        if (!deps.unloadModel) return notFound();
+        const modelId = decodeURIComponent(sub[1]);
+        const ok = await deps.unloadModel(modelId);
+        if (!ok) {
+          return notFound(`Model "${modelId}" is not loaded`);
+        }
+        return json({ unloaded: true, modelId });
+      }
+
+      // ── POST /api/ui/models/unload-all (F2) ──
+      if (
+        req.method === "POST" &&
+        sub.length === 2 &&
+        sub[0] === "models" &&
+        sub[1] === "unload-all"
+      ) {
+        if (!deps.unloadAllModels) return notFound();
+        const unloaded = await deps.unloadAllModels();
+        return json({ unloaded });
       }
 
       // ── GET /api/ui/executions?limit=N ──
@@ -316,6 +493,16 @@ export function createDashboardRouter(deps: DashboardRouterDeps) {
         return json({ success: true, retryExecutionId: result.retryExecutionId });
       }
 
+      // ── GET /api/ui/agents/status ──
+      if (req.method === "GET" && sub.length === 2 && sub[0] === "agents" && sub[1] === "status") {
+        return json(await agentsStatus(deps, req, url));
+      }
+
+      // ── POST /api/ui/agents/configure ──
+      if (req.method === "POST" && sub.length === 2 && sub[0] === "agents" && sub[1] === "configure") {
+        return configureAgent(deps, req, url);
+      }
+
       // ── GET /api/ui/events (SSE) ──
       if (req.method === "GET" && sub.length === 1 && sub[0] === "events") {
         server.timeout(req, 0);
@@ -374,9 +561,277 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// ── Agents helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Resolve the internal API base URL: the injected deps override wins; when
+ * absent the request's own origin is used (the dashboard and the API share
+ * the Bun.serve instance, so the request origin IS the API origin).
+ */
+function proxyBaseURL(deps: DashboardRouterDeps, url: URL): string {
+  const base = deps.baseURL ?? new URL("/v1", url).toString();
+  return base.replace(/\/+$/, "");
+}
+
+/**
+ * Fetch `GET /v1/models` through the internal base URL, keeping only the
+ * `gateway/*` virtual models. `authHeader` carries the Bearer token when the
+ * proxy requires auth (the dashboard itself is token-less).
+ *
+ * Each returned model carries `contextLength` = its per-model effective
+ * context, read from `meta.context_length` (the gateway cross-resolves id →
+ * effective ctx, so chain models report the smallest ctx among their steps).
+ */
+async function fetchGatewayModels(
+  baseURL: string,
+  authHeader: string | null,
+): Promise<{ ok: boolean; status: number; models: GatewayModel[] }> {
+  try {
+    const headers: Record<string, string> = {};
+    if (authHeader) headers.Authorization = authHeader;
+    const res = await fetch(`${baseURL}/models`, {
+      headers,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return { ok: false, status: res.status, models: [] };
+    const data = (await res.json()) as {
+      data?: Array<GatewayModel & { meta?: Record<string, unknown> }>;
+    };
+    if (!Array.isArray(data?.data)) {
+      return { ok: false, status: res.status, models: [] };
+    }
+    const models: GatewayModel[] = [];
+    for (const m of data.data) {
+      if (!m.id.startsWith("gateway/")) continue;
+      models.push({
+        id: m.id,
+        description: m.description,
+        owned_by: m.owned_by,
+        contextLength: positiveNumber(m.meta?.context_length),
+      });
+    }
+    return { ok: true, status: res.status, models };
+  } catch {
+    return { ok: false, status: 0, models: [] };
+  }
+}
+
+/** Read each agent's config file and probe its llm-proxy provider status. */
+function describeAgents(): AgentStatus[] {
+  return AGENTS.map((agent) => {
+    const configPath = expandHome(agent.configPath);
+    const exists = fs.existsSync(configPath);
+    let providerPresent = false;
+    let modelCount = 0;
+    if (exists) {
+      try {
+        const config = JSON.parse(
+          fs.readFileSync(configPath, "utf8"),
+        ) as Record<string, unknown>;
+        const status =
+          agent.id === "opencode"
+            ? opencodeProviderStatus(config)
+            : piProviderStatus(config);
+        providerPresent = status.providerPresent;
+        modelCount = status.modelCount;
+      } catch {
+        // Unreadable or invalid JSON — reported as "not configured".
+      }
+    }
+    return { id: agent.id, label: agent.label, configPath, exists, providerPresent, modelCount };
+  });
+}
+
+/** GET /api/ui/agents/status handler body. */
+async function agentsStatus(
+  deps: DashboardRouterDeps,
+  req: Request,
+  url: URL,
+): Promise<unknown> {
+  const authRequired = Boolean(process.env.BEARER_TOKEN);
+  const baseURL = proxyBaseURL(deps, url);
+  const incomingAuth = req.headers.get("authorization");
+  const fetched = await fetchGatewayModels(
+    baseURL,
+    authRequired ? incomingAuth : null,
+  );
+  return {
+    ok: true,
+    authRequired,
+    baseURL,
+    agents: describeAgents(),
+    models: fetched.models,
+  };
+}
+
+/**
+ * POST /api/ui/agents/configure handler: re-reads /v1/models from the same
+ * proxy, patches the agent's config file (merge + backup) and reports the
+ * synced model ids.
+ */
+async function configureAgent(
+  deps: DashboardRouterDeps,
+  req: Request,
+  url: URL,
+): Promise<Response> {
+  const raw = await readJson(req);
+  if (!raw || !isRecord(raw)) {
+    return errorEnvelope(
+      "El cuerpo debe ser un objeto { agent, apiKey? }",
+      "invalid_request_error",
+      null,
+      "agent",
+    );
+  }
+  const agent = AGENTS.find((a) => a.id === raw.agent);
+  if (!agent) {
+    return errorEnvelope(
+      `Agente desconocido: ${String(raw.agent)}`,
+      "invalid_request_error",
+      null,
+      "agent",
+    );
+  }
+  const apiKey =
+    typeof raw.apiKey === "string" && raw.apiKey.trim() !== ""
+      ? raw.apiKey.trim()
+      : undefined;
+
+  const authRequired = Boolean(process.env.BEARER_TOKEN);
+  if (authRequired && !apiKey) {
+    return errorEnvelope(
+      "Este proxy exige un token Bearer. Pegalo en el campo Token y volvé a intentar.",
+      "invalid_request_error",
+      null,
+      "apiKey",
+    );
+  }
+
+  const baseURL = proxyBaseURL(deps, url);
+  const fetched = await fetchGatewayModels(
+    baseURL,
+    authRequired ? `Bearer ${apiKey}` : null,
+  );
+  if (!fetched.ok) {
+    if (authRequired && fetched.status === 401) {
+      return errorEnvelope(
+        "El token Bearer no es válido.",
+        "invalid_request_error",
+        "invalid_token",
+        "apiKey",
+      );
+    }
+    return errorEnvelope(
+      fetched.status > 0
+        ? `No se pudieron obtener los modelos del proxy (HTTP ${fetched.status}). Verificá que el proxy esté corriendo.`
+        : "No se pudo conectar con el proxy para obtener los modelos.",
+      "server_error",
+      null,
+      "agent",
+    );
+  }
+  if (fetched.models.length === 0) {
+    return errorEnvelope(
+      "No hay modelos gateway registrados para sincronizar.",
+      "invalid_request_error",
+      null,
+      "agent",
+    );
+  }
+
+  const configPath = expandHome(agent.configPath);
+  let config: Record<string, unknown> = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      config = JSON.parse(
+        fs.readFileSync(configPath, "utf8"),
+      ) as Record<string, unknown>;
+    } catch {
+      return errorEnvelope(
+        `El archivo de configuración de ${agent.label} (${configPath}) no es JSON válido. Corregilo manualmente y volvé a intentar.`,
+        "invalid_request_error",
+        null,
+        "configPath",
+      );
+    }
+  }
+
+  const providerApiKey = apiKey ?? agent.defaultApiKey;
+  // REAL limits per model: context comes from each gateway model's OWN
+  // effective value (crossed by model id through the gateway /v1/models meta —
+  // NOT the first backend model's value); output is the backend's global
+  // `--n-predict` when probeable, DEFAULT_LIMITS otherwise.
+  const output =
+    deps.backendBaseUrl
+      ? (await fetchBackendOutputLimit(deps.backendBaseUrl)) ?? DEFAULT_LIMITS.output
+      : DEFAULT_LIMITS.output;
+  const limitsByModel: Record<string, ModelLimits> = {};
+  for (const m of fetched.models) {
+    limitsByModel[m.id] = {
+      context: m.contextLength ?? DEFAULT_LIMITS.context,
+      output,
+    };
+  }
+  const patched =
+    agent.id === "opencode"
+      ? patchOpenCode(config, fetched.models, providerApiKey, baseURL, limitsByModel)
+      : patchPi(config, fetched.models, providerApiKey, baseURL, limitsByModel);
+
+  const { backupPath } = writeJsonAtomic(configPath, patched);
+
+  return json({
+    ok: true,
+    configPath,
+    backupPath,
+    modelsConfigured: fetched.models.map((m) => m.id),
+    limits: limitsByModel,
+    requiresRestart: true,
+  });
+}
+
+/** Extract a positive finite number from an unknown value. */
+function positiveNumber(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Probe the managed llama-server for the REAL max OUTPUT tokens: reads the
+ * `--n-predict` CLI arg carried in `status.args` of its /v1/models entries.
+ * Returns undefined on any failure — the caller falls back to DEFAULT_LIMITS.
+ * (Output is a router-level knob; per-model CONTEXT now comes from each
+ * gateway model's own meta — the first-model heuristic was the bug.)
+ */
+async function fetchBackendOutputLimit(
+  baseUrl: string,
+): Promise<number | undefined> {
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/v1/models`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as {
+      data?: Array<Record<string, unknown>>;
+    };
+    const first = data.data?.find((m) => isRecord(m.status));
+    const status = isRecord(first?.status) ? first.status : {};
+    const args = Array.isArray(status.args) ? status.args.map(String) : [];
+    return positiveNumber(args[args.indexOf("--n-predict") + 1]);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Normalize a validate draft (`steps` linear or `nodes`/`edges` graph). */
 function normalizeGraph(id: string, raw: unknown): GraphPipeline {
-  if (isRecord(raw) && "nodes" in raw && isRecord((raw as Record<string, unknown>).nodes)) {
+  // The editor sends `nodes` as an ARRAY. isRecord rejects arrays, so check
+  // explicitly — otherwise every validated graph collapses to the empty
+  // fallback below and always reports "exactly one start node (found 0)".
+  if (
+    isRecord(raw) &&
+    "nodes" in raw &&
+    Array.isArray((raw as Record<string, unknown>).nodes)
+  ) {
     return {
       id,
       name: id,
@@ -402,6 +857,12 @@ function pickGraphNode(n: GraphPipeline["nodes"][number]): Record<string, unknow
   if (n.pipeline !== undefined) out.pipeline = n.pipeline;
   if (n.params !== undefined) out.params = n.params;
   if (n.parallel !== undefined) out.parallel = n.parallel;
+  if (n.mode !== undefined) out.mode = n.mode;
+  if (n.ctx !== undefined) out.ctx = n.ctx;
+  if (n.system !== undefined) out.system = n.system;
+  if (n.assistant !== undefined) out.assistant = n.assistant;
+  if (n.on_429 !== undefined) out.on_429 = n.on_429;
+  if (n.tool_calls_route !== undefined) out.tool_calls_route = n.tool_calls_route;
   return out;
 }
 

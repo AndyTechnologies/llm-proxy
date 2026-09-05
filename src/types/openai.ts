@@ -140,6 +140,11 @@ export interface ModelInfo {
   root?: string;
   parent?: string | null;
   description?: string;
+  /**
+   * Per-model metadata. `context_length` is the EFFECTIVE context the gateway
+   * configured for the model (tokens), when known.
+   */
+  meta?: { context_length?: number };
 }
 
 /** Model listing response. */

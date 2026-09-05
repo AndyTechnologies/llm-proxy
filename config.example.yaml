@@ -65,6 +65,25 @@ llama:
       file: Phi-4-Mini-Instruct-Q4_K_M.gguf
       ctx: 32768
       temp: 0.1
+  # Model lifecycle (F2) — idle TTL + VRAM-pressure unloading of workers.
+  # A background tick (5s) scans /proc for live llama-server children, unloads
+  # models idle for more than `ttl` seconds, and — when the VRAM policy is
+  # active — unloads least-recently-used workers while `used > limit`.
+  # ttl: 0 disables the TTL pass (VRAM policy still applies).
+  #
+  # VRAM policy modes:
+  #   dynamic — limit = GPU total − freeGb (margin below the GPU's capacity)
+  #   margin  — same formula, explicit free margin
+  #   cap     — fixed ceiling on VRAM used (capGb), independent of the GPU
+  #
+  # The policy is active only while nvidia-smi sampling succeeds; on failure
+  # it deactivates with a warning and TTL unloading still applies.
+  lifecycle:
+    ttl: 600          # unload models idle for >600s
+    vram:
+      mode: dynamic   # dynamic | margin | cap
+      freeGb: 1       # reserve this much GPU memory below capacity (dynamic/margin)
+      capGb: 5        # fixed VRAM ceiling in GiB (cap mode)
 
 # Default chain invoked when no X-Chain-ID header is provided.
 defaultChain: orchestrator
@@ -80,9 +99,12 @@ defaultChain: orchestrator
 #   GET  /api/ui/pipelines                      → pipeline summaries
 #   GET  /api/ui/models                         → merged registered + detected models
 #   GET  /api/ui/executions?limit=N             → recent execution history (bounded)
+#   GET  /api/ui/config                         → live gateway config (Backend editor)
 #   POST /api/ui/pipelines/:id/validate         → validate a graph draft
 #   POST /api/ui/apply                          → zod-validate + atomically apply config
 #   POST /api/ui/executions/:id/steps/:node/retry → retry a failed llm_call step
+#   POST /api/ui/models/:id/unload              → unload a model worker (SIGTERM→kill)
+#   POST /api/ui/models/unload-all              → unload every model worker
 #   GET  /api/ui/events                         → SSE live updates
 #
 # Model list semantics (/api/ui/models):
