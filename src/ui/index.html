@@ -1,108 +1,188 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>llm-proxy Dashboard</title>
+  <title>llm-proxy Panel de control</title>
   <link rel="stylesheet" href="/ui/styles.css" />
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to main content</a>
+  <a class="skip-link" href="#main">Saltar al contenido principal</a>
 
   <header class="app-header" role="banner">
-    <h1 class="app-title">llm-proxy Dashboard</h1>
-    <nav class="app-nav" aria-label="Primary">
+    <h1 class="app-title">llm-proxy</h1>
+    <nav class="app-nav" aria-label="Principal">
       <a href="#editor" class="nav-link" data-view="editor" aria-current="true">Editor</a>
       <a href="#pipelines" class="nav-link" data-view="pipelines">Pipelines</a>
-      <a href="#models" class="nav-link" data-view="models">Models</a>
-      <a href="#executions" class="nav-link" data-view="executions">Executions</a>
+      <a href="#models" class="nav-link" data-view="models">Modelos</a>
+      <a href="#executions" class="nav-link" data-view="executions">Ejecuciones</a>
+      <a href="#agents" class="nav-link" data-view="agents">Agentes</a>
     </nav>
-    <div class="conn-status" id="conn-status" role="status" aria-live="polite">Connecting…</div>
+    <div class="conn-status" id="conn-status" role="status" aria-live="polite">Conectando&#8230;</div>
   </header>
 
   <main id="main" class="app-main">
-    <!-- ── Editor view ─────────────────────────────────────────────── -->
-    <section id="editor" class="view" aria-label="Pipeline editor">
+    <!-- ── Vista del editor ──────────────────────────────────────────── -->
+    <section id="editor" class="view" aria-label="Editor de pipelines">
       <div class="editor-layout">
-        <div id="palette" class="palette" aria-label="Node palette">
-          <h2 class="panel-title">Node palette</h2>
-          <p class="hint" id="palette-hint">Drag a node onto the canvas, or press its letter key while the canvas is focused.</p>
-          <ul id="palette-list" class="palette-list">
-            <li><button type="button" class="palette-item" data-node-type="start" draggable="true" data-key="1">Start</button></li>
-            <li><button type="button" class="palette-item" data-node-type="llm_call" draggable="true" data-key="2">LLM call</button></li>
-            <li><button type="button" class="palette-item" data-node-type="condition" draggable="true" data-key="3">Condition</button></li>
-            <li><button type="button" class="palette-item" data-node-type="loop" draggable="true" data-key="4">Loop</button></li>
-            <li><button type="button" class="palette-item" data-node-type="pipeline" draggable="true" data-key="5">Pipeline</button></li>
-            <li><button type="button" class="palette-item" data-node-type="end" draggable="true" data-key="6">End</button></li>
-          </ul>
+        <div id="palette" class="palette" aria-label="Paleta de nodos">
+          <h2 class="panel-title">Paleta de nodos</h2>
+          <p class="hint" id="palette-hint">Arrastra un nodo al lienzo o presiona su tecla num&#233;rica con el lienzo enfocado.</p>
+
+          <!-- Bloques base -->
+          <div class="palette-section">
+            <h3 class="palette-section-title">Bloques base</h3>
+            <ul id="palette-list" class="palette-list">
+              <li><button type="button" class="palette-item" data-node-type="start" draggable="true" data-key="1">Inicio</button></li>
+              <li><button type="button" class="palette-item" data-node-type="llm_call" draggable="true" data-key="2">Llamada LLM</button></li>
+              <li><button type="button" class="palette-item" data-node-type="condition" draggable="true" data-key="3">Condici&#243;n</button></li>
+              <li><button type="button" class="palette-item" data-node-type="loop" draggable="true" data-key="4">Bucle</button></li>
+              <li><button type="button" class="palette-item" data-node-type="pipeline" draggable="true" data-key="5">Pipeline</button></li>
+              <li><button type="button" class="palette-item" data-node-type="end" draggable="true" data-key="6">Fin</button></li>
+            </ul>
+          </div>
+
+          <!-- Modelos descargados (se llena din&#225;micamente) -->
+          <div class="palette-section" id="palette-models-section" hidden>
+            <h3 class="palette-section-title">Modelos</h3>
+            <ul id="palette-models" class="palette-list palette-list--presets"></ul>
+          </div>
+
+          <!-- Pipelines registrados (se llena din&#225;micamente) -->
+          <div class="palette-section" id="palette-pipelines-section" hidden>
+            <h3 class="palette-section-title">Pipelines</h3>
+            <ul id="palette-pipelines" class="palette-list palette-list--presets"></ul>
+          </div>
         </div>
 
         <div class="canvas-wrap">
-          <div class="canvas-toolbar" role="toolbar" aria-label="Editor actions">
-            <h2 class="panel-title">Pipeline graph</h2>
-            <button type="button" id="btn-new" class="btn">New</button>
-            <label for="pipeline-name" class="field-label">Name</label>
-            <input id="pipeline-name" class="text-input" type="text" value="new-pipeline" aria-label="Pipeline name" />
-            <button type="button" id="btn-validate" class="btn">Validate</button>
-            <button type="button" id="btn-apply" class="btn btn-primary">Apply</button>
-            <button type="button" id="btn-clear" class="btn">Clear</button>
+          <div class="canvas-toolbar" role="toolbar" aria-label="Acciones del editor">
+            <h2 class="panel-title">Grafo del pipeline</h2>
+            <button type="button" id="btn-new" class="btn">Nuevo</button>
+            <label for="pipeline-name" class="field-label">Nombre</label>
+            <input id="pipeline-name" class="text-input" type="text" value="nuevo-pipeline" aria-label="Nombre del pipeline" />
+            <button type="button" id="btn-validate" class="btn">Validar</button>
+            <button type="button" id="btn-flow" class="btn" title="Anima el orden de ejecucion del pipeline">Ver flujo</button>
+            <button type="button" id="btn-apply" class="btn btn-primary">Aplicar</button>
+            <button type="button" id="btn-clear" class="btn">Limpiar</button>
           </div>
-          <div id="graph-canvas" class="graph-canvas" tabindex="0" role="application" aria-label="Pipeline graph canvas" aria-describedby="keyboard-help">
-            <svg id="graph-svg" role="img" aria-label="Pipeline graph"></svg>
-            <p id="canvas-empty" class="canvas-empty">Drag nodes here. Scroll to zoom, drag the empty canvas to pan, and drag a socket to connect.</p>
+          <div class="node-switcher-wrap">
+            <button type="button" id="switcher-prev" class="switcher-arrow switcher-arrow--left" aria-label="Desplazar bloques a la izquierda" tabindex="-1">&#8249;</button>
+            <div id="node-switcher" class="node-switcher" role="tablist" aria-label="Bloques del pipeline"></div>
+            <button type="button" id="switcher-next" class="switcher-arrow switcher-arrow--right" aria-label="Desplazar bloques a la derecha" tabindex="-1">&#8250;</button>
+          </div>
+          <div id="graph-canvas" class="graph-canvas" tabindex="0" role="application" aria-label="Lienzo del grafo del pipeline" aria-describedby="keyboard-help">
+            <svg id="graph-svg" role="img" aria-label="Grafo del pipeline"></svg>
+            <p id="canvas-empty" class="canvas-empty">Arrastra nodos aqu&#237;. Desplaza la rueda para zoom, arrastra el fondo para mover el lienzo, y arrastra un puerto a otro para conectar.</p>
           </div>
           <p id="keyboard-help" class="hint">
-            Canvas: 1–6 add a node type, Delete removes a selected node, scroll zooms, drag the background pans, drag a socket to another socket to connect.
+            Lienzo: 1&#8211;6 agrega un tipo de nodo, Supr elimina el nodo seleccionado, la rueda hace zoom, arrastrar el fondo mueve el lienzo, arrastrar un puerto a otro conecta.
           </p>
           <div id="validation-result" class="validation-result" role="status" aria-live="polite"></div>
         </div>
 
-        <div id="inspector" class="inspector" aria-label="Node inspector">
+        <div id="inspector" class="inspector" aria-label="Inspector de nodos">
           <h2 class="panel-title">Inspector</h2>
-          <div id="inspector-empty" class="hint">Select a node to configure it.</div>
+          <div id="inspector-empty" class="hint">Seleccion&#225; un nodo para configurarlo.</div>
           <div id="inspector-body" hidden></div>
         </div>
       </div>
     </section>
 
-    <!-- ── Pipelines view ───────────────────────────────────────────── -->
+    <!-- ── Vista de pipelines ────────────────────────────────────────── -->
     <section id="pipelines" class="view" aria-label="Pipelines" hidden>
       <h2 class="panel-title">Pipelines</h2>
       <div id="pipelines-list" class="list"></div>
     </section>
 
-    <!-- ── Models view ──────────────────────────────────────────────── -->
-    <section id="models" class="view" aria-label="Models" hidden>
-      <h2 class="panel-title">Models</h2>
+    <!-- ── Vista de modelos ───────────────────────────────────────────── -->
+    <section id="models" class="view" aria-label="Modelos" hidden>
+      <h2 class="panel-title">Modelos</h2>
+
+      <div id="backend-panel" class="lc-panel">
+        <h3 class="panel-title">Backend — ciclo de vida</h3>
+        <div class="lc-grid">
+          <label class="lc-field">
+            <span class="lc-label">TTL inactividad (s) — 0 = off</span>
+            <input id="lc-ttl" class="text-input" type="number" min="0" step="1" />
+          </label>
+          <label class="lc-field">
+            <span class="lc-label">Política VRAM</span>
+            <select id="lc-vram-mode" class="text-input">
+              <option value="dynamic">dinámico — VRAM total − GB libres</option>
+              <option value="margin">margen libre — VRAM total − margen</option>
+              <option value="cap">manual — tope de VRAM ocupada</option>
+            </select>
+          </label>
+          <label class="lc-field" id="lc-freegb-wrap" hidden>
+            <span class="lc-label">GB libres — default 1</span>
+            <input id="lc-freegb" class="text-input" type="number" min="0" max="64" step="0.5" />
+          </label>
+          <label class="lc-field" id="lc-capgb-wrap" hidden>
+            <span class="lc-label">VRAM ocupada tope (GB)</span>
+            <input id="lc-capgb" class="text-input" type="number" min="0.5" max="64" step="0.5" />
+          </label>
+        </div>
+        <div class="lc-actions">
+          <button id="lc-save" class="btn btn-primary">Guardar</button>
+          <button id="lc-unload-all" class="btn btn-danger">Descargar todo</button>
+          <span id="lc-status" class="hint"></span>
+        </div>
+        <p id="lc-meta" class="hint"></p>
+        <div id="lc-unloads" class="list"></div>
+      </div>
+
       <p id="models-dir" class="hint"></p>
       <div id="models-list" class="list"></div>
     </section>
 
-    <!-- ── Executions view ──────────────────────────────────────────── -->
-    <section id="executions" class="view" aria-label="Executions" hidden>
-      <h2 class="panel-title">Executions</h2>
+    <!-- ── Vista de ejecuciones ───────────────────────────────────────── -->
+    <section id="executions" class="view" aria-label="Ejecuciones" hidden>
+      <h2 class="panel-title">Ejecuciones</h2>
       <div id="executions-list" class="list"></div>
+    </section>
+
+    <!-- ── Vista de agentes ──────────────────────────────────────────── -->
+    <section id="agents" class="view" aria-label="Agentes" hidden>
+      <h2 class="panel-title">Agentes</h2>
+      <p class="hint">Configur&#225; tus agentes de codigo (OpenCode, Pi) para que usen este proxy como proveedor de modelos. Un click sincroniza todos los modelos gateway en el archivo del agente sin tocar el resto de su configuraci&#243;n; reinici&#225; el agente despu&#233;s para que tome la config.</p>
+      <div id="agent-token-row" hidden>
+        <label for="agent-token" class="field-label">Token Bearer del proxy (solo si el proxy exige auth)</label>
+        <input type="password" id="agent-token" class="text-input" autocomplete="off" />
+      </div>
+      <div id="agents-list" class="list"></div>
+      <div id="agents-result" role="status" aria-live="polite"></div>
     </section>
   </main>
 
-  <!-- ── Node configuration dialog ─────────────────────────────────── -->
+  <!-- ── Di&#225;logo de configuraci&#243;n de nodo ──────────────────────────────── -->
   <dialog id="node-dialog" aria-labelledby="node-dialog-title">
     <form method="dialog" id="node-form">
-      <h2 id="node-dialog-title" class="dialog-title">Configure node</h2>
+      <h2 id="node-dialog-title" class="dialog-title">Configurar nodo</h2>
       <div id="node-form-body"></div>
       <div class="dialog-actions">
-        <button type="button" id="btn-node-save" class="btn btn-primary">Save</button>
-        <button type="button" id="btn-node-cancel" class="btn">Cancel</button>
+        <button type="button" id="btn-node-save" class="btn btn-primary">Guardar</button>
+        <button type="button" id="btn-node-cancel" class="btn">Cancelar</button>
       </div>
     </form>
   </dialog>
 
-  <!-- ── Apply error dialog ────────────────────────────────────────── -->
+  <!-- ── Di&#225;logo de error de aplicaci&#243;n ──────────────────────────────── -->
   <dialog id="apply-dialog" aria-labelledby="apply-dialog-title" role="alertdialog">
-    <h2 id="apply-dialog-title" class="dialog-title">Apply failed</h2>
+    <h2 id="apply-dialog-title" class="dialog-title">Error al aplicar</h2>
     <p id="apply-dialog-message"></p>
     <div class="dialog-actions">
-      <button type="button" id="btn-apply-ok" class="btn">OK</button>
+      <button type="button" id="btn-apply-ok" class="btn">Aceptar</button>
+    </div>
+  </dialog>
+
+  <!-- ── Di&#225;logo de pipeline inv&#225;lido (validaci&#243;n) ───────────────────── -->
+  <dialog id="validate-dialog" aria-labelledby="validate-dialog-title" role="alertdialog">
+    <h2 id="validate-dialog-title" class="dialog-title">El pipeline no es v&#225;lido</h2>
+    <p class="hint">Correg&#237; estos puntos y volv&#233; a validar:</p>
+    <ul id="validate-errors" class="validate-errors"></ul>
+    <div class="dialog-actions">
+      <button type="button" id="btn-validate-ok" class="btn btn-primary">Entendido</button>
     </div>
   </dialog>
 
