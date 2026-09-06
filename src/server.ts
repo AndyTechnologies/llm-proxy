@@ -2,11 +2,15 @@
  * Slice D: static `/ui` SPA serving — resolve a request pathname to a file
  * within the SPA directory, guarding against path traversal.
  *
- * The SPA is served as plain static assets (no build step). Only `uiDir`
- * files are reachable; any path that escapes the directory (via `..` or an
- * absolute path), requests a subdirectory, or names an unknown asset resolves
- * to `null` so the caller returns a non-200 (dashboard-ui Req "Static SPA
- * serving" / path-traversal scenario).
+ * The SPA is served as compiled static assets (Svelte 5 + Vite output). Only
+ * `uiDir` files are reachable; any path that escapes the directory (via `..` or
+ * an absolute path), contains a backslash, or starts with a leading dot is
+ * rejected (null → caller returns 404 with NO fallback).
+ *
+ * MAJOR-1 ordering invariant: segments are validated INDIVIDUALLY first
+ * (reject → null) before any forward-slash concatenation, ensuring traversal
+ * is rejected regardless of subsequent join semantics. Never `path.join` — it
+ * re-normalizes `../` upward and would defeat the sanitizer.
  */
 export function resolveUiAsset(
   pathname: string,
@@ -15,20 +19,38 @@ export function resolveUiAsset(
   // Only the `/ui` prefix is eligible.
   if (pathname !== "/ui" && !pathname.startsWith("/ui/")) return null;
 
-  // Relative path under /ui/, normalized and traversal-safe.
+  // Relative path under /ui/.
   const raw = pathname === "/ui" ? "index.html" : pathname.slice("/ui/".length);
 
-  // Reject anything that isn't a plain filename-ish path (no `..`, no leading
-  // slash, no backslash) — a traversal attempt collapses to null → 4xx.
-  if (raw.length === 0 || raw.includes("/") || raw.includes("\\") || raw === ".." || raw.startsWith(".")) {
-    return null;
+  // MAJOR-1: split on "/" and validate EACH segment independently.
+  // Reject → null (non-200, NO fallback) if ANY segment is empty, ".",
+  // "..", starts with ".", contains "\", or is an absolute path.
+  const segments = raw.split("/");
+  for (const seg of segments) {
+    if (
+      seg.length === 0 ||
+      seg === "." ||
+      seg === ".." ||
+      seg.startsWith(".") ||
+      seg.includes("\\") ||
+      seg.startsWith("/")
+    ) {
+      return null;
+    }
   }
 
-  const ext = raw.includes(".") ? raw.slice(raw.lastIndexOf(".")) : "";
-  return { file: raw, contentType: contentTypeFor(ext) };
+  // Only THEN join with simple forward-slash concat (never path.join).
+  const resolved = segments.join("/");
+  const ext = resolved.includes(".") ? resolved.slice(resolved.lastIndexOf(".")) : "";
+  return { file: resolved, contentType: contentTypeFor(ext) };
 }
 
-/** Map a file extension to its MIME content-type. */
+/**
+ * Map a file extension to its MIME content-type.
+ *
+ * MAJOR-2: the full set covers the Vite output (js/css/map/woff2) plus
+ * fonts/icons (woff) and the reserved wasm extension.
+ */
 export function contentTypeFor(ext: string): string {
   switch (ext) {
     case ".html":
@@ -45,15 +67,24 @@ export function contentTypeFor(ext: string): string {
       return "image/png";
     case ".ico":
       return "image/x-icon";
+    case ".woff":
+      return "font/woff";
+    case ".woff2":
+      return "font/woff2";
+    case ".map":
+      return "application/json";
+    case ".wasm":
+      return "application/wasm";
     default:
       return "application/octet-stream";
   }
 }
 
 /**
- * Build a safe path by joining the SPA directory with a single, already
- * traversal-checked filename segment (see `resolveUiAsset`, which never emits
- * `..`, an absolute path, or a subdirectory). Pure concatenation is safe here.
+ * Build a safe path by joining the SPA directory with a traversal-checked
+ * file path. The file string is built by forward-slash concat of individually
+ * sanitized segments (see `resolveUiAsset`), so pure concatenation here is
+ * safe — no `path.join` re-normalization occurs after validation.
  */
 function joinUIPath(dir: string, file: string): string {
   return dir.endsWith("/") ? dir + file : `${dir}/${file}`;
@@ -223,8 +254,21 @@ export function createApp(
               }),
             );
           }
+          // SPA fallback: unknown /ui/* GET → index.html (client-side route
+          // reload). This intercepts ONLY benign unknown files under /ui/ —
+          // traversal is already null from resolveUiAsset and /api/* never
+          // reaches this handler (the dashboard branch catches /api/ui/* first).
+          const indexFile = Bun.file(joinUIPath(deps.uiDir, "index.html"));
+          if (await indexFile.exists()) {
+            return withSecurity(
+              corsHeaders(deps),
+              new Response(indexFile, {
+                headers: { "Content-Type": "text/html" },
+              }),
+            );
+          }
         }
-        // Path traversal, unknown asset, or subdirectory → non-200.
+        // Path traversal (asset === null) → 404, no fallback.
         return withSecurity(
           corsHeaders(deps),
           new Response(JSON.stringify({ error: { message: "Not found", type: "invalid_request_error", param: null, code: null } }), {
@@ -233,12 +277,13 @@ export function createApp(
           }),
         );
       }
+      // Missing build: uiDir not configured (compiled output not present).
       return withSecurity(
         corsHeaders(deps),
         new Response(
           JSON.stringify({
             error: {
-              message: "Dashboard UI not yet built (Slice D)",
+              message: "Dashboard UI not yet built — run build:ui",
               type: "invalid_request_error",
               param: null,
               code: null,

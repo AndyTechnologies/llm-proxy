@@ -45,7 +45,7 @@ import {
   DEFAULT_EFFECTIVE_CTX,
 } from "./utils/gguf.js";
 import path from "node:path";
-import { statSync } from "node:fs";
+import { statSync, existsSync } from "node:fs";
 import type { GatewayConfig, ChainConfig } from "./config/schema.js";
 import type { GraphPipeline } from "./orchestrator/graph.js";
 
@@ -507,6 +507,28 @@ const dashboardHandler = createDashboardRouter({
 });
 
 // ── Bun.serve fetch handler ──
+// Dashboard UI directory (svelte-ui 2.3): the SPA is the COMPILED Svelte
+// bundle under `dist/ui` (built with `bun run build:ui`). `UI_DIR` always
+// wins. Without it, the resolution is: compiled `./dist/ui` when the build
+// exists, else the embedded copy next to this module when one is present.
+// The embedded check explicitly excludes the legacy `src/ui` source tree
+// (recognized by its `app.js` marker): it still ships the OLD SPA until
+// Phase 4.4 deletes it, and it must never shadow the compiled bundle.
+// A missing build falls through to `./dist/ui`, where the server's /ui
+// handler returns the "run build:ui" 404.
+async function resolveUiDir(): Promise<string> {
+  const fromEnv = process.env.UI_DIR;
+  if (fromEnv) return fromEnv;
+  const compiledIndex = path.join(process.cwd(), "dist", "ui", "index.html");
+  if (existsSync(compiledIndex)) return "./dist/ui";
+  const embeddedIndex = path.join(import.meta.dir, "ui", "index.html");
+  const legacyMarker = path.join(import.meta.dir, "ui", "app.js");
+  if ((await Bun.file(embeddedIndex).exists()) && !existsSync(legacyMarker)) {
+    return path.join(import.meta.dir, "ui");
+  }
+  return "./dist/ui";
+}
+
 const app = createApp({
   config,
   registry,
@@ -515,10 +537,7 @@ const app = createApp({
   manager,
   noteActivity: noteActivityFor,
   dashboard: { handler: dashboardHandler },
-  // Static SPA served at /ui (Slice D). Running from source this resolves to
-  // src/ui in the repo root; UI_DIR overrides the location (e.g. when the
-  // build:binary step copies the SPA next to the binary).
-  uiDir: process.env.UI_DIR ?? "./src/ui",
+  uiDir: await resolveUiDir(),
 });
 
 const server = Bun.serve({
