@@ -102,18 +102,25 @@ export function bucketDroppedNode(nodes: GraphNode[], id: string): GraphNode[] {
   const host = nodes.find(
     (n) => n.type === "loop" && loopContainsPoint(n, nodes, { x: cx, y: cy }),
   );
-  const changed = nodes.some((n) => n.type === "loop" && (n.body ?? []).includes(id));
-  if (!host && !changed) return nodes;
-  return nodes.map((n) => {
+  let changed = false;
+  const out = nodes.map((n) => {
     if (n.type !== "loop") return n;
-    let body = n.body ?? [];
+    const body = n.body ?? [];
+    let next = body;
     if (host && n.id === host.id) {
-      if (!body.includes(id)) body = [...body, id];
+      if (!body.includes(id)) {
+        next = [...body, id];
+        changed = true;
+      }
     } else if (body.includes(id)) {
-      body = body.filter((b) => b !== id);
+      next = body.filter((b) => b !== id);
+      changed = true;
     }
-    return body === n.body ? n : { ...n, body };
+    return next === body ? n : { ...n, body: next };
   });
+  // Return the input reference for no-ops (callers rely on it to detect
+  // unchanged graphs and skip history entries).
+  return changed ? out : nodes;
 }
 
 /**

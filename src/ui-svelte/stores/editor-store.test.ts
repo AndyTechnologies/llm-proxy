@@ -344,6 +344,73 @@ describe("editor store interactions (task 3.4)", () => {
     expect(store2.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["m1", "m2", "m3"]);
   });
 
+  /** A loop at (0,0) with an empty body: its container covers
+   *  x∈[−18,98], y∈[0,110], so a node added/moved to (40,40) — center
+   *  (80,68) — lands inside and must be bucketed into the body. */
+  const loopPipeline = {
+    id: "demo",
+    name: "Demo",
+    nodes: [{ id: "loop", type: "loop" as const, pos: { x: 0, y: 0 }, body: [] }],
+    edges: [],
+  };
+
+  it("buckets a positioned addNode that lands inside a loop container", async () => {
+    const store = createEditorStore(deps({ api: { ...deps().api, getPipeline: async () => loopPipeline } }));
+    await store.actions.loadPipeline("demo");
+    store.actions.addNode("llm_call", { x: 40, y: 40 });
+    const s = store.getSnapshot();
+    const added = s.nodes.find((n) => n.type === "llm_call")!;
+    expect(s.nodes.find((n) => n.id === "loop")!.body).toEqual([added.id]);
+
+    // one undo removes the node and the membership together
+    store.actions.undo();
+    expect(store.getSnapshot().nodes).toHaveLength(1);
+    expect(store.getSnapshot().nodes[0]!.id).toBe("loop");
+  });
+
+  it("buckets a drag that ends inside a loop container as ONE history entry", async () => {
+    const withCall = {
+      ...loopPipeline,
+      nodes: [
+        { id: "loop", type: "loop" as const, pos: { x: 0, y: 0 }, body: [] },
+        { id: "n1", type: "llm_call" as const, pos: { x: 400, y: 400 } },
+      ],
+    };
+    const store = createEditorStore(deps({ api: { ...deps().api, getPipeline: async () => withCall } }));
+    await store.actions.loadPipeline("demo");
+    store.actions.beginMove();
+    store.actions.moveNode("n1", 40, 40); // center (80,68) inside the loop
+    store.actions.endMove();
+    const s = store.getSnapshot();
+    expect(s.nodes.find((n) => n.id === "loop")!.body).toEqual(["n1"]);
+    expect(s.canUndo).toBe(true);
+
+    store.actions.undo();
+    const after = store.getSnapshot();
+    expect(after.nodes.find((n) => n.id === "loop")!.body).toEqual([]);
+    expect(after.nodes.find((n) => n.id === "n1")!.pos).toEqual({ x: 400, y: 400 });
+  });
+
+  it("keeps a member in its loop body when dragged far away (no re-bucket)", async () => {
+    const withMember = {
+      ...loopPipeline,
+      nodes: [
+        { id: "loop", type: "loop" as const, pos: { x: 0, y: 0 }, body: ["n1"] },
+        { id: "n1", type: "llm_call" as const, pos: { x: 40, y: 40 } },
+      ],
+    };
+    const store = createEditorStore(deps({ api: { ...deps().api, getPipeline: async () => withMember } }));
+    await store.actions.loadPipeline("demo");
+    store.actions.beginMove();
+    store.actions.moveNode("n1", 2000, 2000); // far outside any other container
+    store.actions.endMove();
+    expect(store.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["n1"]);
+
+    // the move itself must still be undoable as a single entry
+    store.actions.undo();
+    expect(store.getSnapshot().nodes.find((n) => n.id === "n1")!.pos).toEqual({ x: 40, y: 40 });
+  });
+
   it("reorderLoopMember ignores unknown loops/members and boundary moves", async () => {
     const loopPipeline = {
       id: "demo",

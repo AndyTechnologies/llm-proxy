@@ -25,7 +25,7 @@ import {
   type NodeType,
   type Point,
 } from "../lib/graph-model.js";
-import { reorderLoopMember as modelReorderMember } from "../lib/editor-geometry.js";
+import { reorderLoopMember as modelReorderMember, bucketDroppedNode } from "../lib/editor-geometry.js";
 import { createHistory } from "../lib/history.js";
 
 /** Backend access the editor store needs (injected, faked in tests). */
@@ -107,6 +107,9 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
    * endMove commits ONE history entry so a whole drag undoes as a unit. */
   let dragOpen = false;
   let dragMoved = false;
+  /** Node being dragged; endMove buckets it into whatever loop container its
+   * final position lands in (legacy bucketDroppedNode semantics). */
+  let dragId: string | null = null;
 
   /** Commit `next` through the history buffer so undo/redo can restore it.
    * The store state and the history present always move together. */
@@ -157,17 +160,23 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
     addNode(type, pos) {
       const id = `node-${++nodeCounter}`;
       const fresh = createNode(type, id);
-      mutate((s) => ({
-        ...s,
-        nodes: [...s.nodes, pos ? { ...fresh, pos: { ...pos } } : fresh],
-        selection: [id],
-        dirty: true,
-      }));
+      mutate((s) => {
+        const withNode = [...s.nodes, pos ? { ...fresh, pos: { ...pos } } : fresh];
+        return {
+          ...s,
+          // a palette drop carries a position; if that position lands inside
+          // a loop container the new node joins its body
+          nodes: pos ? bucketDroppedNode(withNode, id) : withNode,
+          selection: [id],
+          dirty: true,
+        };
+      });
     },
 
     moveNode(id, x, y) {
       if (dragOpen) {
         dragMoved = true;
+        dragId = id;
         patch((s) => ({
           ...s,
           nodes: modelMoveNode(s.nodes, id, x, y),
@@ -214,12 +223,23 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
     beginMove() {
       dragOpen = true;
       dragMoved = false;
+      dragId = null;
     },
 
     endMove() {
       if (!dragOpen) return;
       dragOpen = false;
-      if (dragMoved) commit(get(store));
+      if (!dragMoved) return;
+      const final = get(store);
+      // Bucket the dragged node by its final position: if it now lands inside
+      // a loop container it joins that body (or sheds any accidental one);
+      // a no-op returns the same array reference and is skipped.
+      let next = final;
+      if (dragId !== null) {
+        const bucketed = bucketDroppedNode(final.nodes, dragId);
+        if (bucketed !== final.nodes) next = { ...final, nodes: bucketed };
+      }
+      commit(next);
     },
 
     select(ids) {
