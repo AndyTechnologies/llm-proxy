@@ -494,6 +494,8 @@ function render() {
       ev.preventDefault();
       ev.dataTransfer.dropEffect = "copy";
       cg.classList.add("loop-drop-target");
+      // El drop se resuelve aca; no dejar que el drop del lienzo lo duplique.
+      ev.stopPropagation();
     });
     cg.addEventListener("dragleave", (ev) => {
       if (cg.contains(ev.relatedTarget)) return;
@@ -501,6 +503,7 @@ function render() {
     });
     cg.addEventListener("drop", (ev) => {
       ev.preventDefault();
+      ev.stopPropagation(); // No dejar que el handler del lienzo cree un segundo nodo.
       cg.classList.remove("loop-drop-target");
       const payload = ev.dataTransfer.getData("text/plain");
       if (!payload) return;
