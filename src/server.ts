@@ -95,6 +95,20 @@ export interface ServerDeps {
   providers: Map<string, Provider>;
   manager: LlamaServeManager;
   /**
+   * External provider model registry (model id → provider name), populated at
+   * boot from `config.providers`. Requests for these models are dispatched to
+   * the external provider (chat/completions) and listed in /v1/models
+   * (multi-provider-pipelines).
+   */
+  externalModels?: Map<string, string>;
+  /**
+   * F2 lifecycle hook for request tracking (stamped at dispatch; the returned
+   * end-callback releases the in-flight marker). Threaded to the chat and
+   * completions handlers — the passthrough proxy and the graph-engine
+   * providers observe it at every request pass-through point.
+   */
+  noteActivity?: (model: string) => (() => void) | void;
+  /**
    * Static SPA directory (`src/ui`). When present, `/ui` serves index.html and
    * siblings as static assets with correct content types + a path-traversal
    * guard (Slice D, dashboard-ui Req "Static SPA serving").
@@ -149,9 +163,13 @@ export function createApp(
     ? (id: string) => deps.registry!.getGraph(id)
     : (() => undefined);
 
+  const externalModels = deps.externalModels ?? new Map();
+
   const modelsHandler = createModelsHandler({
     graphs: deps.registry?.listGraphs() ?? [],
     manager: deps.manager,
+    modelContext: (id: string) => deps.manager.modelContext(id),
+    externalModels,
   });
   const healthHandler = createHealthHandler({
     config: deps.config,
@@ -162,12 +180,16 @@ export function createApp(
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,
     getGraph,
+    noteActivity: deps.noteActivity,
+    externalModels,
   });
   const completionsHandler = createCompletionsHandler({
     providers: deps.providers,
     manager: deps.manager,
     requestTimeoutMs: deps.config.llama.requestTimeoutMs,
     getGraph,
+    noteActivity: deps.noteActivity,
+    externalModels,
   });
 
   return async (req: Request, server: BunServer): Promise<Response> => {

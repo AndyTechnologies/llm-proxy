@@ -14,8 +14,10 @@
 import { chatCompletionRequestSchema } from "../types/zod.js";
 import type { ProviderMap } from "../orchestrator/engine.js";
 import { runGraphEngine } from "../orchestrator/graph-engine.js";
+import { buildStreamBody } from "../orchestrator/engine.js";
 import type { GraphPipeline } from "../orchestrator/graph.js";
 import { createPassthroughProxy } from "../middleware/proxy.js";
+import { makeChatCompletionId } from "../utils/ids.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface ChatRouteDeps {
@@ -24,6 +26,14 @@ export interface ChatRouteDeps {
   requestTimeoutMs: number;
   /** Graph pipeline lookup — resolves chain name to graph for dispatch. */
   getGraph: (id: string) => GraphPipeline | undefined;
+  /** F2 lifecycle hook forwarded to the passthrough proxy. */
+  noteActivity?: (model: string) => (() => void) | void;
+  /**
+   * External provider model registry (model id → provider name), populated at
+   * boot from `config.providers`. Requests for these models are dispatched to
+   * the external provider, never to the managed backend.
+   */
+  externalModels?: Map<string, string>;
 }
 
 /** Prefix that marks a model name as a chain invocation. */
@@ -31,6 +41,14 @@ const CHAIN_PREFIX = "gateway/";
 
 /** JSON error headers for early (non-streamed) error responses. */
 const JSON_HEADERS = { "Content-Type": "application/json" };
+
+/** SSE headers for streamed responses (mirrors graph-engine.ts). */
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+  "X-Accel-Buffering": "no",
+};
 
 function jsonError(
   message: string,
@@ -49,7 +67,9 @@ export function createChatHandler(deps: ChatRouteDeps) {
   const passthroughProxy = createPassthroughProxy(
     () => deps.manager,
     deps.requestTimeoutMs,
+    { noteActivity: deps.noteActivity },
   );
+  const externalModels = deps.externalModels ?? new Map();
 
   return async (req: Request): Promise<Response> => {
     // ── Read + Zod validation (gateway-security spec) ──
@@ -113,11 +133,63 @@ export function createChatHandler(deps: ChatRouteDeps) {
       return result.response;
     }
 
+    // ── External provider dispatch (external-providers spec) ──
+    // A model registered by a configured external provider is dispatched to
+    // that provider regardless of the managed backend's state (external-mode
+    // gateways serve remote models without a local llama-server).
+    const externalProviderName = externalModels.get(parsed.model);
+    if (externalProviderName) {
+      const externalProvider = deps.providers.get(externalProviderName);
+      if (!externalProvider) {
+        return jsonError(
+          `Provider "${externalProviderName}" not found`,
+          "invalid_request_error",
+          "model",
+          "model_not_found",
+          404,
+        );
+      }
+
+      if (rawBody.stream === true) {
+        const created = Math.floor(Date.now() / 1000);
+        return new Response(
+          buildStreamBody(
+            externalProvider,
+            rawBody,
+            req.signal,
+            makeChatCompletionId(),
+            created,
+            parsed.model,
+          ),
+          { status: 200, headers: SSE_HEADERS },
+        );
+      }
+
+      const body = await externalProvider.chat(rawBody, parsed.model);
+      // `status` is an internal seam artifact (adapter contract); the route
+      // rewrites id/created/model to gateway values before emitting.
+      const { status: _status, ...wire } = body;
+      const created = Math.floor(Date.now() / 1000);
+      return new Response(
+        JSON.stringify({
+          ...wire,
+          id: makeChatCompletionId(),
+          created,
+          model: parsed.model,
+        }),
+        { status: 200, headers: JSON_HEADERS },
+      );
+    }
+
     // ── Unknown real model → 404 (gateway-api "Unknown model returns 404") ──
     // A real (non-chain) model that the managed backend does not register
     // would otherwise be forwarded and surface the upstream's non-canonical
     // 400. Normalize it at the gateway boundary to the OpenAI shape + 404.
-    if (!modelExists(deps.manager, parsed.model) && backendAvailable(deps.manager)) {
+    if (
+      !externalModels.has(parsed.model) &&
+      !modelExists(deps.manager, parsed.model) &&
+      backendAvailable(deps.manager)
+    ) {
       return jsonError(
         `Model "${parsed.model}" not found`,
         "invalid_request_error",

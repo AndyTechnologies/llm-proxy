@@ -29,6 +29,12 @@ export interface ModelsRouteDeps {
   manager: LlamaServeManager;
   /** Resolve the EFFECTIVE context (tokens) for a model id. */
   modelContext: (id: string) => number | undefined;
+  /**
+   * External provider model registry (model id → provider name). Each entry is
+   * listed as a real model owned by its provider, without `meta` (the remote
+   * provider owns context sizing).
+   */
+  externalModels?: Map<string, string>;
 }
 
 /** Chain-level context: the smallest effective ctx among its llm_call models. */
@@ -88,6 +94,17 @@ export function createModelsHandler(deps: ModelsRouteDeps) {
           deps.modelContext(modelId),
         ),
       );
+    }
+
+    // ── External provider models (multi-provider-pipelines) ──
+    // No meta: the remote provider owns context sizing.
+    for (const [modelId, providerName] of deps.externalModels ?? new Map()) {
+      data.push({
+        id: modelId,
+        object: "model",
+        created: now,
+        owned_by: providerName,
+      });
     }
 
     const response: ModelListResponse = { object: "list", data };

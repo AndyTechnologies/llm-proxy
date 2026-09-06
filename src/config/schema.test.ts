@@ -10,7 +10,7 @@
  *   - the `pipeline` node type is accepted.
  */
 import { describe, expect, test } from "bun:test";
-import { chainConfigSchema, configSchema } from "./schema.js";
+import { chainConfigSchema, configSchema, externalProviderSchema } from "./schema.js";
 import { astDepth } from "./schema.js";
 
 describe("chainConfigSchema — graph nodes/edges (task 1.1)", () => {
@@ -174,5 +174,60 @@ describe("configSchema — top-level chains accept graphs (task 1.1)", () => {
     });
     expect(parsed.chains["orch"].nodes).toHaveLength(3);
     expect(parsed.chains["orch"].edges).toHaveLength(2);
+  });
+});
+
+describe("externalProviderSchema — strict external provider config (task 1.2)", () => {
+  test("accepts a valid provider entry", () => {
+    const parsed = externalProviderSchema.parse({
+      baseURL: "https://api.example.com/v1",
+      apiKey: "sk-123",
+      models: ["m-1", "m-2"],
+      headers: { "X-Tenant": "acme" },
+    });
+    expect(parsed.baseURL).toBe("https://api.example.com/v1");
+    expect(parsed.apiKey).toBe("sk-123");
+    expect(parsed.models).toEqual(["m-1", "m-2"]);
+    expect(parsed.headers).toEqual({ "X-Tenant": "acme" });
+  });
+
+  test("baseURL and headers are optional-free: missing baseURL is a zod error", () => {
+    expect(() => externalProviderSchema.parse({ models: ["m-1"] })).toThrow();
+  });
+
+  test("models is required", () => {
+    expect(() =>
+      externalProviderSchema.parse({ baseURL: "https://api.example.com/v1" }),
+    ).toThrow();
+  });
+
+  test("rejects unknown keys (strict)", () => {
+    expect(() =>
+      externalProviderSchema.parse({
+        baseURL: "https://api.example.com/v1",
+        models: ["m-1"],
+        apiKey2: "nope",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("configSchema — external providers (task 1.2)", () => {
+  test("providers defaults to an empty record", () => {
+    const parsed = configSchema.parse({});
+    expect(parsed.providers).toEqual({});
+  });
+
+  test("parses a providers block keyed by provider name", () => {
+    const parsed = configSchema.parse({
+      providers: {
+        groq: {
+          baseURL: "https://api.groq.com/openai/v1",
+          models: ["llama-3.3-70b"],
+        },
+      },
+    });
+    expect(parsed.providers.groq.baseURL).toBe("https://api.groq.com/openai/v1");
+    expect(parsed.providers.groq.models).toEqual(["llama-3.3-70b"]);
   });
 });

@@ -18,7 +18,9 @@ import { completionRequestSchema } from "../types/zod.js";
 import { createPassthroughProxy } from "../middleware/proxy.js";
 import type { ProviderMap } from "../orchestrator/engine.js";
 import { runGraphEngine } from "../orchestrator/graph-engine.js";
+import { buildStreamBody } from "../orchestrator/engine.js";
 import type { GraphPipeline } from "../orchestrator/graph.js";
+import { makeChatCompletionId } from "../utils/ids.js";
 import type { LlamaServeManager } from "../backend/manager.js";
 
 export interface CompletionsRouteDeps {
@@ -27,10 +29,25 @@ export interface CompletionsRouteDeps {
   requestTimeoutMs: number;
   /** Graph pipeline lookup — resolves chain name to graph for dispatch. */
   getGraph: (id: string) => GraphPipeline | undefined;
+  /** F2 lifecycle hook forwarded to the passthrough proxy. */
+  noteActivity?: (model: string) => (() => void) | void;
+  /**
+   * External provider model registry (model id → provider name). Requests for
+   * these models are dispatched to the external provider (see chat.ts).
+   */
+  externalModels?: Map<string, string>;
 }
 
 const CHAIN_PREFIX = "gateway/";
 const JSON_HEADERS = { "Content-Type": "application/json" };
+
+/** SSE headers for streamed responses (mirrors graph-engine.ts). */
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+  "X-Accel-Buffering": "no",
+};
 
 function jsonError(
   message: string,
@@ -49,7 +66,9 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
   const passthroughProxy = createPassthroughProxy(
     () => deps.manager,
     deps.requestTimeoutMs,
+    { noteActivity: deps.noteActivity },
   );
+  const externalModels = deps.externalModels ?? new Map();
 
   return async (req: Request): Promise<Response> => {
     // ── Read + Zod validation ──
@@ -120,8 +139,61 @@ export function createCompletionsHandler(deps: CompletionsRouteDeps) {
       return result.response;
     }
 
+    // ── External provider dispatch (external-providers spec) ──
+    // Same routing as chat.ts, reusing the prompt → messages conversion. The
+    // legacy `prompt` field itself is dropped — it was already converted into
+    // `messages`, and a remote chat endpoint must not receive both.
+    const externalProviderName = externalModels.get(parsed.model);
+    if (externalProviderName) {
+      const externalProvider = deps.providers.get(externalProviderName);
+      if (!externalProvider) {
+        return jsonError(
+          `Provider "${externalProviderName}" not found`,
+          "invalid_request_error",
+          "model",
+          "model_not_found",
+          404,
+        );
+      }
+
+      const externalPayload = { ...chatPayload };
+      delete externalPayload.prompt;
+
+      if (chatPayload.stream === true) {
+        const created = Math.floor(Date.now() / 1000);
+        return new Response(
+          buildStreamBody(
+            externalProvider,
+            externalPayload,
+            req.signal,
+            makeChatCompletionId(),
+            created,
+            parsed.model,
+          ),
+          { status: 200, headers: SSE_HEADERS },
+        );
+      }
+
+      const body = await externalProvider.chat(externalPayload, parsed.model);
+      const { status: _status, ...wire } = body;
+      const created = Math.floor(Date.now() / 1000);
+      return new Response(
+        JSON.stringify({
+          ...wire,
+          id: makeChatCompletionId(),
+          created,
+          model: parsed.model,
+        }),
+        { status: 200, headers: JSON_HEADERS },
+      );
+    }
+
     // ── Unknown real model → 404 (gateway-api "Unknown model returns 404") ──
-    if (!modelExists(deps.manager, parsed.model) && backendAvailable(deps.manager)) {
+    if (
+      !externalModels.has(parsed.model) &&
+      !modelExists(deps.manager, parsed.model) &&
+      backendAvailable(deps.manager)
+    ) {
       return jsonError(
         `Model "${parsed.model}" not found`,
         "invalid_request_error",

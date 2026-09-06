@@ -17,6 +17,7 @@ import { persistConfig } from "./config/write.js";
 import { createPipelineRegistry } from "./orchestrator/registry.js";
 import { validateGraph } from "./orchestrator/graph.js";
 import { makeLlamaServerProvider } from "./providers/llama-server.js";
+import { makeOpenAICompatibleProvider } from "./providers/openai-compatible.js";
 import { createApp } from "./server.js";
 import { createLlamaServeManager } from "./backend/manager.js";
 import {
@@ -340,6 +341,28 @@ const providers = new Map([
   ],
 ]);
 
+// ── External providers (multi-provider-pipelines) ──
+// Each `providers.<name>` entry in the config becomes an OpenAI-compatible
+// adapter; its `models` ids are published via /v1/models and routed directly
+// in chat/completions (externalModels). llama-server stays FIRST so the
+// graph-engine's default-provider fallback keeps resolving to the managed
+// backend (ADR-8: no noteActivity — the lifecycle tracker only knows
+// llama-server workers).
+const externalModels = new Map<string, string>();
+for (const [name, ext] of Object.entries(config.providers)) {
+  providers.set(
+    name,
+    makeOpenAICompatibleProvider({
+      name,
+      baseURL: ext.baseURL,
+      apiKey: ext.apiKey,
+      headers: ext.headers,
+      models: ext.models,
+    }),
+  );
+  for (const modelId of ext.models) externalModels.set(modelId, name);
+}
+
 // ── Dashboard (Slice C: /api/ui REST+SSE, apply, retry) ──
 // The dashboard application stack is built once at boot and handed to the
 // server as `deps.dashboard.handler`. Sources are read live from the registry,
@@ -362,11 +385,32 @@ const applyService = createApplyService({
     // re-point it at the applied values so TTL/VRAM edits take effect NOW
     // (no backend restart needed).
     config.llama = cfg.llama;
+    config.providers = cfg.providers;
     await registry.reload(
       Object.entries(cfg.chains).map(([name, chain]) =>
         configChainToGraph(name, chain),
       ),
     );
+    // External providers are rebuilt from the applied config (ADR-7). The
+    // llama-server entry stays first; external adapters carry no lifecycle
+    // tracking (ADR-8).
+    for (const name of [...providers.keys()]) {
+      if (name !== "llama-server") providers.delete(name);
+    }
+    externalModels.clear();
+    for (const [name, ext] of Object.entries(cfg.providers)) {
+      providers.set(
+        name,
+        makeOpenAICompatibleProvider({
+          name,
+          baseURL: ext.baseURL,
+          apiKey: ext.apiKey,
+          headers: ext.headers,
+          models: ext.models,
+        }),
+      );
+      for (const modelId of ext.models) externalModels.set(modelId, name);
+    }
   },
   getCurrentChains: () => registry.listGraphs().map((g) => g.id),
 });
@@ -467,6 +511,7 @@ const app = createApp({
   config,
   registry,
   providers,
+  externalModels,
   manager,
   noteActivity: noteActivityFor,
   dashboard: { handler: dashboardHandler },

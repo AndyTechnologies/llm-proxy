@@ -11,7 +11,7 @@
  * clobbers it.
  */
 import { configSchema, type GatewayConfig } from "./schema.js";
-import { loadRawConfig, type LoaderDeps } from "./load.js";
+import { interpolateProviderSecrets, loadRawConfig, type LoaderDeps } from "./load.js";
 
 /** Default config file path, overridable via CONFIG_FILE. */
 export const DEFAULT_CONFIG_FILE = "./llm-proxy.config.yaml";
@@ -24,6 +24,10 @@ export async function loadGatewayConfig(
   const file = configPath ?? process.env.CONFIG_FILE ?? DEFAULT_CONFIG_FILE;
   const raw = await loadRawConfig(file, deps);
   const parsed = configSchema.parse(raw);
+
+  // Resolve ${ENV} references in provider secrets post-parse (ADR-5) —
+  // fail-closed: an unset variable aborts boot naming it verbatim.
+  parsed.providers = interpolateProviderSecrets(parsed.providers);
 
   // Inject chain name from the record key and normalize default provider.
   for (const [name, chain] of Object.entries(parsed.chains)) {

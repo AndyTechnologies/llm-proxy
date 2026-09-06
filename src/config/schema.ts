@@ -225,12 +225,31 @@ export const chainConfigSchema = z
   // the graph is the only supported representation.
   .strict();
 
+/**
+ * External OpenAI-compatible provider config (`providers.<name>`).
+ *
+ * Each entry describes a remote OpenAI-compatible endpoint exposed through the
+ * gateway: the base URL, optional static auth (secret values may reference
+ * `${ENV}` vars — resolved post-parse by `interpolateProviderSecrets`), and
+ * the model ids that become virtual models. Strict so a stray key is rejected
+ * at admission.
+ */
+export const externalProviderSchema = z
+  .object({
+    baseURL: z.string().min(1),
+    apiKey: z.string().optional(),
+    headers: z.record(z.string()).optional(),
+    models: z.array(z.string().min(1)),
+  })
+  .strict();
+
 /** Top-level gateway config. */
 export const configSchema = z.object({
   server: serverConfigSchema.default({}),
   llama: llamaConfigSchema.default({}),
   defaultChain: z.string().optional(),
   chains: z.record(chainConfigSchema).default({}),
+  providers: z.record(externalProviderSchema).default({}),
 });
 
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
@@ -243,4 +262,5 @@ export type VramMode = z.infer<typeof vramModeSchema>;
 export type GraphNodeConfig = z.infer<typeof graphNodeSchema>;
 export type GraphEdgeConfig = z.infer<typeof graphEdgeSchema>;
 export type ChainConfig = z.infer<typeof chainConfigSchema>;
+export type ExternalProviderConfig = z.infer<typeof externalProviderSchema>;
 export type GatewayConfig = z.infer<typeof configSchema>;

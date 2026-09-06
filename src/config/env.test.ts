@@ -56,6 +56,8 @@ afterEach(() => {
   // Clean up any test env vars
   delete process.env.BEARER_TOKEN;
   delete process.env.TEST_PORT;
+  delete process.env.GROQ_API_KEY;
+  delete process.env.GROQ_OPS_KEY;
 });
 
 describe(".env precedence (config-load spec Req: .env precedence)", () => {
@@ -142,5 +144,89 @@ describe(".env precedence (config-load spec Req: .env precedence)", () => {
     // The loader only reads process.env; no keys should be added/removed/changed
     expect(process.env.BEARER_TOKEN as string | undefined).toBe(before.BEARER_TOKEN as string | undefined);
     expect(process.env.TEST_PORT as string | undefined).toBe(before.TEST_PORT as string | undefined);
+  });
+});
+
+describe("${ENV} interpolation in provider secrets (task 1.4)", () => {
+  const groqYaml = (apiKey: string, headers: Record<string, string>) =>
+    `providers:\n  groq:\n    baseURL: https://api.groq.com/openai/v1\n    apiKey: "${apiKey}"\n    headers:\n${Object.entries(headers)
+      .map(([k, v]) => `      ${k}: "${v}"`)
+      .join("\n")}\n    models:\n      - llama-3.3-70b\n`;
+
+  test("apiKey ${VAR} resolves from process.env", async () => {
+    process.env.CONFIG_FILE = "/cwd/interp-api-key.yaml";
+    process.env.GROQ_API_KEY = "resolved-secret";
+    const yaml = groqYaml("${GROQ_API_KEY}", {});
+    mockFileContents["/cwd/interp-api-key.yaml"] = yaml;
+    mockYamlResults[yaml] = {
+      providers: {
+        groq: {
+          baseURL: "https://api.groq.com/openai/v1",
+          apiKey: "${GROQ_API_KEY}",
+          models: ["llama-3.3-70b"],
+        },
+      },
+    };
+
+    const cfg = await loadGatewayConfig(undefined, testDeps());
+    expect(cfg.providers.groq.apiKey).toBe("resolved-secret");
+  });
+
+  test("headers values resolve ${VAR} from process.env", async () => {
+    process.env.CONFIG_FILE = "/cwd/interp-headers.yaml";
+    process.env.GROQ_OPS_KEY = "ops-token";
+    const yaml = groqYaml("static", { "X-Operations": "${GROQ_OPS_KEY}" });
+    mockFileContents["/cwd/interp-headers.yaml"] = yaml;
+    mockYamlResults[yaml] = {
+      providers: {
+        groq: {
+          baseURL: "https://api.groq.com/openai/v1",
+          apiKey: "static",
+          headers: { "X-Operations": "${GROQ_OPS_KEY}" },
+          models: ["llama-3.3-70b"],
+        },
+      },
+    };
+
+    const cfg = await loadGatewayConfig(undefined, testDeps());
+    expect(cfg.providers.groq.headers?.["X-Operations"]).toBe("ops-token");
+  });
+
+  test("unset ${VAR} fails naming the variable verbatim", async () => {
+    process.env.CONFIG_FILE = "/cwd/interp-unset.yaml";
+    delete process.env.GROQ_API_KEY;
+    const yaml = groqYaml("${GROQ_API_KEY}", {});
+    mockFileContents["/cwd/interp-unset.yaml"] = yaml;
+    mockYamlResults[yaml] = {
+      providers: {
+        groq: {
+          baseURL: "https://api.groq.com/openai/v1",
+          apiKey: "${GROQ_API_KEY}",
+          models: ["llama-3.3-70b"],
+        },
+      },
+    };
+
+    await expect(loadGatewayConfig(undefined, testDeps())).rejects.toThrow(
+      "env var GROQ_API_KEY is not set",
+    );
+  });
+
+  test("non-secret provider fields left untouched when no ${VAR} present", async () => {
+    process.env.CONFIG_FILE = "/cwd/interp-plain.yaml";
+    const yaml = groqYaml("static-key", {});
+    mockFileContents["/cwd/interp-plain.yaml"] = yaml;
+    mockYamlResults[yaml] = {
+      providers: {
+        groq: {
+          baseURL: "https://api.groq.com/openai/v1",
+          apiKey: "static-key",
+          models: ["llama-3.3-70b"],
+        },
+      },
+    };
+
+    const cfg = await loadGatewayConfig(undefined, testDeps());
+    expect(cfg.providers.groq.apiKey).toBe("static-key");
   });
 });

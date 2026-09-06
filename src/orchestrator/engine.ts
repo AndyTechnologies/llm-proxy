@@ -27,11 +27,14 @@ export interface StepContext {
  *
  * Invariants (gateway-api "SSE streaming integrity" spec):
  *  1. each token arrives as a `data: {json}\n\n` frame, unbuffered;
- *  2. exactly ONE terminal chunk: if the upstream never sends a finish_reason,
+ *  2. non-terminal chunks may arrive AFTER the terminal chunk (e.g. a usage
+ *     tail with `choices: []`); the terminal chunk is detected by a non-empty
+ *     `finish_reason` in `choices[0]`, NOT by "last chunk" position;
+ *  3. exactly ONE terminal chunk: if the upstream never sends a finish_reason,
  *     a synthesized chunk with `finish_reason: "stop"` is emitted once;
- *  3. the stream ends with exactly ONE `data: [DONE]\n\n`;
- *  4. on error, exactly one error chunk (finish_reason null) then `[DONE]`;
- *  5. client disconnect (stream cancellation) aborts the upstream generator.
+ *  4. the stream ends with exactly ONE `data: [DONE]\n\n`;
+ *  5. on error, exactly one error chunk (finish_reason null) then `[DONE]`;
+ *  6. client disconnect (stream cancellation) aborts the upstream generator.
  */
 export function buildStreamBody(
   provider: Provider,

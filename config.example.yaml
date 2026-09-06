@@ -88,6 +88,29 @@ llama:
 # Default chain invoked when no X-Chain-ID header is provided.
 defaultChain: orchestrator
 
+# External OpenAI-compatible providers (multi-provider-pipelines).
+# Each entry publishes its `models` ids through /v1/models and routes
+# /v1/chat/completions (and /v1/completions) requests for those ids to the
+# configured baseURL. Secrets may reference ${ENV} vars, resolved at load time
+# (an unset var fails config load, naming the variable). The managed
+# llama-server backend remains the default provider for chains; external
+# providers are invoked by exact model id.
+#
+# Commented out by default: a live block with an unset ${VAR} would fail load.
+# providers:
+#   openai:
+#     baseURL: https://api.openai.com/v1
+#     apiKey: ${OPENAI_API_KEY}   # omit for keyless/open endpoints
+#     headers:                    # optional static request headers
+#       X-Custom: my-value
+#     models:
+#       - gpt-4o
+#   anthropic:
+#     baseURL: https://api.anthropic.com/v1
+#     apiKey: ${ANTHROPIC_API_KEY}
+#     models:
+#       - claude-sonnet-4-5
+
 # Dashboard (Slice D)
 # ----------------
 # A static SPA is served at /ui — open a browser to http://<host>:<port>/ui to

@@ -14,6 +14,7 @@
  */
 import { file, YAML } from "bun";
 import path from "node:path";
+import type { ExternalProviderConfig } from "./schema.js";
 
 /** Minimal Bun.File-like surface used by the loader. */
 export interface FileLike {
@@ -68,4 +69,58 @@ export async function loadRawConfig(
   throw new Error(
     `${ERR_UNSUPPORTED_EXT} "${ext}" for ${resolved}; use .yaml, .yml or .json`,
   );
+}
+
+/** Matches `${VAR}` environment references inside config string values. */
+const ENV_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/**
+ * Resolve all `${VAR}` references in `value` from the process environment.
+ *
+ * Fail-closed (ADR-5): a reference to an unset variable throws naming the
+ * variable VERBATIM, so a typo'd or missing secret fails boot loudly instead
+ * of leaking a literal `${VAR}` into an outgoing Authorization header.
+ */
+function resolveEnvRefs(value: string, path: string): string {
+  const refs = [...value.matchAll(ENV_REF)];
+  if (refs.length === 0) {
+    return value;
+  }
+  for (const ref of refs) {
+    const name = ref[1];
+    if (process.env[name] === undefined) {
+      throw new Error(`${path}: env var ${name} is not set`);
+    }
+  }
+  return value.replace(ENV_REF, (match, name: string) => process.env[name] ?? match);
+}
+
+/**
+ * Post-parse pass over the external provider config: resolves `${VAR}`
+ * references in `apiKey` and `headers` values from `process.env`.
+ *
+ * Static auth only (ADR-5) — secrets are resolved once at config load, so the
+ * adapter never touches process.env. Returns a NEW providers record; the
+ * parsed input is not mutated.
+ */
+export function interpolateProviderSecrets(
+  providers: Record<string, ExternalProviderConfig>,
+): Record<string, ExternalProviderConfig> {
+  const out: Record<string, ExternalProviderConfig> = {};
+  for (const [name, provider] of Object.entries(providers)) {
+    const at = (field: string) => `[config] providers.${name}.${field}`;
+    const next: ExternalProviderConfig = { ...provider };
+    if (provider.apiKey !== undefined) {
+      next.apiKey = resolveEnvRefs(provider.apiKey, at("apiKey"));
+    }
+    if (provider.headers !== undefined) {
+      const headers: Record<string, string> = {};
+      for (const [key, val] of Object.entries(provider.headers)) {
+        headers[key] = resolveEnvRefs(val, at(`headers.${key}`));
+      }
+      next.headers = headers;
+    }
+    out[name] = next;
+  }
+  return out;
 }
