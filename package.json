@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "build": "bun build src/index.ts --target=bun --outdir dist",
-    "build:ui": "bunx vite build src/ui-svelte",
+    "build:ui": "bunx vite build src/ui-svelte && bun run scripts/measure-bundle.ts",
     "build:binary": "bun build src/index.ts --compile --outfile dist/llm-proxy --asset dist/ui",
     "build:binaries": "bun run scripts/build-binaries.ts",
     "start": "bun run src/index.ts",

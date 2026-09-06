@@ -38,4 +38,9 @@ describe("package.json scripts (task 4.1)", () => {
     const scripts = loadPackageScripts();
     expect(scripts["build:ui"]).toContain("vite build");
   });
+
+  test("build:ui gates the bundle size via measure-bundle (task 4.2)", () => {
+    const scripts = loadPackageScripts();
+    expect(scripts["build:ui"]).toContain("measure-bundle");
+  });
 });
