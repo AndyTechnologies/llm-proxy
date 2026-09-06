@@ -197,5 +197,172 @@ describe("editor store (injectable factory)", () => {
     expect(s.selection).toEqual([]);
     expect(s.pipelineId).toBeNull();
     expect(s.dirty).toBe(false);
+    expect(s.canUndo).toBe(false);
+  });
+});
+
+describe("editor store undo/redo (task 3.5)", () => {
+  it("starts with empty stacks and no undo/redo available", () => {
+    const store = createEditorStore(deps());
+    expect(store.getSnapshot().canUndo).toBe(false);
+    expect(store.getSnapshot().canRedo).toBe(false);
+  });
+
+  it("records mutations and undoes/redoes them in reverse order", () => {
+    const store = createEditorStore(deps());
+    store.actions.addNode("llm_call");
+    const firstId = store.getSnapshot().nodes[0]!.id;
+    store.actions.addNode("end");
+
+    store.actions.undo();
+    expect(store.getSnapshot().nodes.map((n) => n.id)).toEqual([firstId]);
+    expect(store.getSnapshot().canRedo).toBe(true);
+
+    store.actions.redo();
+    expect(store.getSnapshot().nodes.map((n) => n.id)).toEqual([firstId, store.getSnapshot().nodes[1]!.id]);
+    expect(store.getSnapshot().nodes[1]!.type).toBe("end");
+    expect(store.getSnapshot().canUndo).toBe(true);
+  });
+
+  it("spec: undo restores a deleted node and its edges; redo reapplies the deletion", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.deleteNode("n2");
+    expect(store.getSnapshot().edges).toEqual([]);
+
+    store.actions.undo();
+    const restored = store.getSnapshot();
+    expect(restored.nodes.some((n) => n.id === "n2")).toBe(true);
+    expect(restored.nodes).toHaveLength(3);
+    expect(restored.edges).toEqual(pipeline.edges);
+
+    store.actions.redo();
+    const reapplied = store.getSnapshot();
+    expect(reapplied.nodes.some((n) => n.id === "n2")).toBe(false);
+    expect(reapplied.nodes).toHaveLength(2);
+    expect(reapplied.edges).toEqual([]);
+  });
+
+  it("undo of a move restores the previous position (one entry per drag)", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.moveNode("n1", 400, 300);
+    store.actions.undo();
+    const n1 = store.getSnapshot().nodes.find((n) => n.id === "n1");
+    expect(n1?.pos).toBeUndefined();
+  });
+
+  it("selection changes are NOT recorded in history", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.select(["n2"]);
+    expect(store.getSnapshot().canUndo).toBe(false);
+    expect(store.getSnapshot().selection).toEqual(["n2"]);
+  });
+
+  it("loadPipeline and reset clear the history", async () => {
+    const store = createEditorStore(deps());
+    store.actions.addNode("condition");
+    expect(store.getSnapshot().canUndo).toBe(true);
+
+    await store.actions.loadPipeline("demo");
+    expect(store.getSnapshot().canUndo).toBe(false);
+
+    store.actions.addNode("start");
+    expect(store.getSnapshot().canUndo).toBe(true);
+    store.actions.reset();
+    expect(store.getSnapshot().canUndo).toBe(false);
+    expect(store.getSnapshot().nodes).toEqual([]);
+  });
+});
+
+describe("editor store interactions (task 3.4)", () => {
+  it("addNode with a position places the node there in one history entry", () => {
+    const store = createEditorStore(deps());
+    store.actions.addNode("llm_call", { x: 320, y: 180 });
+    const s = store.getSnapshot();
+    expect(s.nodes[0]!.pos).toEqual({ x: 320, y: 180 });
+    expect(s.dirty).toBe(true);
+    store.actions.undo();
+    expect(store.getSnapshot().nodes).toEqual([]);
+  });
+
+  it("a drag transaction (beginMove…endMove) records ONE history entry", () => {
+    const store = createEditorStore(deps());
+    store.actions.addNode("llm_call");
+    const id = store.getSnapshot().nodes[0]!.id;
+    // simulate a pointer drag: begin, then many per-frame moves, then end
+    store.actions.beginMove();
+    store.actions.moveNode(id, 10, 10);
+    store.actions.moveNode(id, 20, 20);
+    store.actions.moveNode(id, 30, 30);
+    store.actions.endMove();
+    const moved = store.getSnapshot().nodes[0]!;
+    expect(moved.pos).toEqual({ x: 30, y: 30 });
+    expect(store.getSnapshot().canUndo).toBe(true);
+
+    // ONE undo → back before the drag started (no intermediate frames)
+    store.actions.undo();
+    expect(store.getSnapshot().nodes[0]!.pos).toBeUndefined();
+    expect(store.getSnapshot().canRedo).toBe(true);
+
+    // ONE redo → the final drag position, not a mid-drag frame
+    store.actions.redo();
+    expect(store.getSnapshot().nodes[0]!.pos).toEqual({ x: 30, y: 30 });
+  });
+
+  it("ending a drag without moves records nothing", () => {
+    const store = createEditorStore(deps());
+    store.actions.addNode("llm_call");
+    store.actions.beginMove();
+    store.actions.endMove();
+    expect(store.getSnapshot().canUndo).toBe(true); // only the addNode entry
+    store.actions.undo();
+    expect(store.getSnapshot().nodes).toEqual([]);
+  });
+
+  it("reorderLoopMember moves a member up/down and is undoable", async () => {
+    // load a graph whose loop already has an ordered body
+    const loopPipeline = {
+      id: "demo",
+      name: "Demo",
+      nodes: [
+        { id: "loop", type: "loop" as const, body: ["m1", "m2", "m3"] },
+        { id: "m1", type: "llm_call" as const, model: "a", prompt: "" },
+        { id: "m2", type: "llm_call" as const, model: "b", prompt: "" },
+        { id: "m3", type: "llm_call" as const, model: "c", prompt: "" },
+      ],
+      edges: [],
+    };
+    const store2 = createEditorStore(deps({ api: { ...deps().api, getPipeline: async () => loopPipeline } }));
+    await store2.actions.loadPipeline("demo");
+    store2.actions.reorderLoopMember("loop", "m2", -1);
+    expect(store2.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["m2", "m1", "m3"]);
+    expect(store2.getSnapshot().dirty).toBe(true);
+
+    store2.actions.undo();
+    expect(store2.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["m1", "m2", "m3"]);
+  });
+
+  it("reorderLoopMember ignores unknown loops/members and boundary moves", async () => {
+    const loopPipeline = {
+      id: "demo",
+      name: "Demo",
+      nodes: [
+        { id: "loop", type: "loop" as const, body: ["m1", "m2"] },
+        { id: "m1", type: "llm_call" as const, model: "a", prompt: "" },
+        { id: "m2", type: "llm_call" as const, model: "b", prompt: "" },
+      ],
+      edges: [],
+    };
+    const store = createEditorStore(deps({ api: { ...deps().api, getPipeline: async () => loopPipeline } }));
+    await store.actions.loadPipeline("demo");
+    expect(store.getSnapshot().canUndo).toBe(false);
+    store.actions.reorderLoopMember("ghost", "m1", -1);
+    store.actions.reorderLoopMember("loop", "ghost", -1);
+    store.actions.reorderLoopMember("loop", "m1", -1); // first member: no-op up
+    store.actions.reorderLoopMember("loop", "m2", 1); // last member: no-op down
+    expect(store.getSnapshot().canUndo).toBe(false);
+    expect(store.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["m1", "m2"]);
   });
 });
