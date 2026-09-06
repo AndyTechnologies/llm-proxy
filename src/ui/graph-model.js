@@ -358,6 +358,74 @@ export function stripLoopInternalEdges(edges, nodes) {
   return edges.filter((e) => !members.has(e.from) && !members.has(e.to));
 }
 
+/** Human-readable Spanish label for a dashboard context field. */
+export function campoLegible(field) {
+  const labels = {
+    "lastResponse.status": "Estado de la última respuesta",
+    "lastResponse.content": "Contenido de la última respuesta",
+    error: "Error",
+  };
+  return labels[field] ?? field;
+}
+
+/** Human-readable Spanish phrase for a comparison operator. */
+export function operadorLegible(op) {
+  const labels = {
+    "==": "es igual a",
+    "!=": "es distinto de",
+    "<": "es menor que",
+    "<=": "es menor o igual que",
+    ">": "es mayor que",
+    ">=": "es mayor o igual que",
+  };
+  return labels[op] ?? op;
+}
+
+/**
+ * Serialize a condition AST into a readable Spanish sentence (used by the
+ * node preview and the inspector's live phrase). Safe deserialization: any
+ * shape outside the closed compare/exists/not/logical set — or an incomplete
+ * leaf (missing field/op2/value) — yields "", never throws.
+ */
+export function describeCondition(ast) {
+  if (!ast || typeof ast !== "object") return "";
+  switch (ast.op) {
+    case "compare": {
+      const valid =
+        typeof ast.field === "string" &&
+        ast.field !== "" &&
+        typeof ast.op2 === "string" &&
+        ast.op2 !== "" &&
+        ast.value !== undefined &&
+        ast.value !== null &&
+        ast.value !== "";
+      return valid
+        ? `${campoLegible(ast.field)} ${operadorLegible(ast.op2)} ${String(ast.value)}`
+        : "";
+    }
+    case "exists": {
+      if (typeof ast.field !== "string" || ast.field === "") return "";
+      // "Existe error" (no "Existe Error"): la frase suena natural en espanol
+      // con el label del campo en minuscula inicial.
+      const label = campoLegible(ast.field);
+      return `Existe ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+    }
+    case "not": {
+      const child = describeCondition(ast.child);
+      return child === "" ? "" : `No (${child})`;
+    }
+    case "logical": {
+      if (!Array.isArray(ast.args) || ast.args.length === 0) return "";
+      const parts = ast.args.map((a) => describeCondition(a)).filter((p) => p !== "");
+      return parts.length === 0
+        ? ""
+        : `(${parts.join(ast.and === false ? " o " : " y ")})`;
+    }
+    default:
+      return "";
+  }
+}
+
 /**
  * Build a condition AST from the AST-builder form fields. The allowed shapes
  * mirror the graph engine's `AstExpr` discriminated union:

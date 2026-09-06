@@ -1023,21 +1023,162 @@ input[type="text"]:focus {
   color: var(--accent-bright);
 }
 
-/* Condition AST builder */
-.ast-builder .ast-op {
-  margin: var(--space-2) 0;
+/* ── Constructor de condiciones ("pildoras") ──────────────────────────
+   Frase viviente arriba y una fila por condicion simple (campo +
+   operador + valor). Texto legible en espanol, validacion inline y
+   combinacion Y/O explicita. */
+.cond-preview {
+  margin: 0 0 var(--space-2);
+  color: var(--accent-bright);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  min-height: 1.5em;
+}
+
+.cond-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cond-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg-card);
+  background: var(--bg-base);
+  min-height: 40px;
 }
 
-.ast-row {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
+.cond-row--invalid {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.cond-row select,
+.cond-row .cond-value {
+  width: auto;
+  min-height: 32px;
+}
+
+.cond-row .cond-field {
+  flex: 1 1 170px;
+  min-width: 150px;
+}
+
+.cond-row .cond-op {
+  flex: 1 1 150px;
+  min-width: 130px;
+}
+
+.cond-row .cond-value {
+  flex: 1 1 120px;
+  min-width: 90px;
+}
+
+.cond-row--exists .cond-value {
+  display: none;
+}
+
+.cond-row-error {
+  flex: 1 1 100%;
+  font-size: 0.78rem;
+  color: var(--danger);
+}
+
+.cond-row:not(.cond-row--invalid) .cond-row-error {
+  display: none;
+}
+
+.cond-negate {
+  flex: 0 0 auto;
+  min-width: 42px;
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cond-negate:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.cond-negate.is-active {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.cond-remove {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cond-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.cond-add {
+  margin-top: var(--space-2);
+}
+
+.cond-combine-wrap {
+  display: none;
   align-items: center;
-  margin-bottom: var(--space-2);
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.cond-combine-wrap--visible {
+  display: flex;
+}
+
+.cond-combine {
+  min-height: 32px;
+  width: auto;
+}
+
+/* Subtitulo de condicion en el canvas (preview legible del AST). */
+.node-sub--cond {
+  fill: var(--accent-bright);
+  font-size: 9px;
+}
+
+/* Etiquetas Si/No junto a los sockets de rama del nodo condicion. */
+.node-branch-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.node-branch-label--true {
+  fill: var(--success);
+}
+
+.node-branch-label--false {
+  fill: var(--danger);
 }
 
 /* ── Lists (pipelines/models/executions) ─────────────────────────── */

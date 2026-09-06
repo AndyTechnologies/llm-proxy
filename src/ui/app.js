@@ -14,7 +14,9 @@ import {
   createNode,
   layoutGraph,
   buildPayload,
-  buildCondition,
+  describeCondition,
+  campoLegible,
+  operadorLegible,
   ctxFields,
   compareOps,
   isCompleteNode,
@@ -592,6 +594,25 @@ function render() {
       subLbl.textContent = sub;
     }
 
+    // Preview legible de la condicion bajo el titulo (los condition no llevan
+    // model/pipeline, asi que esta posicion del subtitulo queda libre).
+    let condSub = null;
+    if (n.type === "condition" && n.condition) {
+      const condText = describeCondition(n.condition);
+      if (condText) {
+        const MAX_COND_PREVIEW = 20;
+        const short = condText.length > MAX_COND_PREVIEW
+          ? `${condText.slice(0, MAX_COND_PREVIEW).trimEnd()}\u2026`
+          : condText;
+        condSub = document.createElementNS(NS, "text");
+        condSub.setAttribute("class", "node-sub node-sub--cond");
+        condSub.setAttribute("x", String(p.x + NODE_W / 2));
+        condSub.setAttribute("y", String(p.y + NODE_H - 14));
+        condSub.setAttribute("text-anchor", "middle");
+        condSub.textContent = short;
+      }
+    }
+
     // Puertos de conexion estilo Blender/Godot.
     const sp = socketPositions(p);
     if (roles.input) {
@@ -622,6 +643,22 @@ function render() {
           outSock.addEventListener("pointerdown", (ev) => startConnect(ev, n.id, br.guard));
           g.appendChild(outSock);
         }
+        // Etiquetas de rama junto a los sockets: Si arriba (true), No abajo.
+        const trueLbl = document.createElementNS(NS, "text");
+        trueLbl.setAttribute("class", "node-branch-label node-branch-label--true");
+        trueLbl.setAttribute("x", String(cs.outTrue.x + 10));
+        trueLbl.setAttribute("y", String(cs.outTrue.y + 4));
+        trueLbl.setAttribute("pointer-events", "none");
+        trueLbl.textContent = "S\u00ed";
+        g.appendChild(trueLbl);
+
+        const falseLbl = document.createElementNS(NS, "text");
+        falseLbl.setAttribute("class", "node-branch-label node-branch-label--false");
+        falseLbl.setAttribute("x", String(cs.outFalse.x + 10));
+        falseLbl.setAttribute("y", String(cs.outFalse.y + 4));
+        falseLbl.setAttribute("pointer-events", "none");
+        falseLbl.textContent = "No";
+        g.appendChild(falseLbl);
       } else {
         const outSock = document.createElementNS(NS, "circle");
         outSock.setAttribute("class", "socket socket-out");
@@ -673,6 +710,7 @@ function render() {
     g.appendChild(box);
     g.appendChild(lbl);
     if (subLbl) g.appendChild(subLbl);
+    if (condSub) g.appendChild(condSub);
     g.appendChild(delBtn);
     vp.appendChild(g);
   }
@@ -1083,31 +1121,88 @@ function findNode(id) {
   return state.nodes.find((n) => n.id === id);
 }
 
-// ── Constructor de AST de condiciones ─────────────────────────────────────
-function conditionBuilderHtml(node) {
-  const cond = node.condition ?? { op: "compare", field: "lastResponse.status", op2: "==", value: 200 };
-  const fieldOpts = ctxFields
-    .map((f) => `<option value="${f}" ${cond.field === f ? "selected" : ""}>${f}</option>`)
-    .join("");
-  const cmpOpts = compareOps
-    .map((o) => `<option value="${o}" ${cond.op2 === o ? "selected" : ""}>${o}</option>`)
-    .join("");
+// ── Constructor de condiciones ("pildoras") ──────────────────────────────
+const COND_DEFAULT_FIELD = "lastResponse.status";
+const COND_DEFAULT_OP = "==";
 
+/** Aplana un AST de condicion a filas editables del constructor. Cada hoja
+ * (compare/exists), con o sin not, se vuelve una fila; un logical se aplana
+ * recursivamente. Las formas que el constructor no puede editar se descartan:
+ * el usuario las reconstruye con los controles explicitos. */
+function condAstToRows(ast) {
+  const rows = [];
+  const visit = (expr, negated) => {
+    if (!expr || typeof expr !== "object") return;
+    if (expr.op === "not") {
+      visit(expr.child, !negated);
+    } else if (expr.op === "compare") {
+      rows.push({ field: expr.field, op: expr.op2, value: expr.value, negated });
+    } else if (expr.op === "exists") {
+      rows.push({ field: expr.field, op: "exists", value: "", negated });
+    } else if (expr.op === "logical" && Array.isArray(expr.args)) {
+      for (const a of expr.args) visit(a, negated);
+    }
+  };
+  visit(ast, false);
+  return rows;
+}
+
+/** Una fila "existe" siempre es valida; una comparacion exige valor. */
+function condRowComplete(row) {
+  return row.op === "exists" || String(row.value ?? "") !== "";
+}
+
+/** Serializa las filas del DOM a un AST valido — o null si alguna comparacion
+ * queda sin valor. Una fila unica va directa (o envuelta en not); con 2+ filas
+ * se combinan con el conector global Y/O. */
+function condRowsToAst(rows, and) {
+  if (rows.length === 0 || rows.some((r) => !condRowComplete(r))) return null;
+  const args = rows.map((r) => {
+    const leaf = r.op === "exists"
+      ? { op: "exists", field: r.field }
+      : { op: "compare", field: r.field, op2: r.op, value: r.value };
+    return r.negated ? { op: "not", child: leaf } : leaf;
+  });
+  return args.length === 1 ? args[0] : { op: "logical", and: and !== false, args };
+}
+
+function condRowHtml(row, idx) {
+  const fieldOpts = ctxFields
+    .map((f) => `<option value="${f}" ${row.field === f ? "selected" : ""}>${esc(campoLegible(f))}</option>`)
+    .join("");
+  const opOpts = [
+    ...compareOps.map((o) => `<option value="${o}" ${row.op === o ? "selected" : ""}>${esc(operadorLegible(o))}</option>`),
+    `<option value="exists" ${row.op === "exists" ? "selected" : ""}>existe</option>`,
+  ].join("");
+  const exists = row.op === "exists";
   return `
-    <div class="ast-row">
-      <select id="cond-op" class="cond-op" aria-label="Operador de condicion">
-        <option value="compare">comparar</option>
-        <option value="exists">existe</option>
-        <option value="logical">logico</option>
-        <option value="not">no</option>
-      </select>
+    <div class="cond-row ${exists ? "cond-row--exists" : ""}">
+      <select class="cond-field" aria-label="Campo de la condici\u00f3n ${idx + 1}">${fieldOpts}</select>
+      <select class="cond-op" aria-label="Operador de la condici\u00f3n ${idx + 1}">${opOpts}</select>
+      <input class="cond-value text-input" type="text" value="${esc(String(row.value ?? ""))}" aria-label="Valor de comparaci\u00f3n ${idx + 1}" />
+      <button type="button" class="cond-negate" aria-pressed="${row.negated ? "true" : "false"}" aria-label="Negar la condici\u00f3n ${idx + 1}">NO</button>
+      <button type="button" class="cond-remove" aria-label="Eliminar la condici\u00f3n ${idx + 1}">\u00d7</button>
+      <small class="cond-row-error">Falta el valor</small>
+    </div>`;
+}
+
+function conditionBuilderHtml(node) {
+  let rows = condAstToRows(node.condition);
+  if (rows.length === 0) {
+    rows = [{ field: COND_DEFAULT_FIELD, op: COND_DEFAULT_OP, value: "", negated: false }];
+  }
+  const and = node.condition?.op === "logical" ? node.condition.and !== false : true;
+  return `
+    <p class="cond-preview">Se ejecuta cuando: \u2026</p>
+    <div class="cond-rows">
+      ${rows.map((r, i) => condRowHtml(r, i)).join("")}
     </div>
-    <div class="ast-op" data-role="leaf" data-op="${cond.op}">
-      <div class="ast-row">
-        <select class="cond-field" aria-label="Campo de contexto">${fieldOpts}</select>
-        <select class="cond-op2" aria-label="Comparacion" data-current="${cond.op2 ?? ""}">${cmpOpts}</select>
-        <input class="cond-value text-input" type="text" value="${cond.value ?? ""}" aria-label="Valor" />
-      </div>
+    <button type="button" class="btn cond-add">+ Agregar condici\u00f3n</button>
+    <div class="cond-combine-wrap">
+      <select class="cond-combine" aria-label="Combinaci\u00f3n de las condiciones">
+        <option value="and" ${and ? "selected" : ""}>y (todas)</option>
+        <option value="or" ${and ? "" : "selected"}>o (cualquiera)</option>
+      </select>
     </div>`;
 }
 
@@ -1115,31 +1210,109 @@ function wireConditionBuilder(node) {
   const builder = $(`#cond-builder-${node.id}`);
   if (!builder) return;
 
-  builder.addEventListener("input", () => {
-    const op = builder.querySelector("#cond-op")?.value ?? "compare";
-    const field = builder.querySelector(".cond-field")?.value ?? "error";
-    const op2 = builder.querySelector(".cond-op2")?.value ?? "==";
-    const raw = builder.querySelector(".cond-value")?.value ?? "";
-    const num = Number(raw);
-    const value = raw !== "" && !Number.isNaN(num) ? num : raw;
+  const fieldOptsHtml = () =>
+    ctxFields.map((f) => `<option value="${f}">${esc(campoLegible(f))}</option>`).join("");
+  const opOptsHtml = () =>
+    [
+      ...compareOps.map((o) => `<option value="${o}">${esc(operadorLegible(o))}</option>`),
+      `<option value="exists">existe</option>`,
+    ].join("");
 
-    let ast;
-    if (op === "exists") {
-      ast = buildCondition({ op: "exists", field });
-    } else if (op === "compare") {
-      ast = buildCondition({ op: "compare", field, op2, value });
-    } else if (op === "logical") {
-      ast = buildCondition({
-        op: "logical",
-        and: true,
-        args: [{ op: "compare", field, op2, value }],
-      });
-    } else {
-      ast = buildCondition({ op: "not", child: { op: "compare", field, op2, value } });
-    }
-    node.condition = ast;
+  const addRow = () => {
+    const rows = builder.querySelector(".cond-rows");
+    const row = document.createElement("div");
+    row.className = "cond-row";
+    row.innerHTML = `
+      <select class="cond-field" aria-label="Campo de la condici\u00f3n">${fieldOptsHtml()}</select>
+      <select class="cond-op" aria-label="Operador de la condici\u00f3n">${opOptsHtml()}</select>
+      <input class="cond-value text-input" type="text" value="" aria-label="Valor de comparaci\u00f3n" />
+      <button type="button" class="cond-negate" aria-pressed="false" aria-label="Negar la condici\u00f3n">NO</button>
+      <button type="button" class="cond-remove" aria-label="Eliminar la condici\u00f3n">\u00d7</button>
+      <small class="cond-row-error">Falta el valor</small>`;
+    rows.appendChild(row);
+    updateCondState();
+    row.querySelector(".cond-field").focus();
+  };
+
+  const removeRow = (row) => {
+    const rows = builder.querySelector(".cond-rows");
+    const focusTarget =
+      row.nextElementSibling?.querySelector(".cond-field") ??
+      row.previousElementSibling?.querySelector(".cond-field");
+    row.remove();
+    if (rows.children.length === 0) addRow();
+    else updateCondState();
+    (focusTarget ?? rows.querySelector(".cond-field") ?? builder.querySelector(".cond-add"))?.focus();
+  };
+
+  const toggleNegate = (row) => {
+    const btn = row.querySelector(".cond-negate");
+    const negated = btn.getAttribute("aria-pressed") === "true";
+    btn.setAttribute("aria-pressed", negated ? "false" : "true");
+    btn.classList.toggle("is-active", !negated);
+    updateCondState();
+  };
+
+  const readRows = () => {
+    const out = [];
+    builder.querySelectorAll(".cond-row").forEach((row) => {
+      const field = row.querySelector(".cond-field")?.value ?? "error";
+      const op = row.querySelector(".cond-op")?.value ?? COND_DEFAULT_OP;
+      const raw = row.querySelector(".cond-value")?.value ?? "";
+      const num = Number(raw);
+      const value = raw !== "" && !Number.isNaN(num) ? num : raw;
+      const negated = row.querySelector(".cond-negate")?.getAttribute("aria-pressed") === "true";
+      out.push({ field, op, value, negated });
+    });
+    return out;
+  };
+
+  const updateCondState = () => {
+    const rows = readRows();
+    const and = (builder.querySelector(".cond-combine")?.value ?? "and") !== "or";
+    const ast = condRowsToAst(rows, and);
+
+    rows.forEach((r, i) => {
+      const row = builder.querySelectorAll(".cond-row")[i];
+      if (!row) return;
+      const exists = r.op === "exists";
+      row.classList.toggle("cond-row--exists", exists);
+      row.classList.toggle("cond-row--invalid", !condRowComplete(r));
+      row.querySelector(".cond-value")?.classList.toggle("hidden", exists);
+      const n = i + 1;
+      row.querySelector(".cond-field")?.setAttribute("aria-label", `Campo de la condici\u00f3n ${n}`);
+      row.querySelector(".cond-op")?.setAttribute("aria-label", `Operador de la condici\u00f3n ${n}`);
+      row.querySelector(".cond-value")?.setAttribute("aria-label", `Valor de comparaci\u00f3n ${n}`);
+      row.querySelector(".cond-negate")?.setAttribute("aria-label", `Negar la condici\u00f3n ${n}`);
+      row.querySelector(".cond-remove")?.setAttribute("aria-label", `Eliminar la condici\u00f3n ${n}`);
+    });
+
+    builder.querySelector(".cond-combine-wrap")?.classList.toggle("cond-combine-wrap--visible", rows.length >= 2);
+    const preview = builder.querySelector(".cond-preview");
+    if (preview) preview.textContent = `Se ejecuta cuando: ${ast ? describeCondition(ast) : "\u2026"}`;
+
+    const n = findNode(node.id);
+    if (!n) return;
+    // Solo se comitea un AST completo; si falta algun valor el nodo queda
+    // marcado incompleto ("\u00b7" en el canvas) hasta completarlo.
+    if (ast) n.condition = ast;
+    else delete n.condition;
     render();
+  };
+
+  builder.addEventListener("input", () => updateCondState());
+  builder.addEventListener("click", (ev) => {
+    if (ev.target.closest(".cond-add")) {
+      addRow();
+    } else if (ev.target.closest(".cond-remove")) {
+      removeRow(ev.target.closest(".cond-row"));
+    } else if (ev.target.closest(".cond-negate")) {
+      toggleNegate(ev.target.closest(".cond-row"));
+    }
   });
+
+  // Sincroniza el estado inicial (preview, filas invalidas, AST) desde el DOM.
+  updateCondState();
 }
 
 // ── Acciones de la barra de herramientas ──────────────────────────────────

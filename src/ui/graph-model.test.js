@@ -18,6 +18,9 @@ import {
   layoutGraph,
   buildPayload,
   buildCondition,
+  describeCondition,
+  campoLegible,
+  operadorLegible,
   requiredField,
   isCompleteNode,
   moveNode,
@@ -284,6 +287,45 @@ describe("graph-model: buildCondition (condition AST builder / no free-form code
     expect(ast.args).toHaveLength(2);
   });
 
+  it("compone un logical OR con tres argumentos", () => {
+    const ast = buildCondition({
+      op: "logical",
+      and: false,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+        { op: "compare", field: "error", op2: "!=", value: "" },
+      ],
+    });
+    expect(ast.op).toBe("logical");
+    expect(ast.and).toBe(false);
+    expect(ast.args).toHaveLength(3);
+  });
+
+  it("arma un not con child explicito (compare)", () => {
+    const ast = buildCondition({
+      op: "not",
+      child: { op: "compare", field: "lastResponse.status", op2: "<", value: 400 },
+    });
+    expect(ast).toEqual({
+      op: "not",
+      child: { op: "compare", field: "lastResponse.status", op2: "<", value: 400 },
+    });
+  });
+
+  it("arma un not con childForm como fallback", () => {
+    const ast = buildCondition({
+      op: "not",
+      childForm: { op: "exists", field: "error" },
+    });
+    expect(ast).toEqual({ op: "not", child: { op: "exists", field: "error" } });
+  });
+
+  it("arma un exists directo", () => {
+    const ast = buildCondition({ op: "exists", field: "error" });
+    expect(ast).toEqual({ op: "exists", field: "error" });
+  });
+
   it("does not allow a code/free-form operator", () => {
     expect(conditionOps).not.toContain("eval");
     expect(conditionOps).not.toContain("function");
@@ -376,5 +418,101 @@ describe("graph-model: ownerLoopId + stripLoopInternalEdges", () => {
       { from: "start", to: "loop" },
       { from: "loop", to: "end" },
     ]);
+  });
+});
+
+describe("graph-model: campoLegible + operadorLegible (etiquetas humanas)", () => {
+  it("mapea los campos de contexto a etiquetas en espanol", () => {
+    expect(campoLegible("lastResponse.status")).toBe("Estado de la última respuesta");
+    expect(campoLegible("lastResponse.content")).toBe("Contenido de la última respuesta");
+    expect(campoLegible("error")).toBe("Error");
+  });
+
+  it("devuelve el propio campo para nombres desconocidos", () => {
+    expect(campoLegible("custom.variable")).toBe("custom.variable");
+  });
+
+  it("mapea los operadores de comparacion a frases humanas", () => {
+    expect(operadorLegible("==")).toBe("es igual a");
+    expect(operadorLegible("!=")).toBe("es distinto de");
+    expect(operadorLegible("<")).toBe("es menor que");
+    expect(operadorLegible("<=")).toBe("es menor o igual que");
+    expect(operadorLegible(">")).toBe("es mayor que");
+    expect(operadorLegible(">=")).toBe("es mayor o igual que");
+  });
+
+  it("devuelve el propio operador para valores desconocidos", () => {
+    expect(operadorLegible("~=")).toBe("~=");
+  });
+});
+
+describe("graph-model: describeCondition (lectura natural en espanol)", () => {
+  it("describe una comparacion de estado", () => {
+    const ast = { op: "compare", field: "lastResponse.status", op2: "==", value: 200 };
+    expect(describeCondition(ast)).toBe("Estado de la última respuesta es igual a 200");
+  });
+
+  it("describe un exists", () => {
+    expect(describeCondition({ op: "exists", field: "error" })).toBe("Existe error");
+  });
+
+  it("describe un not anidado", () => {
+    const ast = {
+      op: "not",
+      child: { op: "compare", field: "lastResponse.content", op2: "==", value: "ok" },
+    };
+    expect(describeCondition(ast)).toBe("No (Contenido de la última respuesta es igual a ok)");
+  });
+
+  it("describe un logical AND con dos argumentos", () => {
+    const ast = {
+      op: "logical",
+      and: true,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "compare", field: "lastResponse.status", op2: ">=", value: 500 },
+      ],
+    };
+    expect(describeCondition(ast)).toBe(
+      "(Existe error y Estado de la última respuesta es mayor o igual que 500)",
+    );
+  });
+
+  it("describe un logical OR usando 'o'", () => {
+    const ast = {
+      op: "logical",
+      and: false,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "exists", field: "lastResponse.content" },
+      ],
+    };
+    expect(describeCondition(ast)).toBe("(Existe error o Existe contenido de la última respuesta)");
+  });
+
+  it("describe un not dentro de un logical", () => {
+    const ast = {
+      op: "logical",
+      and: true,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "not", child: { op: "exists", field: "lastResponse.status" } },
+      ],
+    };
+    expect(describeCondition(ast)).toBe("(Existe error y No (Existe estado de la última respuesta))");
+  });
+
+  it("devuelve cadena vacia para AST invalidos (nunca lanza)", () => {
+    expect(describeCondition(null)).toBe("");
+    expect(describeCondition(undefined)).toBe("");
+    expect(describeCondition("nope")).toBe("");
+    expect(describeCondition({})).toBe("");
+    expect(describeCondition({ op: "eval", code: "danger()" })).toBe("");
+    expect(describeCondition({ op: "compare", field: "error", op2: "==" })).toBe("");
+    expect(describeCondition({ op: "compare", field: "error", op2: "==", value: "" })).toBe("");
+    expect(describeCondition({ op: "compare", field: "", op2: "==", value: 1 })).toBe("");
+    expect(describeCondition({ op: "exists" })).toBe("");
+    expect(describeCondition({ op: "not" })).toBe("");
+    expect(describeCondition({ op: "logical", and: true, args: [] })).toBe("");
   });
 });
