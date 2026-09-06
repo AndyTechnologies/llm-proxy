@@ -43,4 +43,9 @@ describe("package.json scripts (task 4.1)", () => {
     const scripts = loadPackageScripts();
     expect(scripts["build:ui"]).toContain("measure-bundle");
   });
+
+  test("smoke:binary runs the binary smoke script (task 4.3)", () => {
+    const scripts = loadPackageScripts();
+    expect(scripts["smoke:binary"]).toContain("binary-smoke");
+  });
 });
