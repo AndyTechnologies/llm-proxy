@@ -34,13 +34,13 @@ Chain strategy: feature-branch-chain
 
 ## Phase 3: UI Layer
 
-- [ ] 3.1 MINOR-B: `stores/*.store.ts` factories (fresh per test, reset/unmount) + consolidated throttled refresh; `services/rest-service.ts`.
-- [ ] 3.2 `services/sse-service.ts`: all 8 events incl. `execution:failed`, reconnect, unsub in teardown; `services/trace-service.ts` debug/verbose, presentation-only.
-- [ ] 3.3 `main.ts`, `App.svelte`, shell/nav; theme tokens verbatim; 5 views; Rioplatense copy; AA/ARIA/native `<dialog>`/reduced-motion.
-- [ ] 3.4 Editor: declarative SVG, rAF batch, DPR-aware, palette drag/click, keys 1–6/zoom 0.2–3×/pan/select/delete, 24 px connect + self-edge reject, loops/carousel/flow animation.
-- [ ] 3.5 RED `history.ts`: bounded Command undo/redo (~100) over add/move/delete/connect/reorder.
-- [ ] 3.6 Ejecuciones list-level + SSE live + `execution:failed` + step-retry wiring; Modelos lifecycle panel (TTL/VRAM) via config/apply + `models:changed`.
-- [ ] 3.7 Component tests (Testing Library + jsdom): 5 views, editor, stores, history, sse.
+- [x] 3.1 MINOR-B: `stores/*.store.ts` factories (fresh per test, reset/unmount) + consolidated throttled refresh; `services/rest-service.ts`.
+- [x] 3.2 `services/sse-service.ts`: all 8 events incl. `execution:failed`, reconnect, unsub in teardown; `services/trace-service.ts` debug/verbose, presentation-only.
+- [x] 3.3 `main.ts`, `App.svelte`, shell/nav; theme tokens verbatim; 5 views; Rioplatense copy; AA/ARIA/native `<dialog>`/reduced-motion.
+- [x] 3.4 Editor: declarative SVG, rAF batch, DPR-aware, palette drag/click, keys 1–6/zoom 0.2–3×/pan/select/delete, 24 px connect + self-edge reject, loops/carousel/flow animation.
+- [x] 3.5 RED `history.ts`: bounded Command undo/redo (~100) over add/move/delete/connect/reorder.
+- [x] 3.6 Ejecuciones list-level + SSE live + `execution:failed` + step-retry wiring; Modelos lifecycle panel (TTL/VRAM) via config/apply + `models:changed`.
+- [x] 3.7 Component tests (Testing Library + jsdom): 5 views, editor, stores, history, sse.
 
 ## Phase 4: Delivery + Gate
 
