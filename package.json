@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "build": "bun build src/index.ts --target=bun --outdir dist",
+    "build:ui": "bunx vite build src/ui-svelte",
     "build:binary": "bun build src/index.ts --compile --outfile dist/llm-proxy",
     "build:binaries": "bun run scripts/build-binaries.ts",
     "start": "bun run src/index.ts",
@@ -60,12 +61,18 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/svelte": "^5.2.4",
     "@types/bun": "^1.4.0",
     "@types/express": "^5.0.0",
     "@typescript-eslint/eslint-plugin": "^8.69.0",
     "@typescript-eslint/parser": "^8.69.0",
     "eslint": "^10.9.1",
+    "jsdom": "^25.0.1",
+    "svelte": "^5.19.0",
     "typescript": "^5.5.4",
-    "typescript-eslint": "^8.69.0"
+    "typescript-eslint": "^8.69.0",
+    "vite": "^6.0.0"
   }
 }

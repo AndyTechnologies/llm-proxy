@@ -1,0 +1,7 @@
+/* Build placeholder stylesheet (Unit 1, svelte-ui).
+   Phase 3 replaces this with the real design tokens. A single rule keeps the
+   hashed CSS asset non-empty through the Vite build. */
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0;
+}

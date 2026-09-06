@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    /* Strict TypeScript for the UI layer (pattern-matched to the root config
+       but deliberately standalone — it does not inherit the root tsconfig so
+       the Svelte source stays decoupled from src/). */
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    /* ESM resolution — package.json has "type":"module", so NodeNext is the
+       correct pair: imports use explicit .js extensions. Svelte's `lang="ts"`
+       blocks compile through the same settings. */
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+
+    "outDir": "dist/ui",
+    "declaration": false,
+    "sourceMap": true,
+
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+
+    /* Svelte 5 analysis via the vite plugin; `module` augmentation so the
+       client types come from the runtime, not a hardcoded global. */
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true
+  },
+  "include": ["**/*.ts", "**/*.svelte"],
+  "exclude": ["node_modules", "dist"]
+}
