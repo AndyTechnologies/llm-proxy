@@ -15,6 +15,7 @@
  * Bun.serve and logs its bound port; Playwright waits for the baseURL to be
  * reachable before running specs.
  */
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createApp } from "../src/server.js";
 import type { ServerDeps } from "../src/server.js";
@@ -79,16 +80,22 @@ function fakeManager(): LlamaServeManager {
   } as unknown as LlamaServeManager;
 }
 
-/** Point uiDir at the real SPA source dir under the repo (src/ui). */
-const UI_DIR = join(import.meta.dir, "..", "src", "ui");
+/** Point uiDir at the compiled Svelte SPA output under the repo root
+ *  (svelte-ui 2.4): `dist/ui` built with `bun run build:ui`. UI_DIR
+ *  overrides when set. */
+const UI_DIR = process.env.UI_DIR ?? join(import.meta.dir, "..", "dist", "ui");
 
 /**
  * Build the full ServerDeps with the dashboard wired using deterministic
  * fakes, mirroring the wiring in src/index.ts and src/dashboard/router.test.ts.
+ *
+ * `tracker` and `bus` live at module scope so the SSE-live debug seam
+ * (`POST /api/ui/_e2e/complete`) can record + publish deterministically.
  */
+const tracker = createExecutionTracker({ maxHistory: 100 });
+const bus = createEventBus({ bufferSize: 100 });
+
 function buildDeps(): ServerDeps {
-  const tracker = createExecutionTracker({ maxHistory: 100 });
-  const bus = createEventBus({ bufferSize: 100 });
   const metrics = createMetricsCollector();
 
   // Seed one deterministic completed execution so the Executions view loads.
@@ -138,12 +145,39 @@ function buildDeps(): ServerDeps {
 
 const app = createApp(buildDeps());
 
+// ── SSE-live debug seam (harness only, svelte-ui 2.4) ──
+// `POST /api/ui/_e2e/complete` records one more completed execution on the
+// shared tracker and publishes `execution:completed` to the bus, so the
+// "SSE live updates" spec can assert that the open page appends the new
+// execution without a reload. Never wired into the real entry point.
+const harnessApp = async (req: Request, srv: ReturnType<typeof Bun.serve>) => {
+  const url = new URL(req.url);
+  if (req.method === "POST" && url.pathname === "/api/ui/_e2e/complete") {
+    const executionId = tracker.recordStart("customer-support");
+    tracker.recordStep(executionId, {
+      nodeId: "triage",
+      status: 200,
+      latencyMs: 80,
+    });
+    tracker.recordComplete(executionId);
+    bus.publish({ type: "execution:completed", executionId });
+    return Response.json({ ok: true, executionId });
+  }
+  return app(req, srv);
+};
+
 const server = Bun.serve({
   port: PORT,
   hostname: HOST,
-  fetch: app,
+  fetch: harnessApp,
 });
 
 // Log the bound port so Playwright's webServer.url can reference it and humans
 // can curl it. Bun.serve keeps the event loop alive, so this process persists.
 console.log(`[e2e-server] dashboard harness listening on http://${HOST}:${server.port}`);
+if (!existsSync(join(UI_DIR, "index.html"))) {
+  console.warn(
+    `[e2e-server] WARNING: compiled UI not found at ${UI_DIR} — ` +
+      "run `bun run build:ui` before the SPA specs (shell/serving specs still pass).",
+  );
+}
