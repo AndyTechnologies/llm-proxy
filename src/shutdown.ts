@@ -43,10 +43,13 @@ export async function shutdown(
 ): Promise<void> {
   logFn("info", "shutting down", { reason });
 
+  // Force-close timer: must NOT be unref() — if server.stop(false) hangs on
+  // long-lived SSE connections, an unref'd timer would never fire because the
+  // event loop would be empty. Keeping it ref'd guarantees the force-close
+  // fires after 3s even when SSE connections block graceful drain. (RDD #26)
   const forceClose = setTimeout(() => {
     serverInstance.stop(true);
   }, 3000);
-  forceClose.unref();
 
   await serverInstance.stop(false);
   clearTimeout(forceClose);
