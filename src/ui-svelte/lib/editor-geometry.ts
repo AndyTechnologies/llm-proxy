@@ -174,9 +174,10 @@ export function computeFlowOrder(nodes: GraphNode[], edges: GraphEdge[]): FlowSt
     if (seen.has(cur.id)) break;
     seen.add(cur.id);
     if (cur.type === "loop") {
-      steps.push({ nodeId: cur.id, kind: "loop" });
-      for (const m of cur.body ?? []) steps.push({ nodeId: m, kind: "member" });
-      const exit = nextEdges(cur).find((e) => !(cur.body ?? []).includes(e.to));
+      const loopNode = cur;
+      steps.push({ nodeId: loopNode.id, kind: "loop" });
+      for (const m of loopNode.body ?? []) steps.push({ nodeId: m, kind: "member" });
+      const exit = nextEdges(loopNode).find((e) => !(loopNode.body ?? []).includes(e.to));
       if (!exit) break;
       cur = byId.get(exit.to) ?? null;
       continue;

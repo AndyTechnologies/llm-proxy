@@ -61,6 +61,32 @@ if (typeof HTMLDialogElement !== "undefined") {
   }
 }
 
+// jsdom does not implement PointerEvent or Element#setPointerCapture; the
+// editor canvas interacts through pointer events (drag/connect/pan), so the
+// tests need a MouseEvent-based stand-in. Real browsers are unaffected.
+if (typeof PointerEvent === "undefined") {
+  class PointerEventPolyfill extends MouseEvent {
+    readonly pointerId: number;
+    readonly pointerType: string;
+    readonly isPrimary: boolean;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+      this.pointerType = init.pointerType ?? "mouse";
+      this.isPrimary = init.isPrimary ?? true;
+    }
+  }
+  g.PointerEvent = PointerEventPolyfill;
+}
+if (typeof Element !== "undefined" && !Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = function (this: Element, _pointerId: number): void {
+    // no-op: jsdom has no pointer-capture model; handlers live on window
+  };
+  Element.prototype.releasePointerCapture = function (this: Element): void {
+    // no-op
+  };
+}
+
 // cleanup is imported LAZILY (dynamic) — importing @testing-library/svelte
 // here at top level would evaluate testing-library's raw `.svelte.js` runes
 // modules BEFORE the svelte-loader preload registers its compiler plugin,

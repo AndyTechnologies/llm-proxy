@@ -22,7 +22,6 @@ import {
   reorderLoopMember,
   computeFlowOrder,
   type EditorView,
-  type FlowStep,
 } from "./editor-geometry.js";
 
 function node(id: string, type: GraphNode["type"], pos?: Point): GraphNode {
@@ -114,8 +113,7 @@ describe("nearestInputSocket (24px screen hit radius)", () => {
 describe("bucketDroppedNode (loop membership by position)", () => {
   // loop at (0,0) with one member at (0, 70) → body rect spans the header
   // and stack; a node dropped at (40, 200) lands inside the container.
-  const loopAt = (body: string[] = []): GraphNode =>
-    node("loop", "loop", { x: 0, y: 0 }) as GraphNode & { body?: string[] };
+  const loopAt = (): GraphNode => node("loop", "loop", { x: 0, y: 0 }) as GraphNode & { body?: string[] };
 
   it("adds a node whose center falls inside a loop container to its body", () => {
     const loop = { ...loopAt(), body: [] as string[] };
@@ -192,12 +190,6 @@ describe("reorderLoopMember (inspector/loop body up-down)", () => {
 });
 
 describe("computeFlowOrder (Ver flujo animation)", () => {
-  const chain = (ids: string[], extra?: Partial<GraphNode>): GraphNode[] =>
-    ids.map((id, i) => {
-      const base = node(id, (["start", "llm_call", "condition", "loop", "pipeline", "end"] as const)[i % 6]);
-      return { ...base, ...extra };
-    });
-
   it("walks a linear start→a→b→end chain with kind 'node'", () => {
     const nodes = [node("start", "start"), node("a", "llm_call"), node("b", "llm_call"), node("end", "end")];
     const edges: GraphEdge[] = [

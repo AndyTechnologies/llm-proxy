@@ -411,6 +411,13 @@ describe("editor store interactions (task 3.4)", () => {
     expect(store.getSnapshot().nodes.find((n) => n.id === "n1")!.pos).toEqual({ x: 40, y: 40 });
   });
 
+  it("rename updates the name without recording a history entry", async () => {
+    const store = createEditorStore(deps());
+    store.actions.rename("Mi pipeline");
+    expect(store.getSnapshot().name).toBe("Mi pipeline");
+    expect(store.getSnapshot().canUndo).toBe(false);
+  });
+
   it("reorderLoopMember ignores unknown loops/members and boundary moves", async () => {
     const loopPipeline = {
       id: "demo",

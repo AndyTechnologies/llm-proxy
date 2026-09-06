@@ -62,6 +62,7 @@ export interface EditorActions {
   deleteNode(id: string): void;
   connect(from: string, to: string, guard?: string): void;
   reorderLoopMember(loopId: string, memberId: string, dir: -1 | 1): void;
+  rename(name: string | null): void;
   select(ids: string[]): void;
   beginMove(): void;
   endMove(): void;
@@ -145,6 +146,7 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
           edges: detail.edges,
           selection: [],
           dirty: false,
+          loading: false,
           validation: null,
           applyError: null,
           canUndo: false,
@@ -218,6 +220,12 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
         nodes: modelReorderMember(s.nodes, loopId, memberId, dir),
         dirty: true,
       }));
+    },
+
+    /** Rename the pipeline (editor credential, not a graph mutation: naming
+     * never records a history entry). */
+    rename(name) {
+      patch((s) => ({ ...s, name }));
     },
 
     beginMove() {
