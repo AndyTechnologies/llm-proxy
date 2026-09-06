@@ -8,10 +8,9 @@
  * a manual extension.
  *
  * Not part of the production build — it lives under `scripts/` so `dist/`
- * packaging and the `src/` typecheck stay independent. Calls the OVEN `bun`
- * CLI through child_process so the six compiles each run in a clean process.
+ * packaging and the `src/` typecheck stay independent. Uses Bun.spawnSync
+ * (native Bun API) instead of node:child_process.
  */
-import { spawnSync } from "node:child_process";
 
 /** Bun 1.4 cross-compile targets: `--target=bun-<os>-<arch>`. */
 const TARGETS = [
@@ -31,15 +30,14 @@ for (const target of TARGETS) {
   const outfile = `${OUT_DIR}/${name}`;
   console.log(`[build] ${target} -> ${outfile} (.exe auto-appended for windows)`);
 
-  const result = spawnSync(
-    "bun",
-    ["build", ENTRY, "--compile", "--target", target, "--outfile", outfile],
-    { stdio: "inherit" },
-  );
+  const result = Bun.spawnSync([
+    "bun", "build", ENTRY, "--compile",
+    "--target", target, "--outfile", outfile,
+  ]);
 
-  if (result.status !== 0) {
-    console.error(`[build] FAILED ${target} (exit ${result.status})`);
-    process.exit(result.status ?? 1);
+  if (!result.success) {
+    console.error(`[build] FAILED ${target} (exit ${result.exitCode})`);
+    process.exit(result.exitCode ?? 1);
   }
 }
 
