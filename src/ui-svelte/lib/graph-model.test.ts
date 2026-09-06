@@ -1,0 +1,674 @@
+/**
+ * Unit tests for the UI graph model pure TS port (svelte-ui Phase 1, tasks
+ * 1.3/1.4).
+ *
+ * This is the **port oracle**: it is a 1:1 typed migration of the original
+ * `src/ui/graph-model.test.js` suite (which ships behavior the editor
+ * depends on). The production module `src/ui-svelte/lib/graph-model.ts` must
+ * pass every case below unchanged in spirit — types are added, semantics are
+ * preserved. `src/ui/graph-model.js` stays on disk (rollback boundary);
+ * `src/ui-svelte/lib/graph-model.ts` is the authoritative port.
+ *
+ * These tests reference production code (`./graph-model.js`) that does not
+ * exist yet → RED.
+ */
+import { describe, it, expect } from "bun:test";
+import type { GraphNode } from "./graph-model.js";
+import {
+  createNode,
+  nodeTypes,
+  conditionOps,
+  layoutGraph,
+  buildPayload,
+  buildCondition,
+  describeCondition,
+  campoLegible,
+  operadorLegible,
+  requiredField,
+  isCompleteNode,
+  moveNode,
+  deleteNode,
+  connectNodes,
+  NODE_W,
+  NODE_H,
+  socketPositions,
+  conditionSockets,
+  outSocketFor,
+  loopBodyRect,
+  loopContainsPoint,
+  bezierEdge,
+  stackLoopMembers,
+  ownerLoopId,
+  stripLoopInternalEdges,
+  llmModeLegible,
+  describeLlmCall,
+  describePipeline,
+  paramsToRows,
+  rowsToParams,
+  describeLoop,
+} from "./graph-model.js";
+
+describe("graph-model: createNode defaults", () => {
+  it("creates a start node with no extra fields", () => {
+    const n = createNode("start", "n1");
+    expect(n).toEqual({ id: "n1", type: "start" });
+  });
+
+  it("creates an llm_call node that needs a model", () => {
+    const n = createNode("llm_call", "n2");
+    expect(n.type).toBe("llm_call");
+    expect(requiredField(n)).toBe("model");
+  });
+
+  it("creates a condition node that needs a condition", () => {
+    const n = createNode("condition", "n3");
+    expect(requiredField(n)).toBe("condition");
+  });
+
+  it("nodeTypes exposes the six editable types", () => {
+    expect(nodeTypes).toEqual([
+      "start",
+      "llm_call",
+      "condition",
+      "loop",
+      "pipeline",
+      "end",
+    ]);
+  });
+});
+
+describe("graph-model: layoutGraph", () => {
+  it("layers start first, end last for a simple chain", () => {
+    const nodes = [
+      { id: "a", type: "start" },
+      { id: "b", type: "llm_call" },
+      { id: "c", type: "end" },
+    ];
+    const edges = [
+      { from: "a", to: "b" },
+      { from: "b", to: "c" },
+    ];
+    const pos = layoutGraph(nodes, edges);
+    expect(pos.get("a")!.x).toBeLessThan(pos.get("b")!.x);
+    expect(pos.get("b")!.x).toBeLessThan(pos.get("c")!.x);
+  });
+
+  it("exists for every node id", () => {
+    const nodes = [
+      { id: "a", type: "start" },
+      { id: "b", type: "end" },
+    ];
+    const pos = layoutGraph(nodes, []);
+    expect(pos.has("a")).toBe(true);
+    expect(pos.has("b")).toBe(true);
+  });
+
+  it("respects a node position fixed by the user (drag) and only lays out the rest", () => {
+    const nodes = [
+      { id: "a", type: "start", pos: { x: 999, y: 123 } },
+      { id: "b", type: "end" },
+    ];
+    const pos = layoutGraph(nodes, [{ from: "a", to: "b" }]);
+    expect(pos.get("a")).toEqual({ x: 999, y: 123 });
+    // The end node (no pos) still gets laid out.
+    expect(pos.has("b")).toBe(true);
+  });
+
+  it("returns existing positions verbatim when every node has one", () => {
+    const nodes = [
+      { id: "a", type: "start", pos: { x: 1, y: 2 } },
+      { id: "b", type: "end", pos: { x: 3, y: 4 } },
+    ];
+    const pos = layoutGraph(nodes, []);
+    expect(pos.get("a")).toEqual({ x: 1, y: 2 });
+    expect(pos.get("b")).toEqual({ x: 3, y: 4 });
+  });
+});
+
+describe("graph-model: node manipulation helpers", () => {
+  it("moveNode returns an updated array with pos set", () => {
+    const next = moveNode([{ id: "a", type: "start" }], "a", 50, 60);
+    expect(next[0].pos).toEqual({ x: 50, y: 60 });
+    expect(next[0].type).toBe("start");
+  });
+
+  it("deleteNode removes the node and any touching edges", () => {
+    const nodes: GraphNode[] = [{ id: "a", type: "start" }, { id: "b", type: "end" }];
+    const edges = [{ from: "a", to: "b" }];
+    const { nodes: nn, edges: en } = deleteNode(nodes, edges, "a");
+    expect(nn).toHaveLength(1);
+    expect(en).toHaveLength(0);
+  });
+
+  it("deleteNode also removes a deleted id from every loop body", () => {
+    const nodes: GraphNode[] = [
+      { id: "loop", type: "loop", body: ["a", "b"] },
+      { id: "a", type: "llm_call", model: "m" },
+      { id: "b", type: "llm_call", model: "m" },
+    ];
+    const { nodes: nn } = deleteNode(nodes, [], "a");
+    expect(nn.find((n) => n.id === "loop")!.body).toEqual(["b"]);
+  });
+
+  it("connectNodes adds an edge", () => {
+    const next = connectNodes([], "a", "b");
+    expect(next).toEqual([{ from: "a", to: "b" }]);
+  });
+
+  it("connectNodes adds a guarded edge", () => {
+    const next = connectNodes([], "cond", "yes", "true");
+    expect(next).toEqual([{ from: "cond", to: "yes", guard: "true" }]);
+  });
+
+  it("connectNodes replaces an existing from→to edge and rejects self-edges", () => {
+    const edges = [{ from: "a", to: "b", guard: "true" }];
+    expect(connectNodes(edges, "a", "b")).toEqual([{ from: "a", to: "b" }]);
+    expect(connectNodes([], "a", "a")).toHaveLength(0);
+  });
+});
+
+describe("graph-model: sockets and bezier edges", () => {
+  it("socketPositions places out (right) and in (left) on the body midline", () => {
+    const p = socketPositions({ x: 100, y: 200 });
+    expect(p.out).toEqual({ x: 100 + NODE_W, y: 200 + NODE_H / 2 });
+    expect(p.in).toEqual({ x: 100, y: 200 + NODE_H / 2 });
+  });
+
+  it("conditionSockets stacks outTrue above outFalse on the right", () => {
+    const p = { x: 100, y: 200 };
+    const cs = conditionSockets(p);
+    expect(cs.in).toEqual({ x: 100, y: 200 + NODE_H / 2 });
+    expect(cs.outTrue.x).toBe(100 + NODE_W);
+    expect(cs.outFalse.x).toBe(100 + NODE_W);
+    expect(cs.outTrue.y).toBeLessThan(cs.outFalse.y);
+    expect(cs.outTrue.y).toBeGreaterThan(200);
+  });
+
+  it("outSocketFor picks the branch socket by guard for condition nodes", () => {
+    const p = { x: 100, y: 200 };
+    const cond: GraphNode = { id: "c", type: "condition" };
+    const cs = conditionSockets(p);
+    expect(outSocketFor(cond, p, "true")).toEqual(cs.outTrue);
+    expect(outSocketFor(cond, p, "false")).toEqual(cs.outFalse);
+    // Sin guard (arista legada) cae en la rama true (arriba).
+    expect(outSocketFor(cond, p, null)).toEqual(cs.outTrue);
+    // Nodos normales: un solo socket al medio.
+    expect(outSocketFor({ id: "a", type: "llm_call" }, p, null)).toEqual(socketPositions(p).out);
+  });
+
+  it("bezierEdge produces a cubic path between two points", () => {
+    const d = bezierEdge(0, 10, 300, 40);
+    expect(d.startsWith("M 0 10 C ")).toBe(true);
+    expect(d.endsWith(", 300 40")).toBe(true);
+  });
+});
+
+describe("graph-model: loop container", () => {
+  const loopAt = (p: { x: number; y: number }, body: string[] = []): GraphNode => ({ id: "l", type: "loop", body, pos: p });
+
+  it("loopBodyRect wraps the header alone when the body is empty", () => {
+    const rect = loopBodyRect(loopAt({ x: 100, y: 200 }), []);
+    expect(rect!.x).toBeLessThan(100);
+    expect(rect!.y).toBeLessThan(200);
+    expect(rect!.width).toBeGreaterThan(NODE_W);
+    expect(rect!.height).toBeGreaterThan(NODE_H);
+  });
+
+  it("loopBodyRect grows when a body member is positioned below the header", () => {
+    const loop = loopAt({ x: 100, y: 200 }, ["m1"]);
+    const member: GraphNode = { id: "m1", type: "llm_call", pos: { x: 120, y: 320 } };
+    const rect = loopBodyRect(loop, [member]);
+    // El contenedor alcanza el fondo del miembro (que esta mas abajo).
+    expect(rect!.y + rect!.height).toBeGreaterThan(320 + NODE_H);
+    expect(rect!.x).toBeLessThanOrEqual(120);
+  });
+
+  it("loopContainsPoint is true inside the container, false outside", () => {
+    const loop = loopAt({ x: 100, y: 200 }, []);
+    const nearCenter = { x: 100 + 10, y: 200 + 40 };
+    const far = { x: 900, y: 900 };
+    expect(loopContainsPoint(loop, [], nearCenter)).toBe(true);
+    expect(loopContainsPoint(loop, [], far)).toBe(false);
+  });
+
+  it("loopContainsPoint excludes the header strip (own position doesn't self-bucket)", () => {
+    const loop = loopAt({ x: 100, y: 200 });
+    const insideHeader = { x: 100 + 20, y: 200 - 5 };
+    expect(loopContainsPoint(loop, [loop], insideHeader)).toBe(false);
+  });
+});
+
+describe("graph-model: buildPayload", () => {
+  it("serializes nodes and edges, omitting guard when absent", () => {
+    const payload = buildPayload({
+      nodes: [
+        { id: "a", type: "start" },
+        { id: "b", type: "llm_call", model: "m" },
+      ],
+      edges: [{ from: "a", to: "b" }],
+    });
+    expect(payload.nodes).toHaveLength(2);
+    expect(payload.edges).toEqual([{ from: "a", to: "b" }]);
+  });
+
+  it("preserves node layout positions through round-trip (pos kept)", () => {
+    const payload = buildPayload({
+      nodes: [
+        { id: "a", type: "start", pos: { x: 1, y: 2 } },
+        { id: "b", type: "llm_call", model: "m", pos: { x: 30, y: 40 } },
+      ],
+      edges: [{ from: "a", to: "b" }],
+    });
+    expect(payload.nodes[0].pos).toEqual({ x: 1, y: 2 });
+    expect(payload.nodes[1].pos).toEqual({ x: 30, y: 40 });
+    // Other committed fields are still preserved.
+    expect(payload.nodes[1].model).toBe("m");
+  });
+});
+
+describe("graph-model: buildCondition (condition AST builder / no free-form code)", () => {
+  it("builds a compare expression from field/op/value", () => {
+    const ast = buildCondition({
+      op: "compare",
+      field: "lastResponse.status",
+      op2: "==",
+      value: 200,
+    });
+    expect(ast).toEqual({
+      op: "compare",
+      field: "lastResponse.status",
+      op2: "==",
+      value: 200,
+    });
+  });
+
+  it("builds a logical AND over child expressions", () => {
+    const ast = buildCondition({
+      op: "logical",
+      and: true,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "compare", field: "lastResponse.status", op2: "==", value: 500 },
+      ],
+    }) as { op: string; and: boolean; args: unknown[] };
+    expect(ast.op).toBe("logical");
+    expect(ast.and).toBe(true);
+    expect(ast.args).toHaveLength(2);
+  });
+
+  it("compone un logical OR con tres argumentos", () => {
+    const ast = buildCondition({
+      op: "logical",
+      and: false,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+        { op: "compare", field: "error", op2: "!=", value: "" },
+      ],
+    }) as { op: string; and: boolean; args: unknown[] };
+    expect(ast.op).toBe("logical");
+    expect(ast.and).toBe(false);
+    expect(ast.args).toHaveLength(3);
+  });
+
+  it("arma un not con child explicito (compare)", () => {
+    const ast = buildCondition({
+      op: "not",
+      child: { op: "compare", field: "lastResponse.status", op2: "<", value: 400 },
+    }) as { op: string; child: { op: string; field: string; op2: string; value: number } };
+    expect(ast).toEqual({
+      op: "not",
+      child: { op: "compare", field: "lastResponse.status", op2: "<", value: 400 },
+    });
+  });
+
+  it("arma un not con childForm como fallback", () => {
+    const ast = buildCondition({
+      op: "not",
+      childForm: { op: "exists", field: "error" },
+    }) as { op: string; child: { op: string; field: string } };
+    expect(ast).toEqual({ op: "not", child: { op: "exists", field: "error" } });
+  });
+
+  it("arma un exists directo", () => {
+    const ast = buildCondition({ op: "exists", field: "error" });
+    expect(ast).toEqual({ op: "exists", field: "error" });
+  });
+
+  it("does not allow a code/free-form operator", () => {
+    expect(conditionOps).not.toContain("eval");
+    expect(conditionOps).not.toContain("function");
+    expect(nodeTypes).not.toContain("eval");
+    expect(buildCondition.length).toBeGreaterThan(0);
+  });
+});
+
+describe("graph-model: isCompleteNode", () => {
+  it("start and end are complete with no required fields", () => {
+    expect(isCompleteNode({ id: "a", type: "start" })).toBe(true);
+    expect(isCompleteNode({ id: "b", type: "end" })).toBe(true);
+  });
+
+  it("an llm_call without a model is incomplete", () => {
+    expect(isCompleteNode({ id: "a", type: "llm_call" })).toBe(false);
+    expect(isCompleteNode({ id: "a", type: "llm_call", model: "m" })).toBe(true);
+  });
+
+  it("a condition without a condition expression is incomplete", () => {
+    expect(isCompleteNode({ id: "a", type: "condition" })).toBe(false);
+    expect(
+      isCompleteNode({
+        id: "a",
+        type: "condition",
+        condition: { op: "exists", field: "error" },
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("graph-model: stackLoopMembers (auto-chained loop body)", () => {
+  it("stacks members vertically under the loop header, ignoring their pos", () => {
+    const nodes: GraphNode[] = [
+      { id: "loop", type: "loop", body: ["a", "b"], pos: { x: 100, y: 200 } },
+      { id: "a", type: "llm_call", model: "m", pos: { x: 1, y: 1 } },
+      { id: "b", type: "llm_call", model: "m", pos: { x: 2, y: 2 } },
+    ];
+    const out = stackLoopMembers(nodes);
+    const a = out!.find((n) => n.id === "a");
+    const b = out!.find((n) => n.id === "b");
+    expect(a!.pos).toEqual({ x: 100, y: 200 + NODE_H + 14 });
+    expect(b!.pos).toEqual({ x: 100, y: 200 + NODE_H + 14 + NODE_H + 14 });
+  });
+
+  it("returns the same array reference when nothing changes", () => {
+    const nodes: GraphNode[] = [
+      { id: "loop", type: "loop", body: ["a"], pos: { x: 10, y: 10 } },
+      { id: "a", type: "llm_call", model: "m", pos: { x: 10, y: 10 + NODE_H + 14 } },
+    ];
+    expect(stackLoopMembers(nodes)).toBe(nodes);
+  });
+
+  it("leaves a loop without header pos untouched (layoutGraph places it)", () => {
+    const nodes: GraphNode[] = [
+      { id: "loop", type: "loop", body: ["a"] },
+      { id: "a", type: "llm_call", model: "m", pos: { x: 5, y: 5 } },
+    ];
+    const out = stackLoopMembers(nodes);
+    expect(out).toBe(nodes);
+  });
+});
+
+describe("graph-model: ownerLoopId + stripLoopInternalEdges", () => {
+  it("finds the owner loop of a body member", () => {
+    const nodes: GraphNode[] = [
+      { id: "loop", type: "loop", body: ["a"] },
+      { id: "a", type: "llm_call" },
+      { id: "b", type: "llm_call" },
+    ];
+    expect(ownerLoopId(nodes, "a")).toBe("loop");
+    expect(ownerLoopId(nodes, "b")).toBeNull();
+  });
+
+  it("drops edges touching loop body members but keeps external edges", () => {
+    const nodes: GraphNode[] = [
+      { id: "start", type: "start" },
+      { id: "loop", type: "loop", body: ["a"] },
+      { id: "a", type: "llm_call" },
+      { id: "end", type: "end" },
+    ];
+    const edges = [
+      { from: "start", to: "loop" },
+      { from: "loop", to: "a" }, // obsolete internal entry
+      { from: "a", to: "loop" }, // obsolete internal back-edge
+      { from: "loop", to: "end" },
+    ];
+    const kept = stripLoopInternalEdges(edges, nodes);
+    expect(kept).toEqual([
+      { from: "start", to: "loop" },
+      { from: "loop", to: "end" },
+    ]);
+  });
+});
+
+describe("graph-model: campoLegible + operadorLegible (etiquetas humanas)", () => {
+  it("mapea los campos de contexto a etiquetas en espanol", () => {
+    expect(campoLegible("lastResponse.status")).toBe("Estado de la última respuesta");
+    expect(campoLegible("lastResponse.content")).toBe("Contenido de la última respuesta");
+    expect(campoLegible("error")).toBe("Error");
+  });
+
+  it("devuelve el propio campo para nombres desconocidos", () => {
+    expect(campoLegible("custom.variable")).toBe("custom.variable");
+  });
+
+  it("mapea los operadores de comparacion a frases humanas", () => {
+    expect(operadorLegible("==")).toBe("es igual a");
+    expect(operadorLegible("!=")).toBe("es distinto de");
+    expect(operadorLegible("<")).toBe("es menor que");
+    expect(operadorLegible("<=")).toBe("es menor o igual que");
+    expect(operadorLegible(">")).toBe("es mayor que");
+    expect(operadorLegible(">=")).toBe("es mayor o igual que");
+  });
+
+  it("devuelve el propio operador para valores desconocidos", () => {
+    expect(operadorLegible("~=")).toBe("~=");
+  });
+});
+
+describe("graph-model: describeCondition (lectura natural en espanol)", () => {
+  it("describe una comparacion de estado", () => {
+    const ast = { op: "compare", field: "lastResponse.status", op2: "==", value: 200 };
+    expect(describeCondition(ast)).toBe("Estado de la última respuesta es igual a 200");
+  });
+
+  it("describe un exists", () => {
+    expect(describeCondition({ op: "exists", field: "error" })).toBe("Existe error");
+  });
+
+  it("describe un not anidado", () => {
+    const ast = {
+      op: "not",
+      child: { op: "compare", field: "lastResponse.content", op2: "==", value: "ok" },
+    };
+    expect(describeCondition(ast)).toBe("No (Contenido de la última respuesta es igual a ok)");
+  });
+
+  it("describe un logical AND con dos argumentos", () => {
+    const ast = {
+      op: "logical",
+      and: true,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "compare", field: "lastResponse.status", op2: ">=", value: 500 },
+      ],
+    };
+    expect(describeCondition(ast)).toBe(
+      "(Existe error y Estado de la última respuesta es mayor o igual que 500)",
+    );
+  });
+
+  it("describe un logical OR usando 'o'", () => {
+    const ast = {
+      op: "logical",
+      and: false,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "exists", field: "lastResponse.content" },
+      ],
+    };
+    expect(describeCondition(ast)).toBe("(Existe error o Existe contenido de la última respuesta)");
+  });
+
+  it("describe un not dentro de un logical", () => {
+    const ast = {
+      op: "logical",
+      and: true,
+      args: [
+        { op: "exists", field: "error" },
+        { op: "not", child: { op: "exists", field: "lastResponse.status" } },
+      ],
+    };
+    expect(describeCondition(ast)).toBe("(Existe error y No (Existe estado de la última respuesta))");
+  });
+
+  it("devuelve cadena vacia para AST invalidos (nunca lanza)", () => {
+    expect(describeCondition(null)).toBe("");
+    expect(describeCondition(undefined)).toBe("");
+    expect(describeCondition("nope")).toBe("");
+    expect(describeCondition({})).toBe("");
+    expect(describeCondition({ op: "eval", code: "danger()" })).toBe("");
+    expect(describeCondition({ op: "compare", field: "error", op2: "==" })).toBe("");
+    expect(describeCondition({ op: "compare", field: "error", op2: "==", value: "" })).toBe("");
+    expect(describeCondition({ op: "compare", field: "", op2: "==", value: 1 })).toBe("");
+    expect(describeCondition({ op: "exists" })).toBe("");
+    expect(describeCondition({ op: "not" })).toBe("");
+    expect(describeCondition({ op: "logical", and: true, args: [] })).toBe("");
+  });
+});
+
+describe("graph-model: llmModeLegible (modo de llm_call legible)", () => {
+  it("mapea los tres modos del engine a etiquetas en espanol", () => {
+    expect(llmModeLegible("generate")).toBe("Generar");
+    expect(llmModeLegible("refine")).toBe("Refinar");
+    expect(llmModeLegible("passthrough")).toBe("Pasar");
+  });
+
+  it("trata la ausencia de modo como Generar (default del engine)", () => {
+    expect(llmModeLegible(undefined)).toBe("Generar");
+    expect(llmModeLegible(null)).toBe("Generar");
+    expect(llmModeLegible("")).toBe("Generar");
+  });
+
+  it("devuelve el valor crudo para modos desconocidos", () => {
+    expect(llmModeLegible("custom_mode")).toBe("custom_mode");
+  });
+});
+
+describe("graph-model: describeLlmCall (lenguaje viviente en el nodo)", () => {
+  it("describe modelo, modo y ctx del override", () => {
+    const node = { type: "llm_call", model: "Qwen2.5-Coder", mode: "generate", params: { ctx: "8192" } };
+    expect(describeLlmCall(node)).toBe("Qwen2.5-Coder \u00b7 generar \u00b7 ctx 8192");
+  });
+
+  it("modo refine baja a minuscula y no lleva ctx si no hay", () => {
+    expect(describeLlmCall({ model: "m", mode: "refine" })).toBe("m \u00b7 refinar");
+  });
+
+  it("trunca el prompt de sistema a ~24 caracteres con ellipsis", () => {
+    const node = { model: "m", system: "aaaa bbbb cccc dddd eeee ffff" };
+    expect(describeLlmCall(node)).toBe('m \u00b7 generar \u00b7 sys "aaaa bbbb cccc dddd eeee\u2026"');
+  });
+
+  it("colapsa saltos de linea del system antes de truncar", () => {
+    const node = { model: "m", system: "line one\n   line two" };
+    expect(describeLlmCall(node)).toBe('m \u00b7 generar \u00b7 sys "line one line two"');
+  });
+
+  it("omite sys cuando no hay prompt de sistema", () => {
+    expect(describeLlmCall({ model: "Qwen2.5-Coder", mode: "passthrough" })).toBe("Qwen2.5-Coder \u00b7 pasar");
+  });
+
+  it("lee ctx directo del nodo (carga legada) o del override params.ctx", () => {
+    expect(describeLlmCall({ model: "m", ctx: 4096 })).toBe("m \u00b7 generar \u00b7 ctx 4096");
+    expect(describeLlmCall({ model: "m", params: { ctx: "4096" } })).toBe("m \u00b7 generar \u00b7 ctx 4096");
+  });
+
+  it("muestra sin modelo para un llm_call incompleto", () => {
+    expect(describeLlmCall({ type: "llm_call" })).toBe("sin modelo \u00b7 generar");
+  });
+
+  it("devuelve cadena vacia para entradas no object (nunca lanza)", () => {
+    expect(describeLlmCall(null)).toBe("");
+    expect(describeLlmCall(undefined)).toBe("");
+    expect(describeLlmCall("nope")).toBe("");
+  });
+});
+
+describe("graph-model: describePipeline (lenguaje viviente en el nodo)", () => {
+  it("describe pipeline hacia el nombre invocado", () => {
+    expect(describePipeline({ type: "pipeline", pipeline: "summarize" })).toBe("pipeline \u2192 summarize");
+  });
+
+  it("cuenta los params cuando hay", () => {
+    const node = { type: "pipeline", pipeline: "summarize", params: { max_tokens: "200", lang: "es" } };
+    expect(describePipeline(node)).toBe("pipeline \u2192 summarize \u00b7 2 params");
+  });
+
+  it("no cuenta params vacios", () => {
+    expect(describePipeline({ pipeline: "x", params: {} })).toBe("pipeline \u2192 x");
+    expect(describePipeline({ pipeline: "x", params: undefined })).toBe("pipeline \u2192 x");
+  });
+
+  it("muestra sin pipeline cuando falta el nombre", () => {
+    expect(describePipeline({ type: "pipeline" })).toBe("pipeline \u2192 sin pipeline");
+  });
+
+  it("devuelve cadena vacia para entradas no object", () => {
+    expect(describePipeline(null)).toBe("");
+  });
+});
+
+describe("graph-model: paramsToRows/rowsToParams (filas clave=valor)", () => {
+  it("paramsToRows transforma un Record en filas {key, value} en orden", () => {
+    expect(paramsToRows({ a: "1", b: "2" })).toEqual([
+      { key: "a", value: "1" },
+      { key: "b", value: "2" },
+    ]);
+  });
+
+  it("paramsToRows devuelve [] para params ausentes o no object", () => {
+    expect(paramsToRows(undefined)).toEqual([]);
+    expect(paramsToRows(null)).toEqual([]);
+    expect(paramsToRows("nope")).toEqual([]);
+  });
+
+  it("paramsToRows convierte valores numericos a string (contrato del schema)", () => {
+    expect(paramsToRows({ n: 42 })).toEqual([{ key: "n", value: "42" }]);
+  });
+
+  it("rowsToParams filtra filas con clave vacia o solo espacios", () => {
+    expect(
+      rowsToParams([
+        { key: "a", value: "1" },
+        { key: "", value: "2" },
+        { key: "   ", value: "3" },
+      ]),
+    ).toEqual({ a: "1" });
+  });
+
+  it("rowsToParams recorta la clave y preserva valores vacios", () => {
+    expect(rowsToParams([{ key: "  model ", value: "" }])).toEqual({ model: "" });
+  });
+
+  it("round-trip estable: rowsToParams(paramsToRows(p)) === p", () => {
+    const p = { model: "qwen", max_tokens: "128", lang: "es" };
+    expect(rowsToParams(paramsToRows(p))).toEqual(p);
+  });
+
+  it("rowsToParams ignora filas no object y no Array", () => {
+    expect(rowsToParams([null, undefined, "x"])).toEqual({});
+    expect(rowsToParams(null)).toEqual({});
+  });
+});
+
+describe("graph-model: describeLoop (condicion de salida del bucle)", () => {
+  it("describe la condicion de salida con la frase de describeCondition", () => {
+    const loop = {
+      type: "loop",
+      body: ["a"],
+      condition: { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+    };
+    expect(describeLoop(loop)).toBe("Estado de la última respuesta es igual a 200");
+  });
+
+  it("devuelve cadena vacia si el bucle no tiene condicion", () => {
+    expect(describeLoop({ type: "loop", body: [] })).toBe("");
+    expect(describeLoop({ type: "loop", condition: null })).toBe("");
+  });
+
+  it("devuelve cadena vacia para entradas invalidas (nunca lanza)", () => {
+    expect(describeLoop(null)).toBe("");
+    expect(describeLoop(undefined)).toBe("");
+    expect(describeLoop("nope")).toBe("");
+  });
+});

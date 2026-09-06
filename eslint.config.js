@@ -42,6 +42,28 @@ export default defineConfig([
 		},
 		linterOptions: sharedLinterOptions,
 	},
+	// MINOR-A framework-freedom invariant (svelte-ui design): the pure TS
+	// layer under src/ui-svelte/lib/ must never import the framework — it is
+	// unit-testable with `bun test` and swappable across renderers. Any
+	// `svelte`/`@sveltejs` import in lib/ fails the lint gate.
+	{
+		files: ["src/ui-svelte/lib/**/*.ts"],
+		rules: {
+			"no-restricted-imports": [
+				"error",
+				{
+					patterns: [
+						{
+							group: ["svelte", "svelte/*", "@sveltejs/*"],
+							message:
+								"lib/ is framework-free (MINOR-A): graph-model and pure helpers must not import svelte or @sveltejs modules.",
+						},
+					],
+				},
+			],
+		},
+		linterOptions: sharedLinterOptions,
+	},
 	// Generated build output is not linted (dist/ is gitignored).
 	{
 		ignores: [
