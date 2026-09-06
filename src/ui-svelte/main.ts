@@ -1,12 +1,13 @@
 /**
- * Svelte 5 UI entry — build placeholder (Unit 1, svelte-ui).
+ * Svelte 5 UI entry (svelte-ui task 3.3).
  *
- * Phase 2 (`svelte-ui`) wires the toolchain end-to-end: `bun run build:ui`
- * must produce a real, servable bundle under `dist/ui` with hashed
- * `assets/*` chunks so the static-serving work is verifiable. This module
- * gives the build a minimal entry now; the full app shell (App.svelte and
- * the five views) lands in Phase 3 and mounts here in place of the styles
- * import. Nothing in this file is runtime behavior — it exists so the
- * pipeline is real.
+ * Phase 2 left a styles-only placeholder so the build pipeline was real;
+ * Phase 3 replaces it: App.svelte owns the shell + five views and mounts
+ * here into `#app`. Everything else (stores, SSE, routing) is composed
+ * inside App with injectable factories.
  */
+import { mount } from "svelte";
+import App from "./App.svelte";
 import "./styles.css";
+
+mount(App, { target: document.getElementById("app")! });

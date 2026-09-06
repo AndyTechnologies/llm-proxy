@@ -75,15 +75,24 @@ async function get(path: string): Promise<Response> {
 }
 
 describe.skipIf(!BUILT)("compiled /ui E2E smoke (svelte-ui 2.2)", () => {
-  it("serves index.html with the SPA shell landmarks and Spanish label", async () => {
+  it("serves index.html with the Spanish document title", async () => {
     const res = await get("/ui");
     const html = await res.text();
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
-    // a11y shell the SPA must expose (carried by index.html).
     expect(html).toContain("llm-proxy Panel de control");
-    expect(html).toContain("role=\"banner\"");
-    expect(html).toContain("aria-label=\"Principal\"");
+  });
+
+  it("compiles the SPA shell landmarks into the JS bundle (task 3.3)", async () => {
+    // Phase 3 moved the a11y shell out of index.html INTO App.svelte, so the
+    // banner landmark and Spanish nav label now live in the hashed JS chunk.
+    const index = await (await get("/ui")).text();
+    const asset = index.match(/src="(\/?assets\/[^"]+\.js)"/);
+    expect(asset).not.toBeNull();
+    const js = await (await get(`/ui/${asset![1].replace(/^\//, "")}`)).text();
+    expect(js).toContain("role=\"banner\"");
+    expect(js).toContain("aria-label=\"Principal\"");
+    expect(js).toContain("Saltar al contenido principal");
   });
 
   it("serves a hashed JS asset referenced by index.html with application/javascript", async () => {
