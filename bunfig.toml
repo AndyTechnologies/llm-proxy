@@ -5,3 +5,14 @@
 # unit/integration runner. Unit tests live next to code under `src/`.
 [test]
 root = "./src"
+
+# Svelte component-test infrastructure (Phase 3, task 3.7): bun cannot parse
+# `.svelte`/`.svelte.js` natively, so a Bun.plugin preload compiles them with
+# `svelte/compiler`, and a jsdom preload provides browser globals. Both are
+# no-ops for the backend suites (no matching imports; extra globals unused).
+# The leading "./" is required — bun resolves these relative to the project
+# root only in that form.
+preload = [
+  "./src/ui-svelte/test-setup/svelte-loader.ts",
+  "./src/ui-svelte/test-setup/dom.ts",
+]
