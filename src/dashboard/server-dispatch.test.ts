@@ -63,7 +63,7 @@ function dashboardDeps(): NonNullable<ServerDeps["dashboard"]> {
           }
         : undefined,
     registeredModels: () => ["m1.gguf"],
-    modelDetails: () => [{ id: "m1.gguf", file: "m1.gguf", ctx: 4096 }],
+    modelDetails: () => [{ id: "m1.gguf", file: "m1.gguf", ctx: 4096, ggufContextLength: null, hardwareMaxCtx: 65536, effectiveCtx: 4096 }],
     detectedModels: () => [],
     modelsDir: "/models",
     autoRefresh: true,

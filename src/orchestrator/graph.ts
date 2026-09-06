@@ -145,38 +145,38 @@ export function validateGraph(
   // Exactly one start.
   const starts = graph.nodes.filter((n) => n.type === "start");
   if (starts.length !== 1) {
-    errors.push(`graph "${graph.id}" must have exactly one start node (found ${starts.length})`);
+    errors.push(`el grafo "${graph.id}" debe tener exactamente un nodo start (se encontraron ${starts.length})`);
   }
 
   // At least one end.
   const ends = graph.nodes.filter((n) => n.type === "end");
   if (ends.length < 1) {
-    errors.push(`graph "${graph.id}" must have at least one end node`);
+    errors.push(`el grafo "${graph.id}" debe tener al menos un nodo end`);
   }
 
   // Edges reference real nodes.
   for (const edge of graph.edges) {
     if (!byId.has(edge.from)) {
-      errors.push(`edge from "${edge.from}" references a nonexistent node`);
+      errors.push(`la arista desde "${edge.from}" referencia un nodo inexistente`);
     }
     if (!byId.has(edge.to)) {
-      errors.push(`edge to "${edge.to}" references a nonexistent node`);
+      errors.push(`la arista hacia "${edge.to}" referencia un nodo inexistente`);
     }
   }
 
   // Required per-type fields.
   for (const n of graph.nodes) {
     if (n.type === "llm_call" && !n.model) {
-      errors.push(`llm_call node "${n.id}" is missing required field "model"`);
+      errors.push(`el nodo llm_call "${n.id}" no tiene el campo obligatorio "model"`);
     }
     if (n.type === "condition" && !n.condition) {
-      errors.push(`condition node "${n.id}" is missing required field "condition"`);
+      errors.push(`el nodo condition "${n.id}" no tiene el campo obligatorio "condition"`);
     }
     if (n.type === "loop" && (!n.body || n.body.length === 0)) {
-      errors.push(`loop node "${n.id}" is missing required field "body"`);
+      errors.push(`el nodo loop "${n.id}" no tiene el campo obligatorio "body"`);
     }
     if (n.type === "pipeline" && !n.pipeline) {
-      errors.push(`pipeline node "${n.id}" is missing required field "pipeline"`);
+      errors.push(`el nodo pipeline "${n.id}" no tiene el campo obligatorio "pipeline"`);
     }
   }
 
@@ -184,7 +184,7 @@ export function validateGraph(
   if (opts.knownModels && opts.knownModels.length >= 0) {
     for (const n of graph.nodes) {
       if (n.type === "llm_call" && n.model && !known.has(n.model)) {
-        errors.push(`llm_call node "${n.id}" references unknown model "${n.model}"`);
+        errors.push(`el nodo llm_call "${n.id}" referencia un modelo desconocido "${n.model}"`);
       }
     }
   }
@@ -234,7 +234,7 @@ function collectCycleErrors(
         const legal = isInsideSingleLoopBody(id, to, byId);
         if (!legal) {
           errors.push(
-            `graph "${graph.id}" contains a cycle (edge ${id} -> ${to}) outside a valid loop boundary`,
+            `el grafo "${graph.id}" contiene un ciclo (arista ${id} → ${to}) fuera de un loop válido`,
           );
         }
         continue;

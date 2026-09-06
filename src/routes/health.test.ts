@@ -27,11 +27,13 @@ function baseConfig(over: Partial<GatewayConfig> = {}): GatewayConfig {
       maxRestartAttempts: 5,
       modelsDir: "~/Models",
       autoload: true,
+      lifecycle: { ttl: 600, vram: { mode: "dynamic", freeGb: 1, capGb: 5 } },
       router: {} as never,
       models: {},
     },
     defaultChain: "orchestrator",
     chains: {},
+    providers: {},
     ...over,
   };
 }

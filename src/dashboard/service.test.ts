@@ -88,6 +88,38 @@ describe("apply service", () => {
     expect(deps.getPersisted()).toBe(false);
   });
 
+  it("empty graph apply surfaces a readable reason, not raw Zod JSON", async () => {
+    const deps = makeDeps();
+    const service = createApplyService(deps);
+
+    let err: unknown;
+    try {
+      await service.apply({
+        config: {
+          chains: {
+            c1: {
+              nodes: [],
+              edges: [],
+            },
+          },
+        },
+      });
+    } catch (e) {
+      err = e;
+    }
+
+    expect(err).toBeDefined();
+    const message = (err as Error).message;
+    // The user must read WHY it failed in plain Spanish, never a JSON blob.
+    expect(message).toContain("nodes");
+    expect(message).toContain("no debe estar vacío");
+    expect(message.startsWith("[")).toBe(false);
+    expect(() => JSON.parse(message)).toThrow();
+
+    // No file was written on failure.
+    expect(deps.getPersisted()).toBe(false);
+  });
+
   it("rolls back the registry when reload fails after persist", async () => {
     const deps = makeDeps({
       reload: async () => {

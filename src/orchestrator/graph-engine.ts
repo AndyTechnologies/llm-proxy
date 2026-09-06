@@ -105,11 +105,38 @@ export async function runGraphEngine(
   for (const n of graph.nodes) byId.set(n.id, n);
   const typeOf = new Map<string, GraphNode["type"]>();
   for (const n of graph.nodes) typeOf.set(n.id, n.type);
+
+  // Loop bodies are auto-chained sequences (UI blocks manual edges inside a
+  // loop: members have no sockets). Synthesize body[0] → body[1] → … →
+  // body[last] → loop, and drop stale real edges that leave a body member —
+  // they are obsolete under the auto-chain model. Edges leaving the loop node
+  // itself (start→loop entry, loop→exit) are preserved.
+  const bodyOf = new Map<string, string>();
+  for (const n of graph.nodes) {
+    if (n.type === "loop" && Array.isArray(n.body) && n.body.length > 0) {
+      for (const memberId of n.body) {
+        if (!bodyOf.has(memberId)) bodyOf.set(memberId, n.id);
+      }
+    }
+  }
   const outgoing = new Map<string, GraphEdge[]>();
+  const addOut = (from: string, to: string, guard?: GraphEdge["guard"]) => {
+    const list = outgoing.get(from) ?? [];
+    list.push({ from, to, ...(guard ? { guard } : {}) });
+    outgoing.set(from, list);
+  };
+  for (const n of graph.nodes) {
+    if (n.type === "loop" && Array.isArray(n.body) && n.body.length > 0) {
+      const seq = n.body;
+      for (let i = 0; i < seq.length - 1; i++) {
+        if (seq[i] && seq[i + 1]) addOut(seq[i], seq[i + 1]);
+      }
+      if (seq[seq.length - 1]) addOut(seq[seq.length - 1], n.id);
+    }
+  }
   for (const e of graph.edges) {
-    const list = outgoing.get(e.from) ?? [];
-    list.push(e);
-    outgoing.set(e.from, list);
+    if (bodyOf.has(e.from)) continue;
+    addOut(e.from, e.to, e.guard);
   }
 
   const start = graph.nodes.find((n) => n.type === "start");
@@ -321,11 +348,16 @@ export async function runGraphEngine(
             break;
           }
           const loopBoundary = new Set([n.id]);
-          // Run the body `maxLoops` times (bounded — prevents infinite cycles).
-          for (let i = 0; i < Math.max(1, maxLoops); i++) {
+          const bound = Math.max(1, maxLoops);
+          const hasExitCond = Boolean(n.condition);
+          // Ejecuta el body, y cuando el loop tiene condicion de salida sale
+          // apenas se cumpla (do-while). El tope queda como red de seguridad
+          // anti-bucle infinito, no como la forma normal de terminar.
+          for (let i = 0; i < bound; i++) {
             const sub = await walk(bodyEntry, loopBoundary, curState, depth);
             curState = sub.state;
             exec.push(...sub.executed);
+            if (hasExitCond && safeEval(n.condition!, curState)) break;
           }
           cur = loopExit(n);
           break;

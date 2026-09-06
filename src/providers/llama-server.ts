@@ -23,6 +23,13 @@ export interface LlamaServerOptions {
   getBaseUrl: () => string;
   /** Per-request timeout (from config llama.requestTimeoutMs). */
   requestTimeoutMs: number;
+  /**
+   * F2 lifecycle hook: called with the request's model at dispatch. May
+   * return an end-callback invoked when the call completes (both streaming
+   * and non-streaming) — the wired lifecycle uses it to hold the in-flight
+   * marker for the whole generation.
+   */
+  noteActivity?: (model: string) => (() => void) | void;
 }
 
 /** Default per-request timeout fallthrough (llama-server can be slow). */
@@ -47,10 +54,12 @@ export class LlamaServerProvider implements Provider {
   readonly name = "llama-server";
   private readonly getBaseUrl: () => string;
   private readonly requestTimeoutMs: number;
+  private readonly noteActivity?: (model: string) => (() => void) | void;
 
   constructor(options: LlamaServerOptions) {
     this.getBaseUrl = options.getBaseUrl;
     this.requestTimeoutMs = options.requestTimeoutMs;
+    this.noteActivity = options.noteActivity;
   }
 
   get baseUrl(): string {
@@ -81,37 +90,42 @@ export class LlamaServerProvider implements Provider {
     // `_`-prefixed: kept in signature parity with the Provider interface.
     _chainName?: string,
   ): Promise<Record<string, unknown>> {
-    const sanitized = normalizeOutboundPayload({
-      ...request,
-      stream: false,
-    });
-
-    const timeoutMs = this.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-    const url = this.buildUrl(request);
-    console.log(`[provider] POST ${url}`);
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sanitized),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-
-    const text = await res.text();
-
-    if (!res.ok) {
-      const err = new Error(
-        `llama-server error ${res.status}: ${text.slice(0, 500)}`,
-      ) as Error & { status?: number };
-      err.status = res.status;
-      throw err;
-    }
-
+    const end = this.trackRequest(request);
     try {
-      return JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      throw new Error(`llama-server returned invalid JSON: ${text.slice(0, 200)}`);
+      const sanitized = normalizeOutboundPayload({
+        ...request,
+        stream: false,
+      });
+
+      const timeoutMs = this.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+      const url = this.buildUrl(request);
+      console.log(`[provider] POST ${url}`);
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sanitized),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      const text = await res.text();
+
+      if (!res.ok) {
+        const err = new Error(
+          `llama-server error ${res.status}: ${text.slice(0, 500)}`,
+        ) as Error & { status?: number };
+        err.status = res.status;
+        throw err;
+      }
+
+      try {
+        return JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        throw new Error(`llama-server returned invalid JSON: ${text.slice(0, 200)}`);
+      }
+    } finally {
+      end?.();
     }
   }
 
@@ -119,81 +133,98 @@ export class LlamaServerProvider implements Provider {
     request: Record<string, unknown>,
     signal: AbortSignal,
   ): AsyncIterable<string> {
-    const sanitized = normalizeOutboundPayload({
-      ...request,
-      stream: true,
-    });
-
-    const timeoutMs = this.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-    // Combine the client-disconnect signal with the request timeout. We want
-    // BOTH: abort when the client goes away AND abort after a hard timeout.
-    const controller = new AbortController();
-    const onAbort = () => controller.abort();
-    signal.addEventListener("abort", onAbort, { once: true });
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-    const url = this.buildUrl(request);
-    console.log(`[provider] POST ${url} [STREAM]`);
-
-    let res: Response;
+    const end = this.trackRequest(request);
     try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sanitized),
-        signal: controller.signal,
+      const sanitized = normalizeOutboundPayload({
+        ...request,
+        stream: true,
       });
+
+      const timeoutMs = this.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+      // Combine the client-disconnect signal with the request timeout. We want
+      // BOTH: abort when the client goes away AND abort after a hard timeout.
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+      const url = this.buildUrl(request);
+      console.log(`[provider] POST ${url} [STREAM]`);
+
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(sanitized),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", onAbort);
+      }
+
+      if (!res.ok) {
+        const text = await res.text();
+        const err = new Error(
+          `llama-server error ${res.status}: ${text.slice(0, 500)}`,
+        ) as Error & { status?: number };
+        err.status = res.status;
+        throw err;
+      }
+
+      if (!res.body) {
+        throw new Error("llama-server returned no response body for streaming");
+      }
+
+      // NO BUFFERING: parse the SSE stream line-by-line and yield each data
+      // payload as it arrives. Buffering the whole body would add latency and
+      // memory for long generations, and reintroduce the multi-chunk races.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line || line === ":") {
+            continue;
+          }
+          if (!line.startsWith("data:")) {
+            continue;
+          }
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") {
+            return;
+          }
+          yield data;
+        }
+      }
     } finally {
-      clearTimeout(timeout);
-      signal.removeEventListener("abort", onAbort);
+      end?.();
     }
+  }
 
-    if (!res.ok) {
-      const text = await res.text();
-      const err = new Error(
-        `llama-server error ${res.status}: ${text.slice(0, 500)}`,
-      ) as Error & { status?: number };
-      err.status = res.status;
-      throw err;
+  /**
+   * F2 request tracking: stamp activity for the request's model and return
+   * the end-callback (release in-flight) when the caller's request ends.
+   */
+  private trackRequest(request: Record<string, unknown>): (() => void) | undefined {
+    if (!this.noteActivity) return undefined;
+    if (typeof request.model !== "string" || request.model.length === 0) {
+      return undefined;
     }
-
-    if (!res.body) {
-      throw new Error("llama-server returned no response body for streaming");
-    }
-
-    // NO BUFFERING: parse the SSE stream line-by-line and yield each data
-    // payload as it arrives. Buffering the whole body would add latency and
-    // memory for long generations, and reintroduce the multi-chunk races.
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line || line === ":") {
-          continue;
-        }
-        if (!line.startsWith("data:")) {
-          continue;
-        }
-        const data = line.slice(5).trim();
-        if (data === "[DONE]") {
-          return;
-        }
-        yield data;
-      }
-    }
+    return this.noteActivity(request.model) ?? undefined;
   }
 }
 

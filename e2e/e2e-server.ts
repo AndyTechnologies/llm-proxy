@@ -108,8 +108,8 @@ function buildDeps(): ServerDeps {
     getPipeline: (id) => (id === EXAMPLE_PIPELINE.id ? EXAMPLE_PIPELINE : undefined),
     registeredModels: () => ["llama-3.1-8b.gguf", "llama-3.1-70b.gguf"],
     modelDetails: () => [
-      { id: "llama-3.1-8b.gguf", file: "llama-3.1-8b.gguf", ctx: 8192, temp: 0.1 },
-      { id: "llama-3.1-70b.gguf", file: "llama-3.1-70b.gguf", ctx: 16384, temp: 0.7 },
+      { id: "llama-3.1-8b.gguf", file: "llama-3.1-8b.gguf", ctx: 8192, temp: 0.1, ggufContextLength: null, hardwareMaxCtx: 65536 },
+      { id: "llama-3.1-70b.gguf", file: "llama-3.1-70b.gguf", ctx: 16384, temp: 0.7, ggufContextLength: null, hardwareMaxCtx: 65536 },
     ],
     detectedModels: () => ["llama-3.2-1b.gguf"],
     modelsDir: "/models",

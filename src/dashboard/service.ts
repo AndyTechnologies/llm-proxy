@@ -14,6 +14,7 @@
  * Pure/injectable: `persist` and `reload` are injected so unit tests exercise
  * validation, write-nothing-on-failure, and rollback without touching disk.
  */
+import { z, ZodError } from "zod";
 import { configSchema, type GatewayConfig } from "../config/schema.js";
 
 /** A typed error carrying the dashboard error-envelope fields. */
@@ -57,6 +58,77 @@ function asApplyError(
   return err;
 }
 
+/** The default English message zod would generate for this issue. */
+function zodDefaultMessage(issue: z.ZodIssue): string {
+  switch (issue.code) {
+    case z.ZodIssueCode.invalid_type:
+      return `Expected ${issue.expected}, received ${issue.received}`;
+    case z.ZodIssueCode.too_small: {
+      if (issue.type === "array") return `Array must contain at least ${issue.minimum} element(s)`;
+      if (issue.type === "string") return `String must contain at least ${issue.minimum} character(s)`;
+      if (issue.type === "number") {
+        return `Number must be ${issue.inclusive ? "greater than or equal to" : "greater than"} ${issue.minimum}`;
+      }
+      return issue.message;
+    }
+    case z.ZodIssueCode.too_big: {
+      if (issue.type === "array") return `Array must contain at most ${issue.maximum} element(s)`;
+      if (issue.type === "string") return `String must contain at most ${issue.maximum} character(s)`;
+      if (issue.type === "number") {
+        return `Number must be ${issue.inclusive ? "less than or equal to" : "less than"} ${issue.maximum}`;
+      }
+      return issue.message;
+    }
+    case z.ZodIssueCode.invalid_enum_value:
+      return `Invalid enum value. Expected ${issue.options.join(" | ")}, received '${String(issue.received)}'`;
+    case z.ZodIssueCode.unrecognized_keys:
+      return `Unrecognized key(s) in object: ${issue.keys.join(", ")}`;
+    case z.ZodIssueCode.invalid_literal:
+      return `Invalid literal value, expected ${String(issue.expected)}`;
+    default:
+      return issue.message;
+  }
+}
+
+/**
+ * Human-readable Spanish message for a Zod issue. Messages shown in the UI
+ * must be Spanish (server-side root fix, so the UI never has to translate).
+ * Custom messages defined in the schema (already Spanish) win over the
+ * generic per-code translation.
+ */
+function zodIssueToSpanish(issue: z.ZodIssue): string {
+  const where = issue.path.length > 0 ? issue.path.join(".") : "(raíz)";
+  if (issue.message !== zodDefaultMessage(issue)) {
+    return `${where}: ${issue.message}`;
+  }
+  switch (issue.code) {
+    case z.ZodIssueCode.invalid_type:
+      return `${where}: se esperaba ${issue.expected}, se recibió ${issue.received}`;
+    case z.ZodIssueCode.too_small:
+      if (issue.type === "array") return `${where}: debe tener al menos ${issue.minimum} elemento(s)`;
+      if (issue.type === "string") return `${where}: debe tener al menos ${issue.minimum} caracteres`;
+      if (issue.type === "number") {
+        return `${where}: debe ser ${issue.inclusive ? "mayor o igual" : "mayor"} a ${issue.minimum}`;
+      }
+      return `${where}: ${issue.message}`;
+    case z.ZodIssueCode.too_big:
+      if (issue.type === "array") return `${where}: debe tener como máximo ${issue.maximum} elemento(s)`;
+      if (issue.type === "string") return `${where}: debe tener como máximo ${issue.maximum} caracteres`;
+      if (issue.type === "number") {
+        return `${where}: debe ser ${issue.inclusive ? "menor o igual" : "menor"} a ${issue.maximum}`;
+      }
+      return `${where}: ${issue.message}`;
+    case z.ZodIssueCode.invalid_enum_value:
+      return `${where}: valor inválido "${issue.received}" (permitidos: ${issue.options.join(", ")})`;
+    case z.ZodIssueCode.unrecognized_keys:
+      return `${where}: claves no reconocidas: ${issue.keys.join(", ")}`;
+    case z.ZodIssueCode.invalid_literal:
+      return `${where}: se esperaba el valor literal ${String(issue.expected)}`;
+    default:
+      return `${where}: ${issue.message}`;
+  }
+}
+
 /** The apply service result on success. */
 export interface ApplyResult {
   status: "applied";
@@ -81,6 +153,15 @@ export function createApplyService(deps: ApplyDeps): ApplyService {
       try {
         validated = configSchema.parse(draft.config);
       } catch (err) {
+        if (err instanceof ZodError) {
+          // `err.message` is a raw JSON array of issues — surface a readable
+          // Spanish list instead ("chains.nuevo-pipeline.nodes: chain.nodes
+          // no debe estar vacío").
+          throw asApplyError(
+            err.issues.map(zodIssueToSpanish).join(" · "),
+            "invalid_request_error",
+          );
+        }
         throw asApplyError(
           err instanceof Error ? err.message : "Configuration is invalid",
           "invalid_request_error",

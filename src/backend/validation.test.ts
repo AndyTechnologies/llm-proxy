@@ -47,6 +47,7 @@ function minimalConfig(over: Partial<LlamaConfig> = {}): LlamaConfig {
     maxRestartAttempts: 5,
     modelsDir: path.join(tmpDir, "models"),
     autoload: true,
+    lifecycle: { ttl: 600, vram: { mode: "dynamic", freeGb: 1, capGb: 5 } },
     router: {
       ctx: 8192,
       n: 2048,

@@ -97,7 +97,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /cyclic|cycle/i.test(e))).toBe(true);
+    expect(result.errors.some((e) => /ciclo/i.test(e))).toBe(true);
   });
 
   test("allows a cycle when it is a loop boundary (loop node with body)", () => {
@@ -147,7 +147,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /missing/.test(e))).toBe(true);
+    expect(result.errors.some((e) => /inexistente/i.test(e))).toBe(true);
   });
 
   test("rejects an llm_call whose model does not exist (RED: model existence)", () => {

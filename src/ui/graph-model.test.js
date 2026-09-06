@@ -26,7 +26,14 @@ import {
   NODE_W,
   NODE_H,
   socketPositions,
+  conditionSockets,
+  outSocketFor,
+  loopBodyRect,
+  loopContainsPoint,
   bezierEdge,
+  stackLoopMembers,
+  ownerLoopId,
+  stripLoopInternalEdges,
 } from "./graph-model.js";
 
 describe("graph-model: createNode defaults", () => {
@@ -121,6 +128,16 @@ describe("graph-model: node manipulation helpers", () => {
     expect(en).toHaveLength(0);
   });
 
+  it("deleteNode also removes a deleted id from every loop body", () => {
+    const nodes = [
+      { id: "loop", type: "loop", body: ["a", "b"] },
+      { id: "a", type: "llm_call", model: "m" },
+      { id: "b", type: "llm_call", model: "m" },
+    ];
+    const { nodes: nn } = deleteNode(nodes, [], "a");
+    expect(nn.find((n) => n.id === "loop").body).toEqual(["b"]);
+  });
+
   it("connectNodes adds an edge", () => {
     const next = connectNodes([], "a", "b");
     expect(next).toEqual([{ from: "a", to: "b" }]);
@@ -145,10 +162,67 @@ describe("graph-model: sockets and bezier edges", () => {
     expect(p.in).toEqual({ x: 100, y: 200 + NODE_H / 2 });
   });
 
+  it("conditionSockets stacks outTrue above outFalse on the right", () => {
+    const p = { x: 100, y: 200 };
+    const cs = conditionSockets(p);
+    expect(cs.in).toEqual({ x: 100, y: 200 + NODE_H / 2 });
+    expect(cs.outTrue.x).toBe(100 + NODE_W);
+    expect(cs.outFalse.x).toBe(100 + NODE_W);
+    expect(cs.outTrue.y).toBeLessThan(cs.outFalse.y);
+    expect(cs.outTrue.y).toBeGreaterThan(200);
+  });
+
+  it("outSocketFor picks the branch socket by guard for condition nodes", () => {
+    const p = { x: 100, y: 200 };
+    const cond = { id: "c", type: "condition" };
+    const cs = conditionSockets(p);
+    expect(outSocketFor(cond, p, "true")).toEqual(cs.outTrue);
+    expect(outSocketFor(cond, p, "false")).toEqual(cs.outFalse);
+    // Sin guard (arista legada) cae en la rama true (arriba).
+    expect(outSocketFor(cond, p, null)).toEqual(cs.outTrue);
+    // Nodos normales: un solo socket al medio.
+    expect(outSocketFor({ id: "a", type: "llm_call" }, p, null)).toEqual(socketPositions(p).out);
+  });
+
   it("bezierEdge produces a cubic path between two points", () => {
     const d = bezierEdge(0, 10, 300, 40);
     expect(d.startsWith("M 0 10 C ")).toBe(true);
     expect(d.endsWith(", 300 40")).toBe(true);
+  });
+});
+
+describe("graph-model: loop container", () => {
+  const loopAt = (p, body = []) => ({ id: "l", type: "loop", body, pos: p });
+
+  it("loopBodyRect wraps the header alone when the body is empty", () => {
+    const rect = loopBodyRect(loopAt({ x: 100, y: 200 }), []);
+    expect(rect.x).toBeLessThan(100);
+    expect(rect.y).toBeLessThan(200);
+    expect(rect.width).toBeGreaterThan(NODE_W);
+    expect(rect.height).toBeGreaterThan(NODE_H);
+  });
+
+  it("loopBodyRect grows when a body member is positioned below the header", () => {
+    const loop = loopAt({ x: 100, y: 200 }, ["m1"]);
+    const member = { id: "m1", type: "llm_call", pos: { x: 120, y: 320 } };
+    const rect = loopBodyRect(loop, [member]);
+    // El contenedor alcanza el fondo del miembro (que esta mas abajo).
+    expect(rect.y + rect.height).toBeGreaterThan(320 + NODE_H);
+    expect(rect.x).toBeLessThanOrEqual(120);
+  });
+
+  it("loopContainsPoint is true inside the container, false outside", () => {
+    const loop = loopAt({ x: 100, y: 200 }, []);
+    const nearCenter = { x: 100 + 10, y: 200 + 40 };
+    const far = { x: 900, y: 900 };
+    expect(loopContainsPoint(loop, [], nearCenter)).toBe(true);
+    expect(loopContainsPoint(loop, [], far)).toBe(false);
+  });
+
+  it("loopContainsPoint excludes the header strip (own position doesn't self-bucket)", () => {
+    const loop = loopAt({ x: 100, y: 200 });
+    const insideHeader = { x: 100 + 20, y: 200 - 5 };
+    expect(loopContainsPoint(loop, [loop], insideHeader)).toBe(false);
   });
 });
 
@@ -238,5 +312,69 @@ describe("graph-model: isCompleteNode", () => {
         condition: { op: "exists", field: "error" },
       }),
     ).toBe(true);
+  });
+});
+
+describe("graph-model: stackLoopMembers (auto-chained loop body)", () => {
+  it("stacks members vertically under the loop header, ignoring their pos", () => {
+    const nodes = [
+      { id: "loop", type: "loop", body: ["a", "b"], pos: { x: 100, y: 200 } },
+      { id: "a", type: "llm_call", model: "m", pos: { x: 1, y: 1 } },
+      { id: "b", type: "llm_call", model: "m", pos: { x: 2, y: 2 } },
+    ];
+    const out = stackLoopMembers(nodes);
+    const a = out.find((n) => n.id === "a");
+    const b = out.find((n) => n.id === "b");
+    expect(a.pos).toEqual({ x: 100, y: 200 + NODE_H + 14 });
+    expect(b.pos).toEqual({ x: 100, y: 200 + NODE_H + 14 + NODE_H + 14 });
+  });
+
+  it("returns the same array reference when nothing changes", () => {
+    const nodes = [
+      { id: "loop", type: "loop", body: ["a"], pos: { x: 10, y: 10 } },
+      { id: "a", type: "llm_call", model: "m", pos: { x: 10, y: 10 + NODE_H + 14 } },
+    ];
+    expect(stackLoopMembers(nodes)).toBe(nodes);
+  });
+
+  it("leaves a loop without header pos untouched (layoutGraph places it)", () => {
+    const nodes = [
+      { id: "loop", type: "loop", body: ["a"] },
+      { id: "a", type: "llm_call", model: "m", pos: { x: 5, y: 5 } },
+    ];
+    const out = stackLoopMembers(nodes);
+    expect(out).toBe(nodes);
+  });
+});
+
+describe("graph-model: ownerLoopId + stripLoopInternalEdges", () => {
+  it("finds the owner loop of a body member", () => {
+    const nodes = [
+      { id: "loop", type: "loop", body: ["a"] },
+      { id: "a", type: "llm_call" },
+      { id: "b", type: "llm_call" },
+    ];
+    expect(ownerLoopId(nodes, "a")).toBe("loop");
+    expect(ownerLoopId(nodes, "b")).toBeNull();
+  });
+
+  it("drops edges touching loop body members but keeps external edges", () => {
+    const nodes = [
+      { id: "start", type: "start" },
+      { id: "loop", type: "loop", body: ["a"] },
+      { id: "a", type: "llm_call" },
+      { id: "end", type: "end" },
+    ];
+    const edges = [
+      { from: "start", to: "loop" },
+      { from: "loop", to: "a" }, // obsolete internal entry
+      { from: "a", to: "loop" }, // obsolete internal back-edge
+      { from: "loop", to: "end" },
+    ];
+    const kept = stripLoopInternalEdges(edges, nodes);
+    expect(kept).toEqual([
+      { from: "start", to: "loop" },
+      { from: "loop", to: "end" },
+    ]);
   });
 });

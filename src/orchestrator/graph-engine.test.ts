@@ -166,6 +166,61 @@ describe("loop execution is bounded", () => {
     expect(res.executedLlmNodes).toEqual(["a", "a", "a"]);
     expect(res.lastStatus).toBe(200);
   });
+
+  test("a loop with a matching exit condition stops before the bound", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const exitCond: AstExpr = { op: "compare", field: "lastResponse.status", op2: "==", value: 200 };
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        node("loop", "loop", { body: ["a"], condition: exitCond }),
+        llm("a"),
+        node("end", "end"),
+      ],
+      [
+        edge("start", "loop"),
+        edge("loop", "a"),
+        edge("a", "loop"),
+        edge("loop", "end"),
+      ],
+    );
+    const d: GraphEngineDeps = {
+      ...deps(calls, { name: "p", provider: fakeProvider("p", calls) }),
+      maxLoopIterations: 3,
+    };
+    const res = await run(g, d);
+    expect(calls.chat).toEqual(["p"]);
+    expect(res.executedLlmNodes).toEqual(["a"]);
+    expect(res.lastStatus).toBe(200);
+  });
+
+  test("a multi-member loop body auto-chains in order without internal edges", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    // No loop→a / a→b / b→loop edges at all: the engine synthesizes the body
+    // sequence from `body` order and discards stale internal edges.
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        node("loop", "loop", { body: ["a", "b"] }),
+        llm("a"),
+        llm("b"),
+        node("end", "end"),
+      ],
+      [
+        edge("start", "loop"),
+        edge("a", "loop"), // stale internal back edge — must be ignored
+        edge("loop", "end"),
+      ],
+    );
+    const d: GraphEngineDeps = {
+      ...deps(calls, { name: "p", provider: fakeProvider("p", calls) }),
+      maxLoopIterations: 2,
+    };
+    const res = await run(g, d);
+    expect(calls.chat).toEqual(["p", "p", "p", "p"]);
+    expect(res.executedLlmNodes).toEqual(["a", "b", "a", "b"]);
+    expect(res.lastStatus).toBe(200);
+  });
 });
 
 describe("parallel opt-in with explicit join", () => {
@@ -618,5 +673,88 @@ describe("pipeline composition node", () => {
     const res = await runGraphEngine(top, d);
     // The error state should indicate depth exceeded
     expect(res.lastResponse).toBeNull();
+  });
+});
+
+// ── external provider resolution (multi-provider-pipelines 4.2) ──
+// graph-engine production code is FROZEN for this change; these tests pin the
+// EXISTING resolution behavior applied to external providers: `node.provider`
+// names the map entry, and a node without `provider` falls back to the FIRST
+// map entry (llama-server stays first at boot).
+
+describe("external provider resolution (4.2)", () => {
+  test("an external final chain node streams through the named provider with one [DONE]", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        llm("ext", { provider: "openai", model: "gpt-4o" }),
+        node("end", "end"),
+      ],
+      [edge("start", "ext"), edge("ext", "end")],
+    );
+    const d = deps(
+      calls,
+      // llama-server is the FIRST map entry — the default fallback target.
+      { name: "llama-server", provider: fakeProvider("llama-server", calls) },
+      { name: "openai", provider: fakeProvider("openai", calls) },
+    );
+    const res = await run(g, d, {
+      streamRequested: true,
+      signal: new AbortController().signal,
+      payload: {},
+    });
+
+    expect(res.response.status).toBe(200);
+    expect(res.response.headers.get("content-type")).toContain("text/event-stream");
+    const body = await res.response.text();
+    const dones = (body.match(/data: \[DONE\]/g) ?? []).length;
+    expect(dones).toBe(1);
+    // the named external provider streamed; the llama path was untouched
+    expect(calls.stream).toEqual(["openai"]);
+    expect(calls.chat).toEqual([]);
+  });
+
+  test("node.provider resolves to the named external provider for non-streaming steps", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        llm("ext", { provider: "openai", model: "gpt-4o" }),
+        node("end", "end"),
+      ],
+      [edge("start", "ext"), edge("ext", "end")],
+    );
+    const d = deps(
+      calls,
+      { name: "llama-server", provider: fakeProvider("llama-server", calls) },
+      { name: "openai", provider: fakeProvider("openai", calls) },
+    );
+    const res = await run(g, d);
+
+    expect(res.lastStatus).toBe(200);
+    expect(calls.chat).toEqual(["openai"]);
+    expect(calls.stream).toEqual([]);
+  });
+
+  test("a node without provider falls back to the first map entry (llama path unchanged)", async () => {
+    const calls: Calls = { chat: [], stream: [] };
+    const g = makeGraph(
+      [
+        node("start", "start"),
+        node("local", "llm_call", { model: "real-model" }),
+        node("end", "end"),
+      ],
+      [edge("start", "local"), edge("local", "end")],
+    );
+    const d = deps(
+      calls,
+      { name: "llama-server", provider: fakeProvider("llama-server", calls) },
+      { name: "openai", provider: fakeProvider("openai", calls) },
+    );
+    const res = await run(g, d);
+
+    expect(res.lastContent).toBe("out-llama-server");
+    expect(calls.chat).toEqual(["llama-server"]);
   });
 });

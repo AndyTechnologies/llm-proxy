@@ -111,6 +111,7 @@ const F2_CONFIG: GatewayConfig = {
     lifecycle: { ttl: 600, vram: { mode: "dynamic", freeGb: 1, capGb: 5 } },
   },
   chains: {},
+  providers: {},
 };
 
 describe("dashboard router — F2 lifecycle routes", () => {

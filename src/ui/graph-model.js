@@ -66,6 +66,34 @@ export function socketPositions(p) {
 }
 
 /**
+ * Socket center-points for a condition block: the input on the left, and two
+ * outputs stacked on the right — `outTrue` above, `outFalse` below — so the
+ * branch meaning is conveyed by position (and the renderer colors them), not
+ * by a manual guard selector.
+ */
+export function conditionSockets(p) {
+  const branchDy = 16;
+  return {
+    in: { x: p.x, y: p.y + NODE_H / 2 },
+    outTrue: { x: p.x + NODE_W, y: p.y + NODE_H / 2 - branchDy },
+    outFalse: { x: p.x + NODE_W, y: p.y + NODE_H / 2 + branchDy },
+  };
+}
+
+/**
+ * The output socket a drawn edge should leave from, given the node and its
+ * guard (or null). Condition blocks branch by guard; every other type has a
+ * single output on the midline.
+ */
+export function outSocketFor(node, p, guard) {
+  if (node.type === "condition") {
+    const cs = conditionSockets(p);
+    return guard === "false" ? cs.outFalse : cs.outTrue;
+  }
+  return socketPositions(p).out;
+}
+
+/**
  * Cubic bezier path between two socket points, bowing horizontally so edges
  * read as free-form curves (node-editor style) rather than stacked verticals.
  */
@@ -103,9 +131,66 @@ export function connectNodes(edges, from, to, guard) {
  */
 export function deleteNode(nodes, edges, id) {
   return {
-    nodes: nodes.filter((n) => n.id !== id),
+    nodes: nodes
+      .filter((n) => n.id !== id)
+      .map((n) =>
+        n.body ? { ...n, body: n.body.filter((b) => b !== id) } : n,
+      ),
     edges: edges.filter((e) => e.from !== id && e.to !== id),
   };
+}
+
+/**
+ * Bounding box of a loop's container in SVG units: wraps the loop header
+ * itself plus every body member that has a position, with padding and room
+ * for the container label above. Returns `null` when nothing is positioned.
+ * The loop renders as a container block, so the body is visually grouped and
+ * the container grows downward as members are added.
+ */
+export function loopBodyRect(loopNode, nodes) {
+  const pad = 18;
+  const headerPad = 30;
+  const members = [loopNode];
+  for (const id of loopNode.body ?? []) {
+    const m = nodes.find((n) => n.id === id);
+    if (m) members.push(m);
+  }
+  const positioned = members.filter((n) => n.pos);
+  if (positioned.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const n of positioned) {
+    minX = Math.min(minX, n.pos.x);
+    minY = Math.min(minY, n.pos.y);
+    maxX = Math.max(maxX, n.pos.x + NODE_W);
+    maxY = Math.max(maxY, n.pos.y + NODE_H);
+  }
+  return {
+    x: minX - pad,
+    y: minY - headerPad,
+    width: maxX - minX + pad * 2,
+    // Pie extra (36px) para el boton "+ Agregar bloque" del contenedor.
+    height: maxY - minY + headerPad + pad + 36,
+  };
+}
+
+/**
+ * True when the given point (graph coords) falls inside a loop container
+ * (excluding the loop's own header — dragging a body member under its parent
+ * loop should not re-bucket it). Used by the drop-to-bucket interaction.
+ */
+export function loopContainsPoint(loopNode, nodes, pt) {
+  const rect = loopBodyRect(loopNode, nodes);
+  if (!rect) return false;
+  const loopPad = loopNode.pos ? 30 : 0;
+  return (
+    pt.x >= rect.x &&
+    pt.x <= rect.x + rect.width &&
+    pt.y >= rect.y + loopPad &&
+    pt.y <= rect.y + rect.height
+  );
 }
 
 /**
@@ -221,6 +306,56 @@ export function buildPayload(state) {
     nodes: state.nodes.map(strip),
     edges: state.edges.map((e) => ({ ...e })),
   };
+}
+
+/**
+ * Stack loop body members vertically under their loop header. Loop members are
+ * NOT user-movable (the loop is an auto-chained sequence, see graph-engine),
+ * so their `pos` is always recomputed: member i sits one row below member
+ * i-1, sharing the loop header's x. The loop header keeps its own `pos` (or
+ * stays undefined so layoutGraph fills it in). Returns new node objects so the
+ * editor state stays immutable during rendering.
+ */
+export function stackLoopMembers(nodes) {
+  const STACK_GAP = 14;
+  let changed = false;
+  const out = nodes.map((n) => ({ ...n }));
+  for (const n of out) {
+    if (n.type !== "loop" || !Array.isArray(n.body) || n.body.length === 0) continue;
+    const header = n.pos ? { x: n.pos.x, y: n.pos.y } : null;
+    if (!header) continue; // layoutGraph will place the header first pass
+    let y = header.y + NODE_H + STACK_GAP;
+    for (const memberId of n.body) {
+      const m = out.find((x) => x.id === memberId);
+      if (!m) continue;
+      const want = { x: header.x, y };
+      if (!m.pos || m.pos.x !== want.x || m.pos.y !== want.y) {
+        m.pos = want;
+        changed = true;
+      }
+      y += NODE_H + STACK_GAP;
+    }
+  }
+  return changed ? out : nodes;
+}
+
+/** Id of the loop that owns `nodeId`, or null when the node is not in a body. */
+export function ownerLoopId(nodes, nodeId) {
+  for (const n of nodes) {
+    if (n.type === "loop" && Array.isArray(n.body) && n.body.includes(nodeId)) return n.id;
+  }
+  return null;
+}
+
+/** Drop edges that connect into/out of loop body members (obsolete auto-chain). */
+export function stripLoopInternalEdges(edges, nodes) {
+  const members = new Set();
+  for (const n of nodes) {
+    if (n.type === "loop" && Array.isArray(n.body)) {
+      for (const m of n.body) members.add(m);
+    }
+  }
+  return edges.filter((e) => !members.has(e.from) && !members.has(e.to));
 }
 
 /**

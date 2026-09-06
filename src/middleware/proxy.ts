@@ -17,6 +17,16 @@ import type { LlamaServeManager } from "../backend/manager.js";
 /** fetch()'s Response type. */
 type FetchResponse = Awaited<ReturnType<typeof fetch>>;
 
+/** Optional passthrough behavior (F2 lifecycle tracking). */
+export interface PassthroughOptions {
+  /**
+   * Called with the parsed `model` at request dispatch. May return an
+   * end-callback the proxy invokes when the request is fully done
+   * (stream closed / error / abort).
+   */
+  noteActivity?: (model: string) => (() => void) | void;
+}
+
 /** Hop-by-hop headers that must never be forwarded. */
 export const HOP_BY_HOP = new Set([
   "connection",
@@ -66,10 +76,16 @@ function forwardResponseHeaders(headers: Headers): Headers {
  *
  * @param getManager  Manager to read baseUrl from dynamically
  * @param requestTimeoutMs  Timeout for upstream requests
+ * @param opts.noteActivity  F2 lifecycle hook: called with the parsed `model`
+ *   at dispatch for JSON POST /v1/chat/completions + /v1/completions. The
+ *   returned function must run when the request fully completes (upstream
+ *   body closed, error path, or client abort); the wired lifecycle uses it to
+ *   release the in-flight marker so a long stream is never unloaded mid-flight.
  */
 export function createPassthroughProxy(
   getManager: () => LlamaServeManager,
   requestTimeoutMs: number,
+  opts: PassthroughOptions = {},
 ): (req: Request) => Promise<Response> {
   return async (req: Request): Promise<Response> => {
     const baseUrl = getManager().status().baseUrl;
@@ -109,6 +125,31 @@ export function createPassthroughProxy(
       body = await req.arrayBuffer();
     }
 
+    // ── F2 activity tracking: model id from the JSON body → lifecycle ──
+    // The end-callback rides the response stream (also fires on cancel), so
+    // the in-flight marker lives exactly as long as the request.
+    const track = opts.noteActivity;
+    let finish: (() => void) | undefined;
+    if (
+      track &&
+      body !== undefined &&
+      req.method === "POST" &&
+      contentType?.includes("application/json") &&
+      (pathname === "/v1/chat/completions" || pathname === "/v1/completions")
+    ) {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(body)) as {
+          model?: unknown;
+        };
+        if (typeof parsed?.model === "string" && parsed.model.length > 0) {
+          const done = track(parsed.model);
+          if (typeof done === "function") finish = once(done);
+        }
+      } catch {
+        // Not parseable JSON / no model — request proceeds untracked.
+      }
+    }
+
     let upstream: FetchResponse;
     try {
       upstream = await fetch(target, {
@@ -121,6 +162,7 @@ export function createPassthroughProxy(
     } catch (err) {
       clearTimeout(timeout);
       req.signal.removeEventListener("abort", onClientAbort);
+      finish?.(); // request ended (abort, timeout, or network error)
       if (controller.signal.aborted || req.signal.aborted) {
         // Client went away or timed out — nothing sensible to write.
         throw err;
@@ -164,6 +206,7 @@ export function createPassthroughProxy(
             ? "server_error"
             : "invalid_request_error";
 
+      finish?.();
       return new Response(
         JSON.stringify({
           error: { message, type: errorType, param: null, code: null },
@@ -174,15 +217,58 @@ export function createPassthroughProxy(
 
     // ── Forward status + non-hop-by-hop headers; stream the body unbuffered ──
     if (!upstream.body) {
+      finish?.();
       return new Response(null, {
         status: upstream.status,
         headers: forwardResponseHeaders(upstream.headers),
       });
     }
 
-    return new Response(upstream.body as ReadableStream, {
+    const stream = finish
+      ? endTrackedStream(upstream.body as ReadableStream<Uint8Array>, finish)
+      : (upstream.body as ReadableStream);
+    return new Response(stream as ReadableStream, {
       status: upstream.status,
       headers: forwardResponseHeaders(upstream.headers),
     });
+  };
+}
+
+/** In-flight end-hook that fires on normal close AND on consumer cancel. */
+export function endTrackedStream(
+  body: ReadableStream<Uint8Array>,
+  finish: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          finish();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        finish();
+        throw err;
+      }
+    },
+    cancel(reason) {
+      finish();
+      void reader.cancel(reason);
+    },
+  });
+}
+
+/** Idempotent wrapper so the end-hook never fires twice. */
+function once(fn: () => void): () => void {
+  let called = false;
+  return () => {
+    if (!called) {
+      called = true;
+      fn();
+    }
   };
 }
