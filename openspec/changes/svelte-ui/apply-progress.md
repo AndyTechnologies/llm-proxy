@@ -1,12 +1,14 @@
-# Apply Progress — svelte-ui (Unit 1 + Unit 2)
+# Apply Progress — svelte-ui (Unit 1 + Unit 2 + Unit 3)
 
-Status: **Units 1–2 IMPLEMENTED — all Phase 1–3 tasks green; Unit 2 attempt
-pending settle** (see "Attempt accounting"). Date: 2026-09-06
+Status: **Units 1–3 IMPLEMENTED — all Phase 1–4 tasks green except the
+post-verify legacy delete (4.4 gate); Unit 3 attempt pending settle**.
+Date: 2026-09-06
 
 ## Scope
 
 Phase 1 (tasks 1.1–1.7) + Phase 2 (tasks 2.1–2.4) + Phase 3 (tasks
-3.1–3.7) of `openspec/changes/svelte-ui`. Phase 4 untouched. Legacy
+3.1–3.7) + Phase 4 (tasks 4.1–4.3; 4.4 gate partial — legacy delete
+deferred until after verify) of `openspec/changes/svelte-ui`. Legacy
 `src/ui/*` unmodified (rollback boundary).
 
 ## Evidence (committed state, sha256:da8bac27…69f48)
@@ -152,6 +154,64 @@ Legacy `src/ui/*` unmodified (rollback boundary).
 - Handoff: settle Unit 2 attempt (see below), then Phase 4 (tasks
   4.1–4.4) on `svelte-ui/pr3`.
 
+---
+
+# Unit 3 (PR 3) — Phase 4 delivery
+
+Status: **IMPLEMENTED — tasks 4.1–4.3 green + 4.4 gate partial; settle
+recorded in "Attempt accounting"**. Branch `svelte-ui/pr3` (base
+`svelte-ui/pr2`), 3 commits.
+
+## Evidence (committed state, HEAD `eae6f40` on `svelte-ui/pr3`)
+
+- `bun run typecheck` → clean; `bun run lint` → clean
+- `bun test` (full) → 756 pass / 0 fail (1848 expect) — count moved from
+  761 because the 4 Unit-2 debug probes + their removal happened before
+  this unit; unchanged suite content
+- `bun test ./scripts/binary-smoke.test.ts` → 6 pass against prebuilt
+  dist/llm-proxy (real spawns from throwaway temp cwd)
+- `bun run build:ui` → measures bundle: app JS 82279 B raw → **29.23 KB
+  gzip ≤ 100 KB** ("OK")
+- `bun run build:binary` → `--asset dist/ui` compile OK, dist/llm-proxy
+- CLI `bun /…/scripts/binary-smoke.ts` from `/tmp/opencode` (unrelated
+  cwd) → `[smoke] PASS` (embedded /ui 200 html, /ui/assets/* 200 js,
+  unknown fallback 200, malicious segment 404 json, disk fallback
+  "DISK-FALLBACK", UI_DIR override "OVERRIDE-INDEX" + asset 200)
+
+## Deliverables by task
+
+- **4.1** `package.json`: `build:binary` = `bun build src/index.ts
+  --compile --outfile dist/llm-proxy --asset dist/ui`; script contract
+  tests added in `scripts/package-scripts.test.ts`.
+- **4.2** `scripts/measure-bundle.ts` (measure gzip app JS via
+  `findAppJs`, assert ≤ 100 KB) + `scripts/measure-bundle.test.ts`;
+  `build:ui` now runs the guard after vite.
+- **4.3** `scripts/binary-smoke.ts` + `binary-smoke.test.ts`: shared
+  helpers (`createSmokeWorkspace` — schema-valid `autoStart:false`
+  config with `/bin/true`, `spawnSmokeGateway`, `collectSmokeEvidence`,
+  `assertSmokeEvidence`); three spawned gateways from temp cwds
+  (embedded/disk/override) exercising the full delivery contract;
+  `smoke:binary` script added.
+- **4.4** Gate green (typecheck/lint/test/bundle/smoke). Legacy
+  `src/ui/*` delete deferred — only after `sdd-verify` (rollback
+  boundary preserved).
+
+## Commits (Unit 3, branch `svelte-ui/pr3`)
+
+1. `feat(ui): embed dist/ui in binary build via --asset (task 4.1)` (7d1da37)
+2. `feat(ui): guard app JS bundle ≤100 KB gzip on build:ui (task 4.2)` (8df3a6d)
+3. `feat(scripts): binary smoke from unrelated cwd with embedded /ui contract (task 4.3)` (eae6f40)
+
+## Notes / handoff for verify
+
+- Delivery chain: svelte-ui-tracker ← svelte-ui/pr1 (PR 27) ←
+  svelte-ui/pr2 ← svelte-ui/pr3 (HEAD). PR 2 and PR 3 creation is the
+  next orchestrator delivery step after settle; PR 3 targets
+  `svelte-ui/pr2` (immediate parent), commit-ref base to keep diffs
+  focused.
+- After verify approves: delete legacy `src/ui/*` (4.4 final), archive,
+  changelog, then merge tracker → master for delivery.
+
 ## Attempt accounting
 
 ### Unit 1 (PR 1) — settled + ledger reset
@@ -171,28 +231,46 @@ Legacy `src/ui/*` unmodified (rollback boundary).
   `--untracked-scope exclude --expected-untracked-inventory sha256:673d0f36…40c3`
   (task list committed; remaining change docs stay untracked, as before).
 
-### Unit 2 (PR 2) — acquired, pending settle
+### Unit 2 (PR 2) — settled passed + ledger reset
 
 - Token `sha256:a552f73e345e9488b77db323b531b2f185cf9e4bfbefff20aa3a51b33ca0ad36`,
   work_unit `unit-2-pr-2-views-editor`, `state: proceed`.
 - Acquire used `--untracked-scope exclude --expected-untracked-inventory
   sha256:ed7eccf59c704bfc4f0c357e510a0200c6cccf632a15fbbe117138e017294640`
   (change docs untracked by design).
-- Settle (run after PR 2 verified; reject if token already closed):
+- **Settled**: first attempt refused (undeclared untracked) → re-run with
+  `--untracked-scope exclude --expected-untracked-inventory
+  sha256:673d0f36c01fc6ad0c514cd0d1da5cd04e27cdbbf3afae7fc47d72cbc46e40c3`
+  (tasks.md/apply-progress now committed) → recorded `outcome: passed`,
+  `changed_lines: 6899`, `changed_line_budget_exceeded: true`.
+- Settle settled blocked on `maintainer_decision`; user authorized reset
+  ("Resetear y continuar Unit 3"):
+  `gentle-ai sdd-attempt reset --expected-revision
+  sha256:2bcf28d95e416e289d7132ef610649f40a6b1845d483caf05b049ddca6ae2e25
+  --request-id svelte-ui-unit2-budget-reset --actor maintainer` → OK,
+  ledger now `sha256:5d6a17a0a3d45637c82df798612da7f2df81472e71b42518ae7bb5343aacc841`,
+  `decision_required: false`, `next_action: begin`.
+
+### Unit 3 (PR 3) — acquired, pending settle
+
+- Token `sha256:a337e3d961a8a8ed071fafc9ddd3b576ce53ac4d448c68d2a8151767e0e6feec`,
+  work_unit `unit-3-pr-3-bundle-binary-gate`, `max_attempts 1`,
+  `max_changed_lines 600`, `state: proceed`.
+- Acquire used `--untracked-scope exclude --expected-untracked-inventory
+  sha256:673d0f36…40c3`.
+- Settle (reject if token already closed):
   ```
   gentle-ai sdd-attempt settle --cwd /home/andy/Proyectos/llm-proxy \
     --change svelte-ui \
-    --token sha256:a552f73e345e9488b77db323b531b2f185cf9e4bfbefff20aa3a51b33ca0ad36 \
-    --request-id svelte-ui-unit2-settle \
+    --token sha256:a337e3d961a8a8ed071fafc9ddd3b576ce53ac4d448c68d2a8151767e0e6feec \
+    --request-id svelte-ui-unit3-settle \
     --outcome passed \
     --evidence-revision <sha256 of HEAD after verification> \
-    --diagnosis "Unit 2 (Phase 3 views/editor/stores; tasks 3.1-3.7) green: ui-svelte 238 pass, full suite 761 pass, typecheck+lint clean, bundle 29.8 KB gzip" \
+    --diagnosis "Unit 3 (Phase 4 delivery; tasks 4.1-4.3 + 4.4 gate partial) green: bundle guard 29.23 KB gzip <= 100 KB, binary smoke PASS from unrelated cwd, 756 tests, typecheck+lint clean; legacy src/ui delete deferred to after verify" \
     --harness-disposition reused \
-    --cleanup-evidence "debug probes removed; dist/ui rebuilt" \
-    --process-evidence "git log svelte-ui/pr1..svelte-ui/pr2 = 8 commits"
+    --cleanup-evidence "dist/ui + dist/llm-proxy rebuilt; smoke workspaces removed" \
+    --process-evidence "git log svelte-ui/pr2..svelte-ui/pr3 = 3 commits"
   ```
-- If settle returns `blocked`/`complete` (token no longer open), do NOT
-  re-create or promote artifacts — report and move on.
 
 ## Notes / handoff for Unit 2
 
