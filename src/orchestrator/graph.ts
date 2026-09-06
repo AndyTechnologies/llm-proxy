@@ -94,6 +94,18 @@ export interface GraphValidation {
 }
 
 /**
+ * Human-readable label for a node in validation errors, e.g.
+ * `LLM_CALL de modelo SmolLM3 (n3)` or `CONDITION (c2)`.
+ */
+function nodeLabel(n: GraphNode, includeModel = true): string {
+  const type = n.type.toUpperCase();
+  if (includeModel && n.type === "llm_call" && n.model) {
+    return `LLM_CALL de modelo ${n.model} (${n.id})`;
+  }
+  return `${type} (${n.id})`;
+}
+
+/**
  * SAFE AST — the only shapes the interpreter will ever evaluate. There is no
  * generic "code" escape hatch: every expression is one of the four typed
  * operators over a closed set of context fields.
@@ -131,6 +143,10 @@ export interface AstContext {
  *   - acyclic except back edges that stay inside a loop node's `body`
  *   - required per-type fields present
  *   - when `knownModels` is provided, every `llm_call` model must exist
+ *   - connectivity over the effective edge set: every node is reachable from
+ *     `start`, every node has a path to an `end`, and `on_429` /
+ *     `tool_calls_route` targets exist (loop bodies are auto-chained, like the
+ *     engine's synthesis)
  */
 export function validateGraph(
   graph: GraphPipeline,
@@ -167,16 +183,16 @@ export function validateGraph(
   // Required per-type fields.
   for (const n of graph.nodes) {
     if (n.type === "llm_call" && !n.model) {
-      errors.push(`el nodo llm_call "${n.id}" no tiene el campo obligatorio "model"`);
+      errors.push(`el nodo ${nodeLabel(n)} no tiene el campo obligatorio "model"`);
     }
     if (n.type === "condition" && !n.condition) {
-      errors.push(`el nodo condition "${n.id}" no tiene el campo obligatorio "condition"`);
+      errors.push(`el nodo ${nodeLabel(n)} no tiene el campo obligatorio "condition"`);
     }
     if (n.type === "loop" && (!n.body || n.body.length === 0)) {
-      errors.push(`el nodo loop "${n.id}" no tiene el campo obligatorio "body"`);
+      errors.push(`el nodo ${nodeLabel(n)} no tiene el campo obligatorio "body"`);
     }
     if (n.type === "pipeline" && !n.pipeline) {
-      errors.push(`el nodo pipeline "${n.id}" no tiene el campo obligatorio "pipeline"`);
+      errors.push(`el nodo ${nodeLabel(n)} no tiene el campo obligatorio "pipeline"`);
     }
   }
 
@@ -184,13 +200,16 @@ export function validateGraph(
   if (opts.knownModels && opts.knownModels.length >= 0) {
     for (const n of graph.nodes) {
       if (n.type === "llm_call" && n.model && !known.has(n.model)) {
-        errors.push(`el nodo llm_call "${n.id}" referencia un modelo desconocido "${n.model}"`);
+        errors.push(`el nodo ${nodeLabel(n, false)} referencia un modelo desconocido "${n.model}"`);
       }
     }
   }
 
   // Acyclicity except loop boundaries.
   collectCycleErrors(graph, byId, errors);
+
+  // Connectivity: reachability from start, path to an end, broken routes.
+  collectConnectivityErrors(graph, byId, errors);
 
   return { ok: errors.length === 0, errors };
 }
@@ -234,7 +253,7 @@ function collectCycleErrors(
         const legal = isInsideSingleLoopBody(id, to, byId);
         if (!legal) {
           errors.push(
-            `el grafo "${graph.id}" contiene un ciclo (arista ${id} → ${to}) fuera de un loop válido`,
+            `el grafo "${graph.id}" contiene un ciclo (arista ${nodeLabel(n)} → ${nodeLabel(byId.get(to)!)}) fuera de un loop válido`,
           );
         }
         continue;
@@ -269,6 +288,127 @@ function isInsideSingleLoopBody(
     if (fromInBody && toInBody) return true;
   }
   return false;
+}
+
+/**
+ * Connectivity invariants over the EFFECTIVE edge set.
+ *
+ * The adjacency replicates the engine's synthesis (graph-engine.ts:114-140):
+ * loop bodies auto-chain `body[0] → … → body[last] → loop` and real edges
+ * leaving a body member are stale under the auto-chain model (dropped). The
+ * validator additionally treats the routes the engine executes as jumps —
+ * `loop` → `body[0]` (the engine enters the body directly) and `on_429` /
+ * `tool_calls_route` → their target — so fallback targets with no real
+ * incoming edge still count as reachable.
+ *
+ * Rules enforced:
+ *   A — every node is reachable from the (single) start node.
+ *   B — every node has a path to some end node (reverse reachability).
+ *   C — every `on_429` / `tool_calls_route` target exists.
+ */
+function collectConnectivityErrors(
+  graph: GraphPipeline,
+  byId: Map<string, GraphNode>,
+  errors: string[],
+): void {
+  const bodyOf = new Map<string, string>();
+  for (const n of graph.nodes) {
+    if (n.type === "loop" && Array.isArray(n.body) && n.body.length > 0) {
+      for (const memberId of n.body) {
+        if (!bodyOf.has(memberId)) bodyOf.set(memberId, n.id);
+      }
+    }
+  }
+  const out = new Map<string, string[]>();
+  const rev = new Map<string, string[]>();
+  const addEdge = (from: string, to: string): void => {
+    const o = out.get(from) ?? [];
+    o.push(to);
+    out.set(from, o);
+    const r = rev.get(to) ?? [];
+    r.push(from);
+    rev.set(to, r);
+  };
+  // Loop bodies auto-chain: body[0] → … → body[last] → loop.
+  for (const n of graph.nodes) {
+    if (n.type === "loop" && Array.isArray(n.body) && n.body.length > 0) {
+      const seq = n.body;
+      for (let i = 0; i < seq.length - 1; i++) {
+        if (seq[i] && seq[i + 1]) addEdge(seq[i], seq[i + 1]);
+      }
+      if (seq[seq.length - 1]) addEdge(seq[seq.length - 1], n.id);
+      // Engine jump: the loop case enters the body via walk(body[0]).
+      if (seq[0]) addEdge(n.id, seq[0]);
+    }
+  }
+  // Real edges, minus stale ones leaving a body member.
+  for (const e of graph.edges) {
+    if (bodyOf.has(e.from)) continue;
+    addEdge(e.from, e.to);
+  }
+  // Validator-only jumps: the engine reroutes execution to these targets
+  // (429 fallback / tool-calls), so existing targets count as reachable.
+  for (const n of graph.nodes) {
+    if (n.on_429 && byId.has(n.on_429)) addEdge(n.id, n.on_429);
+    if (n.tool_calls_route && byId.has(n.tool_calls_route)) addEdge(n.id, n.tool_calls_route);
+  }
+
+  // Broken routes: a fallback/tool-calls target that does not exist.
+  for (const n of graph.nodes) {
+    if (n.on_429 && !byId.has(n.on_429)) {
+      errors.push(`el nodo ${nodeLabel(n)} referencia un destino on_429 inexistente ("${n.on_429}")`);
+    }
+    if (n.tool_calls_route && !byId.has(n.tool_calls_route)) {
+      errors.push(
+        `el nodo ${nodeLabel(n)} referencia un destino tool_calls_route inexistente ("${n.tool_calls_route}")`,
+      );
+    }
+  }
+
+  const starts = graph.nodes.filter((n) => n.type === "start");
+  const ends = graph.nodes.filter((n) => n.type === "end");
+
+  // Rule A — every node reachable from the single start (the existing
+  // exactly-one-start rule already reports a wrong start count, so skip).
+  if (starts.length === 1) {
+    const visited = new Set<string>([starts[0].id]);
+    const queue = [...(out.get(starts[0].id) ?? [])];
+    for (let i = 0; i < queue.length; i++) {
+      const id = queue[i];
+      if (visited.has(id)) continue;
+      visited.add(id);
+      for (const next of out.get(id) ?? []) {
+        if (!visited.has(next)) queue.push(next);
+      }
+    }
+    for (const n of graph.nodes) {
+      if (!visited.has(n.id)) {
+        errors.push(`el nodo ${nodeLabel(n)} no es alcanzable desde start (quedó desconectado)`);
+      }
+    }
+  }
+
+  // Rule B — every node can reach some end (reverse BFS from every end; the
+  // existing at-least-one-end rule reports a missing end, so skip when none).
+  if (ends.length > 0) {
+    const visited = new Set<string>(ends.map((e) => e.id));
+    const queue = [...visited];
+    for (let i = 0; i < queue.length; i++) {
+      const id = queue[i];
+      for (const prev of rev.get(id) ?? []) {
+        if (!visited.has(prev)) {
+          visited.add(prev);
+          queue.push(prev);
+        }
+      }
+    }
+    for (const n of graph.nodes) {
+      if (n.type === "end") continue;
+      if (!visited.has(n.id)) {
+        errors.push(`el nodo ${nodeLabel(n)} no tiene un camino hacia un nodo end (queda colgado)`);
+      }
+    }
+  }
 }
 
 // ── Task 2.2: SAFE AST ────────────────────────────────────────────────────

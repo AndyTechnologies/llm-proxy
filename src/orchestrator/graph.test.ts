@@ -174,6 +174,236 @@ describe("validateGraph — structural invariants", () => {
     const result = validateGraph(graph);
     expect(result.ok).toBe(true);
   });
+
+  test("rejects a node disconnected from the graph", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        llm("a"),
+        llm("b"), // isolated: no edges at all
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /no es alcanzable|desconectado/.test(e))).toBe(true);
+  });
+
+  test("rejects a reachable node with no path to an end (dead end)", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        llm("a"),
+        llm("b"), // reachable via a, but b has no outgoing edge
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+        { from: "a", to: "b" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /camino hacia un nodo end/.test(e))).toBe(true);
+  });
+
+  test("accepts a loop whose members are chained only by body (auto-chain)", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("loop", "loop", { body: ["m1", "m2"] }),
+        llm("m1"),
+        llm("m2"),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "loop" },
+        { from: "loop", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts an on_429 fallback target that has no incoming edge", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { on_429: "retry" }),
+        llm("retry"), // reached only via the virtual on_429 edge from a
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+        { from: "retry", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects an on_429 target that does not exist", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { on_429: "ghost" }),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /on_429/.test(e) && /inexistente/.test(e))).toBe(true);
+  });
+
+  test("rejects a tool_calls_route target that does not exist", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { tool_calls_route: "ghost" }),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /tool_calls_route/.test(e) && /inexistente/.test(e))).toBe(true);
+  });
+
+  test("rejects a start with no outgoing edge (nothing reachable)", () => {
+    const graph = makeGraph(
+      [node("start", "start"), node("end", "end")],
+      [],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /no es alcanzable|camino/.test(e))).toBe(true);
+  });
+
+  test("rejects a loop whose exit never reaches an end", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("loop", "loop", { body: ["m1"] }),
+        llm("m1"),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "loop" },
+        { from: "loop", to: "m1" },
+        { from: "m1", to: "loop" }, // valid loop boundary, but no exit toward end
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /camino hacia un nodo end/.test(e))).toBe(true);
+  });
+});
+
+describe("validateGraph — readable node labels in errors", () => {
+  test("names a disconnected llm_call with its model", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        llm("a"),
+        llm("b"), // isolated: no edges at all
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    const hit = result.errors.find((e) => /no es alcanzable/.test(e)) ?? "";
+    expect(hit).toContain("LLM_CALL de modelo gemma (b)");
+  });
+
+  test("names a dead-end llm_call with its model", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        llm("a"),
+        llm("b"), // reachable via a, but b has no outgoing edge
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+        { from: "a", to: "b" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    const hit = result.errors.find((e) => /camino hacia un nodo end/.test(e)) ?? "";
+    expect(hit).toContain("LLM_CALL de modelo gemma (b)");
+  });
+
+  test("uses the plain type label when an llm_call has no model", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("a", "llm_call"), // missing model
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    const hit = result.errors.find((e) => /campo obligatorio/.test(e)) ?? "";
+    expect(hit).toContain("LLM_CALL (a)");
+    expect(hit).not.toContain("de modelo");
+  });
+
+  test("does not duplicate the model in the unknown-model error", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        llm("a", { model: "nope" }),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "a" },
+        { from: "a", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    const hit = result.errors.find((e) => /modelo desconocido/.test(e)) ?? "";
+    expect(hit).toContain("LLM_CALL (a)");
+    expect(hit).toContain('"nope"');
+  });
+
+  test("labels non-llm node types with their upper-cased type", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("loop", "loop"), // missing body
+        llm("a"),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "loop" },
+        { from: "loop", to: "a" },
+        { from: "loop", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    const hit = result.errors.find((e) => /campo obligatorio/.test(e)) ?? "";
+    expect(hit).toContain("LOOP (loop)");
+  });
 });
 
 describe("validateGraph — required fields per node type", () => {
