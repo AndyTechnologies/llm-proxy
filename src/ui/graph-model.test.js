@@ -37,6 +37,12 @@ import {
   stackLoopMembers,
   ownerLoopId,
   stripLoopInternalEdges,
+  llmModeLegible,
+  describeLlmCall,
+  describePipeline,
+  paramsToRows,
+  rowsToParams,
+  describeLoop,
 } from "./graph-model.js";
 
 describe("graph-model: createNode defaults", () => {
@@ -514,5 +520,152 @@ describe("graph-model: describeCondition (lectura natural en espanol)", () => {
     expect(describeCondition({ op: "exists" })).toBe("");
     expect(describeCondition({ op: "not" })).toBe("");
     expect(describeCondition({ op: "logical", and: true, args: [] })).toBe("");
+  });
+});
+
+describe("graph-model: llmModeLegible (modo de llm_call legible)", () => {
+  it("mapea los tres modos del engine a etiquetas en espanol", () => {
+    expect(llmModeLegible("generate")).toBe("Generar");
+    expect(llmModeLegible("refine")).toBe("Refinar");
+    expect(llmModeLegible("passthrough")).toBe("Pasar");
+  });
+
+  it("trata la ausencia de modo como Generar (default del engine)", () => {
+    expect(llmModeLegible(undefined)).toBe("Generar");
+    expect(llmModeLegible(null)).toBe("Generar");
+    expect(llmModeLegible("")).toBe("Generar");
+  });
+
+  it("devuelve el valor crudo para modos desconocidos", () => {
+    expect(llmModeLegible("custom_mode")).toBe("custom_mode");
+  });
+});
+
+describe("graph-model: describeLlmCall (lenguaje viviente en el nodo)", () => {
+  it("describe modelo, modo y ctx del override", () => {
+    const node = { type: "llm_call", model: "Qwen2.5-Coder", mode: "generate", params: { ctx: "8192" } };
+    expect(describeLlmCall(node)).toBe("Qwen2.5-Coder \u00b7 generar \u00b7 ctx 8192");
+  });
+
+  it("modo refine baja a minuscula y no lleva ctx si no hay", () => {
+    expect(describeLlmCall({ model: "m", mode: "refine" })).toBe("m \u00b7 refinar");
+  });
+
+  it("trunca el prompt de sistema a ~24 caracteres con ellipsis", () => {
+    const node = { model: "m", system: "aaaa bbbb cccc dddd eeee ffff" };
+    expect(describeLlmCall(node)).toBe('m \u00b7 generar \u00b7 sys "aaaa bbbb cccc dddd eeee\u2026"');
+  });
+
+  it("colapsa saltos de linea del system antes de truncar", () => {
+    const node = { model: "m", system: "line one\n   line two" };
+    expect(describeLlmCall(node)).toBe('m \u00b7 generar \u00b7 sys "line one line two"');
+  });
+
+  it("omite sys cuando no hay prompt de sistema", () => {
+    expect(describeLlmCall({ model: "Qwen2.5-Coder", mode: "passthrough" })).toBe("Qwen2.5-Coder \u00b7 pasar");
+  });
+
+  it("lee ctx directo del nodo (carga legada) o del override params.ctx", () => {
+    expect(describeLlmCall({ model: "m", ctx: 4096 })).toBe("m \u00b7 generar \u00b7 ctx 4096");
+    expect(describeLlmCall({ model: "m", params: { ctx: "4096" } })).toBe("m \u00b7 generar \u00b7 ctx 4096");
+  });
+
+  it("muestra sin modelo para un llm_call incompleto", () => {
+    expect(describeLlmCall({ type: "llm_call" })).toBe("sin modelo \u00b7 generar");
+  });
+
+  it("devuelve cadena vacia para entradas no object (nunca lanza)", () => {
+    expect(describeLlmCall(null)).toBe("");
+    expect(describeLlmCall(undefined)).toBe("");
+    expect(describeLlmCall("nope")).toBe("");
+  });
+});
+
+describe("graph-model: describePipeline (lenguaje viviente en el nodo)", () => {
+  it("describe pipeline hacia el nombre invocado", () => {
+    expect(describePipeline({ type: "pipeline", pipeline: "summarize" })).toBe("pipeline \u2192 summarize");
+  });
+
+  it("cuenta los params cuando hay", () => {
+    const node = { type: "pipeline", pipeline: "summarize", params: { max_tokens: "200", lang: "es" } };
+    expect(describePipeline(node)).toBe("pipeline \u2192 summarize \u00b7 2 params");
+  });
+
+  it("no cuenta params vacios", () => {
+    expect(describePipeline({ pipeline: "x", params: {} })).toBe("pipeline \u2192 x");
+    expect(describePipeline({ pipeline: "x", params: undefined })).toBe("pipeline \u2192 x");
+  });
+
+  it("muestra sin pipeline cuando falta el nombre", () => {
+    expect(describePipeline({ type: "pipeline" })).toBe("pipeline \u2192 sin pipeline");
+  });
+
+  it("devuelve cadena vacia para entradas no object", () => {
+    expect(describePipeline(null)).toBe("");
+  });
+});
+
+describe("graph-model: paramsToRows/rowsToParams (filas clave=valor)", () => {
+  it("paramsToRows transforma un Record en filas {key, value} en orden", () => {
+    expect(paramsToRows({ a: "1", b: "2" })).toEqual([
+      { key: "a", value: "1" },
+      { key: "b", value: "2" },
+    ]);
+  });
+
+  it("paramsToRows devuelve [] para params ausentes o no object", () => {
+    expect(paramsToRows(undefined)).toEqual([]);
+    expect(paramsToRows(null)).toEqual([]);
+    expect(paramsToRows("nope")).toEqual([]);
+  });
+
+  it("paramsToRows convierte valores numericos a string (contrato del schema)", () => {
+    expect(paramsToRows({ n: 42 })).toEqual([{ key: "n", value: "42" }]);
+  });
+
+  it("rowsToParams filtra filas con clave vacia o solo espacios", () => {
+    expect(
+      rowsToParams([
+        { key: "a", value: "1" },
+        { key: "", value: "2" },
+        { key: "   ", value: "3" },
+      ]),
+    ).toEqual({ a: "1" });
+  });
+
+  it("rowsToParams recorta la clave y preserva valores vacios", () => {
+    expect(rowsToParams([{ key: "  model ", value: "" }])).toEqual({ model: "" });
+  });
+
+  it("round-trip estable: rowsToParams(paramsToRows(p)) === p", () => {
+    const p = { model: "qwen", max_tokens: "128", lang: "es" };
+    expect(rowsToParams(paramsToRows(p))).toEqual(p);
+  });
+
+  it("rowsToParams ignora filas no object y no Array", () => {
+    expect(rowsToParams([null, undefined, "x"])).toEqual({});
+    expect(rowsToParams(null)).toEqual({});
+  });
+});
+
+describe("graph-model: describeLoop (condicion de salida del bucle)", () => {
+  it("describe la condicion de salida con la frase de describeCondition", () => {
+    const loop = {
+      type: "loop",
+      body: ["a"],
+      condition: { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+    };
+    expect(describeLoop(loop)).toBe("Estado de la última respuesta es igual a 200");
+  });
+
+  it("devuelve cadena vacia si el bucle no tiene condicion", () => {
+    expect(describeLoop({ type: "loop", body: [] })).toBe("");
+    expect(describeLoop({ type: "loop", condition: null })).toBe("");
+  });
+
+  it("devuelve cadena vacia para entradas invalidas (nunca lanza)", () => {
+    expect(describeLoop(null)).toBe("");
+    expect(describeLoop(undefined)).toBe("");
+    expect(describeLoop("nope")).toBe("");
   });
 });

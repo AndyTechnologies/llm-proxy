@@ -469,3 +469,101 @@ function fieldChild(form) {
   if (!form) return null;
   return buildCondition({ op: form.op, field: form.field, op2: form.op2, value: form.value });
 }
+
+/**
+ * Human-readable Spanish label for an llm_call mode. The engine defaults an
+ * absent mode to "generate" (payloadFor), so a missing/empty mode reads as
+ * "Generar"; unknown values fall back to their raw string.
+ */
+export function llmModeLegible(mode) {
+  const labels = {
+    generate: "Generar",
+    refine: "Refinar",
+    passthrough: "Pasar",
+  };
+  if (mode == null || mode === "") return "Generar";
+  return labels[mode] ?? String(mode);
+}
+
+/** Max preview length for the system-prompt snippet inside `describeLlmCall`. */
+const SYS_PREVIEW_MAX = 24;
+
+/** Collapse whitespace and truncate a system prompt to a readable snippet. */
+function truncateSys(text) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > SYS_PREVIEW_MAX
+    ? `${flat.slice(0, SYS_PREVIEW_MAX).trimEnd()}\u2026`
+    : flat;
+}
+
+/**
+ * Living-language preview for an llm_call node: "model · mode · ctx N
+ * [· sys "…"]". `ctx` reads either the schema-level `ctx` field (legacy load
+ * path) or the editor's `params.ctx` override. Pure — the SVG renderer
+ * truncates further to fit the node body.
+ */
+export function describeLlmCall(node) {
+  if (!node || typeof node !== "object") return "";
+  const parts = [node.model ?? "sin modelo"];
+  const modeWord = llmModeLegible(node.mode);
+  parts.push(`${modeWord.charAt(0).toLowerCase()}${modeWord.slice(1)}`);
+  const ctx = node.params?.ctx ?? node.ctx;
+  if (ctx != null && ctx !== "") parts.push(`ctx ${ctx}`);
+  if (typeof node.system === "string" && node.system.trim() !== "") {
+    parts.push(`sys "${truncateSys(node.system)}"`);
+  }
+  return parts.join(" \u00b7 ");
+}
+
+/**
+ * Living-language preview for a pipeline node: "pipeline → name [· N params]".
+ * The param count covers the node's own keys (a pipeline may carry none).
+ */
+export function describePipeline(node) {
+  if (!node || typeof node !== "object") return "";
+  let text = `pipeline \u2192 ${node.pipeline ?? "sin pipeline"}`;
+  const p = node.params;
+  if (p && typeof p === "object") {
+    const count = Object.keys(p).length;
+    if (count > 0) text += ` \u00b7 ${count} params`;
+  }
+  return text;
+}
+
+/**
+ * Split a params record into editable key/value rows. Absent or non-object
+ * params yield []. Values are stringified — the schema types params as
+ * `Record<string, string>`.
+ */
+export function paramsToRows(params) {
+  if (!params || typeof params !== "object") return [];
+  return Object.entries(params).map(([key, value]) => ({ key, value: String(value) }));
+}
+
+/**
+ * Serialize key/value rows back into a params record, dropping rows whose key
+ * is empty or whitespace-only (the UI flags those rows as invalid). Keys are
+ * trimmed; values are kept stringified. Round-trips stably with `paramsToRows`.
+ */
+export function rowsToParams(rows) {
+  if (!Array.isArray(rows)) return {};
+  const out = {};
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const key = typeof row.key === "string" ? row.key.trim() : "";
+    if (key === "") continue;
+    out[key] = String(row.value ?? "");
+  }
+  return out;
+}
+
+/**
+ * Living-language preview for a loop's exit condition: `describeCondition`'s
+ * sentence, or "" when the loop has none. The engine runs the body and exits
+ * once the condition holds (do-while, see graph-engine), so the phrase states
+ * the exit predicate directly — no "while" prefix that would read inverted.
+ */
+export function describeLoop(node) {
+  if (!node || typeof node !== "object") return "";
+  return describeCondition(node.condition);
+}

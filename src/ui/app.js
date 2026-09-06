@@ -34,6 +34,11 @@ import {
   stackLoopMembers,
   ownerLoopId,
   stripLoopInternalEdges,
+  describeLlmCall,
+  describePipeline,
+  paramsToRows,
+  rowsToParams,
+  describeLoop,
 } from "./graph-model.js";
 
 // ── Estado ────────────────────────────────────────────────────────────────
@@ -52,6 +57,11 @@ const state = {
 };
 
 const NS = "http://www.w3.org/2000/svg";
+
+// Estado de UI del inspector que NO puede vivir en el nodo (el schema es
+// `.strict()` y rechaza keys ajenas): la pestana activa por nodo. Se limpia
+// junto con el nodo en removeNode para que no se acumule.
+const inspectorTabs = new Map();
 
 // ── Referencias al DOM ────────────────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
@@ -258,6 +268,7 @@ function removeNode(id) {
   const { nodes, edges } = deleteNode(state.nodes, state.edges, id);
   state.nodes = nodes;
   state.edges = edges;
+  inspectorTabs.delete(id);
   if (state.selectedId === id) state.selectedId = null;
   markDirty();
   render();
@@ -369,6 +380,14 @@ function registerSwitcher() {
   });
 }
 
+// Largo maximo de los previews vivientes dentro de los nodos SVG. La frase
+// completa la arma graph-model (describeLlmCall/describePipeline/describeLoop);
+// aca solo se recorta para que entre en el ancho del nodo (NODE_W 160px).
+const MAX_NODE_PREVIEW = 20;
+function shortText(text, max) {
+  return text.length > max ? `${text.slice(0, max).trimEnd()}\u2026` : text;
+}
+
 function render() {
   svg.replaceChildren();
   // Los miembros del loop se apilan automaticamente (no se mueven a mano).
@@ -459,8 +478,11 @@ function render() {
     hint.setAttribute("x", String(rect.x + rect.width - 12));
     hint.setAttribute("y", String(rect.y + 18));
     hint.setAttribute("text-anchor", "end");
-    hint.textContent = n.condition
-      ? "condicion de salida activa"
+    // Preview viviente de la condicion de salida (lenguaje natural), igual
+    // que en el nodo: se reemplaza el texto generico por la frase truncada.
+    const loopCondPreview = describeLoop(n);
+    hint.textContent = loopCondPreview
+      ? shortText(loopCondPreview, MAX_NODE_PREVIEW)
       : members > 0
         ? "sin conexiones: el orden lo dan las flechas"
         : "hace clic en + para agregar";
@@ -582,34 +604,35 @@ function render() {
     const missing = isCompleteNode(n) ? "" : " \u00b7";
     lbl.textContent = `${n.type}${missing}`;
 
-    // Subtitulo con modelo/pipeline — debe ir DESPUES del rect para renderizar encima.
-    const sub = n.model ?? n.pipeline;
+    // Subtitulo vivo (lenguaje del nodo): preview legible de lo que hara el
+    // bloque. Debe ir DESPUES del rect para renderizar encima.
     let subLbl = null;
-    if (sub) {
+    const liveText = n.type === "llm_call"
+      ? describeLlmCall(n)
+      : n.type === "pipeline"
+        ? describePipeline(n)
+        : "";
+    if (liveText) {
       subLbl = document.createElementNS(NS, "text");
-      subLbl.setAttribute("class", "node-sub");
+      subLbl.setAttribute("class", `node-sub node-sub--${n.type}`);
       subLbl.setAttribute("x", String(p.x + NODE_W / 2));
       subLbl.setAttribute("y", String(p.y + NODE_H - 14));
       subLbl.setAttribute("text-anchor", "middle");
-      subLbl.textContent = sub;
+      subLbl.textContent = shortText(liveText, MAX_NODE_PREVIEW);
     }
 
-    // Preview legible de la condicion bajo el titulo (los condition no llevan
-    // model/pipeline, asi que esta posicion del subtitulo queda libre).
+    // Preview legible de la condicion bajo el titulo (condition y loop usan
+    // el mismo AST; el loop muestra su condicion de salida).
     let condSub = null;
-    if (n.type === "condition" && n.condition) {
-      const condText = describeCondition(n.condition);
+    if ((n.type === "condition" || n.type === "loop") && n.condition) {
+      const condText = n.type === "loop" ? describeLoop(n) : describeCondition(n.condition);
       if (condText) {
-        const MAX_COND_PREVIEW = 20;
-        const short = condText.length > MAX_COND_PREVIEW
-          ? `${condText.slice(0, MAX_COND_PREVIEW).trimEnd()}\u2026`
-          : condText;
         condSub = document.createElementNS(NS, "text");
-        condSub.setAttribute("class", "node-sub node-sub--cond");
+        condSub.setAttribute("class", `node-sub node-sub--${n.type}`);
         condSub.setAttribute("x", String(p.x + NODE_W / 2));
         condSub.setAttribute("y", String(p.y + NODE_H - 14));
         condSub.setAttribute("text-anchor", "middle");
-        condSub.textContent = short;
+        condSub.textContent = shortText(condText, MAX_NODE_PREVIEW);
       }
     }
 
@@ -972,11 +995,118 @@ function openInspector(node) {
     .map((m) => `<option value="${m.id}" ${node.model === m.id ? "selected" : ""}>${m.id}</option>`)
     .join("");
 
+  const ctxHtml = node.type === "llm_call" ? contextEditorHtml(node) : "";
+
+  // Pestana activa por nodo (no puede vivir en el nodo: schema estricto).
+  const activeTab = inspectorTabs.get(node.id) ?? "basica";
+  const tabNames = [
+    ["basica", "Config. b\u00e1sica"],
+    ["prompt", "Prompt"],
+    ["avanzado", "Avanzado"],
+  ];
+  // Solo las pestañas que aplican a este tipo se muestran; son tres para
+  // llm_call y ninguna para start/end.
+  const tabKeys = node.type === "llm_call" ? ["basica", "prompt", "avanzado"] : [];
+  // Si una pestaña ya no aplica (nodo recargado con otro tipo), caer a basica.
+  const effectiveTab = tabKeys.includes(activeTab) ? activeTab : "basica";
+  const tabNameOf = (k) => (tabNames.find(([key]) => key === k) ?? [k, k])[1];
+  const tabRowHtml =
+    tabKeys.length > 0
+      ? `<div class="inspector-tabs" role="tablist" aria-label="Opciones del nodo">
+           ${tabKeys.map((k) => `<button type="button" class="tab-btn" role="tab" aria-selected="${k === effectiveTab ? "true" : "false"}" data-tab="${k}" aria-controls="tab-panel-${k}">${esc(tabNameOf(k))}</button>`).join("")}
+         </div>`
+      : "";
+
+  const field = (label, inner, labelFor) =>
+    `<div class="field">${labelFor ? `<label for="${labelFor}">${label}</label>` : `<span class="field-label">${label}</span>`}${inner}</div>`;
+
+  const MODES = [
+    ["generate", "Generar", "el modelo responde al prompt (historial tal cual)."],
+    ["refine", "Refinar", "re-alimenta la \u00faltima respuesta del paso como nueva instrucci\u00f3n."],
+    ["passthrough", "Pasar", "replica el texto original sin llamar al modelo."],
+  ];
+  const baseTab = node.type === "llm_call"
+    ? `${field("ID", `<div class="primary">${esc(node.id)}</div>`)}
+      ${field("Tipo", `<div>${esc(node.type)}</div>`)}
+      ${field("Modelo", `<select id="node-model">${modelOpts}</select>`, "node-model")}
+      ${field("Modo", `
+        <div class="mode-pills" role="radiogroup" aria-label="Modo de la llamada">
+          ${MODES.map(([val, lbl]) => {
+            const isSel = (node.mode ?? "generate") === val;
+            return `<button type="button" class="mode-pill${isSel ? " is-active" : ""}" role="radio" aria-checked="${isSel ? "true" : "false"}" data-mode="${val}">${esc(lbl)}</button>`;
+          }).join("")}
+        </div>
+        <div class="hint" id="mode-help">${esc(MODES.find(([v]) => v === (node.mode ?? "generate"))?.[2] ?? "")}</div>`)}
+      ${ctxHtml}`
+    : "";
+
+  const promptTab = node.type === "llm_call"
+    ? `${field("Prompt del sistema (opcional)", `
+        <textarea id="node-system" rows="4" aria-label="Prompt del sistema">${esc(node.system ?? "")}</textarea>
+        <div class="char-counter" id="node-system-count">${node.system ? node.system.length : 0} caracteres</div>`, "node-system")}
+      ${field("Scaffold de asistente (opcional)", `
+        <textarea id="node-assistant" rows="3" aria-label="Scaffold de asistente">${esc(node.assistant ?? "")}</textarea>
+        <div class="hint">Se antepone al historial en modos generar/refinar.</div>
+        <div class="char-counter" id="node-assistant-count">${node.assistant ? node.assistant.length : 0} caracteres</div>`, "node-assistant")}`
+    : "";
+
+  const targetOpts = (cur) => {
+    const opts = state.nodes
+      .filter((n) => n.id !== node.id)
+      .map((n) => `<option value="${n.id}" ${cur === n.id ? "selected" : ""}>${esc(nodeIdForSelect(n))}</option>`)
+      .join("");
+    // Ruta huerfana (apunta a un nodo borrado): se muestra y se conserva en
+    // vez de perderse silenciosamente; editarla la reemplaza o limpia.
+    const orphan = cur ? !state.nodes.some((n) => n.id === cur) : false;
+    return opts + (orphan ? `<option value="${cur}" selected>${esc(cur)} (nodo inexistente)</option>` : "");
+  };
+
+  const advancedTab = node.type === "llm_call"
+    ? `${field("Si responde 429 \u2192 (opcional)", `
+        <select id="node-on-429"><option value="" ${!node.on_429 ? "selected" : ""}>\u2014 sin ruta \u2014</option>${targetOpts(node.on_429)}</select>
+        <div class="hint">Cuando el modelo responde con un c\u00f3digo 429 (l\u00edmite de velocidad), continuar desde este nodo.</div>`, "node-on-429")}
+      ${field("Si responde con tool_calls \u2192 (opcional)", `
+        <select id="node-tool-calls-route"><option value="" ${!node.tool_calls_route ? "selected" : ""}>\u2014 sin ruta \u2014</option>${targetOpts(node.tool_calls_route)}</select>
+        <div class="hint">Cuando el modelo pide herramientas, continuar desde este nodo (con los resultados disponibles como contexto).</div>`, "node-tool-calls-route")}
+      ${field("Proveedor (opcional)", `
+        <input id="node-provider" class="text-input" type="text" value="${esc(node.provider ?? "")}" placeholder="llama-server" aria-label="Proveedor" />
+        <div class="hint">Proveedor que ejecuta este nodo; vac\u00edo usa el de la pipeline (por defecto llama-server). Sin una lista fiable en el estado, se escribe a mano.</div>`, "node-provider")}`
+    : "";
+
+  const paramsHtml = (node) =>
+    `<div class="field"><span class="field-label">Par\u00e1metros del pipeline (opcional)</span>
+      <div class="hint">Pasamos estos <code>clave=valor</code> como opciones de ejecuci\u00f3n del pipeline invocado.</div>
+      <div class="param-rows" id="param-rows">
+        ${paramsToRows(node.params).map((row, idx) => paramRowHtml(row, idx)).join("")}
+      </div>
+      <button type="button" class="btn btn-ghost" id="params-add">+ Agregar par\u00e1metro</button>
+      <div class="cond-row-error param-rows-error" hidden>Complet\u00e1 la clave de cada par\u00e1metro (la fila vac\u00eda se descarta al guardar).</div>
+    </div>`;
+
+  const connectionCnx = `<div class="field"><span class="field-label">Conexi\u00f3n</span>
+      <div class="hint">Arrastra el puerto derecho (<b>\u25cf</b>) de un nodo sobre el puerto izquierdo (<b>\u25cf</b>) de otro para conectarlos. Arrastra por el cuerpo para mover.</div>
+    </div>`;
+
+  const guardField =
+    node.type === "llm_call" || node.type === "pipeline"
+      ? `${field("Guardia de salida (rama)", `
+          <select id="node-guard"><option value="">\u2014 sin guardia \u2014</option>
+          <option value="true" ${nodeEdgeGuard(node) === "true" ? "selected" : ""}>S\u00ed (true)</option>
+          <option value="false" ${nodeEdgeGuard(node) === "false" ? "selected" : ""}>No (false)</option></select>
+          <div class="hint">Marca la arista saliente como rama S\u00ed/No; \u00fatil cuando este nodo est\u00e1 seguido por una condici\u00f3n.</div>`, "node-guard")} `
+      : "";
+
+  const endpointCnx = node.type === "start"
+    ? `<div class="field"><span class="field-label">Inicio</span><div class="hint">El pipeline arranca ac\u00e1.</div></div>`
+    : node.type === "end"
+      ? `<div class="field"><span class="field-label">Fin</span><div class="hint">El pipeline termina ac\u00e1.</div></div>`
+      : "";
+
   const conditionArea =
     node.type === "condition" || node.type === "loop"
       ? `<div class="field">
-           <span class="field-label" id="cond-label-${node.id}">${node.type === "loop" ? "Condicion de salida" : "Condicion"}</span>
-           ${node.type === "loop" ? `<div class="hint">El bucle sale apenas la condicion se cumple. Sin condicion, corre hasta el tope.</div>` : ""}
+           <span class="field-label" id="cond-label-${node.id}">${node.type === "loop" ? "Condici\u00f3n de salida" : "Condici\u00f3n"}</span>
+           ${node.type === "loop" ? `<div class="hint">Escrita en lenguaje natural; el bucle sale apenas se cumple. Sin condici\u00f3n, corre hasta el tope. El orden del cuerpo lo dan las flechas.</div>` : ""}
            <div class="ast-builder" id="cond-builder-${node.id}" aria-labelledby="cond-label-${node.id}">
              ${conditionBuilderHtml(node)}
            </div>
@@ -999,28 +1129,65 @@ function openInspector(node) {
          </div>`
       : "";
 
-  const ctxHtml = node.type === "llm_call" ? contextEditorHtml(node) : "";
+  // ── Bloque de pestañas ────────────────────────────────────────────────
+  // Se renderizan las 3 pestañas en el DOM con la activa visible (hidden en
+  // las otras) para que los controles conserven su estado al alternar.
+  let paneHtml = "";
+  if (tabKeys.length > 0) {
+    paneHtml = [
+      ["basica", baseTab, "b\u00e1sica"],
+      ["prompt", promptTab, "prompt"],
+      ["avanzado", advancedTab, "avanzado"],
+    ]
+      .filter(([k]) => tabKeys.includes(k))
+      .map(
+        ([key, html, label]) =>
+          `<div class="inspector-tab-panel" role="tabpanel" aria-label="${esc(label)}" data-tab-panel="${key}"${key === effectiveTab ? "" : " hidden"}>${html}</div>`,
+      )
+      .join("");
+  } else {
+    // Sin pestañas: pipeline agrega nombre + params; los demas (start/end/loop)
+    // muestran sus campos especificos. El guardia solo aplica a llm_call y
+    // pipeline, que no vienen por aca salvo que no tengan tabs (no es el caso).
+    paneHtml = `${node.type === "pipeline" ? `${field("Pipeline", `<input id="node-pipeline" class="text-input" type="text" value="${esc(node.pipeline ?? "")}" aria-label="Nombre del pipeline" />`, "node-pipeline")}${paramsHtml(node)}` : ""}
+      ${conditionArea}
+      ${loopMembers}
+      ${guardField}
+      ${connectionCnx}
+      ${endpointCnx}`;
+  }
 
-  body.innerHTML = `
-    <div class="field"><label>ID</label><div class="primary">${node.id}</div></div>
-    <div class="field"><label>Tipo</label><div>${node.type}</div></div>
-    ${node.type === "llm_call" ? `<div class="field"><label for="node-model">Modelo</label>
-      <select id="node-model">${modelOpts}</select></div>` : ""}
-    ${ctxHtml}
-    ${node.type === "pipeline" ? `<div class="field"><label for="node-pipeline">Pipeline</label>
-      <input id="node-pipeline" class="text-input" type="text" value="${node.pipeline ?? ""}" aria-label="Nombre del pipeline" /></div>` : ""}
-    ${conditionArea}
-    ${loopMembers}
-    ${node.type !== "condition" && node.type !== "loop" ? `<div class="field"><label for="node-guard">Guardia (rama condicional)</label>
-      <select id="node-guard"><option value="">ninguna</option>
-      <option value="true" ${nodeEdgeGuard(node) === "true" ? "selected" : ""}>true</option>
-      <option value="false" ${nodeEdgeGuard(node) === "false" ? "selected" : ""}>false</option></select>
-    </div>` : ""}
-    <div class="field"><label>Conexion</label>
-      <div class="hint">Arrastra el puerto derecho (●) de un nodo sobre el puerto izquierdo (●) de otro para conectarlos. Arrastra por el cuerpo para mover.</div>
-    </div>`;
-
+  body.innerHTML = tabRowHtml + paneHtml;
   body.dataset.nodeId = node.id;
+
+  // Alternar pestañas (aplica a llm_call): guarda la activa en el Map por nodo.
+  const tabBtns = [...body.querySelectorAll("[data-tab]")];
+  const activateTab = (tab, focus = false) => {
+    inspectorTabs.set(node.id, tab);
+    tabBtns.forEach((b) => {
+      const sel = b.dataset.tab === tab;
+      b.classList.toggle("is-active", sel);
+      b.setAttribute("aria-selected", sel ? "true" : "false");
+    });
+    body.querySelectorAll("[data-tab-panel]").forEach((p) => {
+      p.hidden = p.dataset.tabPanel !== tab;
+    });
+    if (focus) {
+      // El primer foco de la pestaña recien activada queda en el primer control.
+      body.querySelector(`[data-tab-panel="${tab}"]`)?.querySelector("input, select, textarea, button")?.focus();
+    }
+  };
+  tabBtns.forEach((btn, i) => {
+    btn.addEventListener("click", () => activateTab(btn.dataset.tab));
+    btn.addEventListener("keydown", (ev) => {
+      // Flechas izquierda/derecha rotan entre pestañas (patron ARIA tabs).
+      if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+      ev.preventDefault();
+      const dir = ev.key === "ArrowRight" ? 1 : -1;
+      const next = tabBtns[(i + dir + tabBtns.length) % tabBtns.length];
+      activateTab(next.dataset.tab, true);
+    });
+  });
 
   if (node.type === "loop") {
     const reorder = (memberId, dir) => {
@@ -1092,6 +1259,68 @@ function openInspector(node) {
       wireCtx();
       render();
     });
+    // Pills de modo: escribir n.mode SOLO si difiere del default "generate"
+    // (payload minimo); si eligen Generar, se borra el campo. El inspector no
+    // se re-renderiza con render(), asi que el estado visual se actualiza aca.
+    body.querySelectorAll("[data-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const n = findNode(node.id);
+        if (!n) return;
+        const mode = btn.dataset.mode;
+        if (mode === "generate") delete n.mode;
+        else n.mode = mode;
+        render();
+        body.querySelectorAll("[data-mode]").forEach((b) => {
+          const sel = b === btn;
+          b.classList.toggle("is-active", sel);
+          b.setAttribute("aria-checked", sel ? "true" : "false");
+        });
+        const help = $("#mode-help");
+        if (help) help.textContent = MODES.find(([v]) => v === mode)?.[2] ?? "";
+      });
+    });
+    // Textos del nodo: system / assistant — borrar si quedan vacios.
+    const wireText = (nodeKey, id) => {
+      const el = $(`#${id}`);
+      if (!el) return {};
+      const counter = $(`#${id}-count`);
+      const apply = () => {
+        const n = findNode(node.id);
+        if (!n) return;
+        const v = el.value.trim();
+        if (v) n[nodeKey] = v;
+        else delete n[nodeKey];
+        if (counter) counter.textContent = `${el.value.length} caracteres`;
+        render();
+      };
+      el.addEventListener("input", apply);
+      return { apply };
+    };
+    wireText("system", "node-system");
+    wireText("assistant", "node-assistant");
+    // Ruta 429 / tool_calls hacia otro nodo del grafo.
+    const wireTarget = (nodeKey, id) => {
+      const el = $(`#${id}`);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        const n = findNode(node.id);
+        if (!n) return;
+        if (el.value) n[nodeKey] = el.value;
+        else delete n[nodeKey];
+        render();
+      });
+    };
+    wireTarget("on_429", "node-on-429");
+    wireTarget("tool_calls_route", "node-tool-calls-route");
+    // Proveedor (input honesto, sin select mentiroso).
+    const provEl = $("#node-provider");
+    provEl?.addEventListener("input", () => {
+      const n = findNode(node.id);
+      if (!n) return;
+      const v = provEl.value.trim();
+      if (v) n.provider = v;
+      else delete n.provider;
+    });
   }
   if (node.type === "pipeline") {
     const inp = $("#node-pipeline");
@@ -1101,6 +1330,65 @@ function openInspector(node) {
       if (inp.value) n.pipeline = inp.value;
       render();
     });
+    // Filas-pildora clave=valor para params.
+    const rowsHost = $("#param-rows");
+    const errorEl = $(".param-rows-error");
+    const applyParams = () => {
+      const n = findNode(node.id);
+      if (!n) return;
+      const rows = [...(rowsHost?.querySelectorAll(".param-row") ?? [])].map((row) => ({
+        key: row.querySelector(".param-key")?.value ?? "",
+        value: row.querySelector(".param-value")?.value ?? "",
+      }));
+      // Honestidad: la fila con clave vacia se marca en rojo y se descarta al
+      // serializar (rowsToParams la filtra); nunca se escribe un string vacio.
+      const invalid = rows.filter((r) => r.key.trim() === "").length > 0;
+      (rowsHost?.querySelectorAll(".param-row") ?? []).forEach((row) =>
+        row.classList.toggle("param-row--invalid", (row.querySelector(".param-key")?.value ?? "").trim() === ""),
+      );
+      if (errorEl) errorEl.hidden = !invalid;
+      const params = rowsToParams(rows);
+      if (Object.keys(params).length > 0) n.params = params;
+      else delete n.params;
+      render();
+    };
+    const makeRowEl = (row = { key: "", value: "" }) => {
+      const div = document.createElement("div");
+      div.className = "param-row";
+      div.innerHTML = `
+        <input class="param-key text-input" type="text" value="${esc(row.key)}" placeholder="clave" aria-label="Clave del par\u00e1metro" />
+        <input class="param-value text-input" type="text" value="${esc(row.value)}" placeholder="valor" aria-label="Valor del par\u00e1metro" />
+        <button type="button" class="param-row-remove" title="Quitar par\u00e1metro" aria-label="Quitar par\u00e1metro">\u00d7</button>`;
+      return div;
+    };
+    const wireRow = (rowEl) => {
+      rowEl.querySelector(".param-key")?.addEventListener("input", applyParams);
+      rowEl.querySelector(".param-value")?.addEventListener("input", applyParams);
+      rowEl.querySelector(".param-row-remove")?.addEventListener("click", () => {
+        rowEl.remove();
+        if (rowsHost && rowsHost.children.length === 0) {
+          const fresh = makeRowEl();
+          rowsHost.appendChild(fresh);
+          wireRow(fresh);
+        }
+        applyParams();
+        rowEl.nextElementSibling?.querySelector(".param-key")?.focus()
+          ?? rowsHost?.querySelector(".param-key")?.focus();
+      });
+    };
+    // Filas iniciales (desde paramsToRows) y cualquier fila futura comparten
+    // el mismo wiring; las filas viven en el DOM, nunca en un draft del nodo.
+    (rowsHost?.querySelectorAll(".param-row") ?? []).forEach(wireRow);
+    $("#params-add")?.addEventListener("click", () => {
+      if (!rowsHost) return;
+      if (rowsHost.children.length === 0 || (rowsHost.querySelector(".param-key")?.value ?? "") !== "") {
+        const fresh = makeRowEl();
+        rowsHost.appendChild(fresh);
+        wireRow(fresh);
+      }
+      rowsHost.querySelector(".param-key:last-of-type")?.focus();
+    });
+    applyParams();
   }
   const guardSel = $("#node-guard");
   guardSel?.addEventListener("change", () => {
@@ -1110,6 +1398,22 @@ function openInspector(node) {
     else delete edge.guard;
     render();
   });
+}
+
+/** Renders a single key/value param row for the pipeline inspector. */
+function paramRowHtml(row, idx) {
+  return `
+    <div class="param-row" data-param-idx="${idx}">
+      <input class="param-key text-input" type="text" value="${esc(row.key)}" placeholder="clave" aria-label="Clave del par\u00e1metro ${idx + 1}" />
+      <input class="param-value text-input" type="text" value="${esc(row.value)}" placeholder="valor" aria-label="Valor del par\u00e1metro ${idx + 1}" />
+      <button type="button" class="param-row-remove" title="Quitar par\u00e1metro" aria-label="Quitar par\u00e1metro">\u00d7</button>
+    </div>`;
+}
+
+/** Select label for a node-destination option (human label + id fallback). */
+function nodeIdForSelect(n) {
+  const label = nodeChipLabel(n);
+  return label === n.id ? label : `${label} (${n.id})`;
 }
 
 function nodeEdgeGuard(node) {
@@ -1289,7 +1593,12 @@ function wireConditionBuilder(node) {
 
     builder.querySelector(".cond-combine-wrap")?.classList.toggle("cond-combine-wrap--visible", rows.length >= 2);
     const preview = builder.querySelector(".cond-preview");
-    if (preview) preview.textContent = `Se ejecuta cuando: ${ast ? describeCondition(ast) : "\u2026"}`;
+    if (preview) {
+      // El loop es do-while (el body corre y SALE apenas se cumple), asi que
+      // su frase viviente describe la salida, no la repeticion.
+      const prefix = node.type === "loop" ? "Sale cuando: " : "Se ejecuta cuando: ";
+      preview.textContent = `${prefix}${ast ? describeCondition(ast) : "\u2026"}`;
+    }
 
     const n = findNode(node.id);
     if (!n) return;

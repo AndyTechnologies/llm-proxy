@@ -1165,6 +1165,180 @@ input[type="text"]:focus {
   font-size: 9px;
 }
 
+/* Subtitulos vivientes de llm_call / pipeline / loop (lenguaje del nodo). */
+.node-sub--llm,
+.node-sub--pipeline,
+.node-sub--loop {
+  fill: var(--accent-bright);
+  font-size: 9px;
+}
+
+/* ── Inspector: pestanas (llm_call) ──────────────────────────────────
+   Tres pestanas (Config. basica / Prompt / Avanzado) con rol ARIA tabs.
+   El Map de pestana activa vive en app.js (no puede ir al nodo: schema
+   estricto); aca solo el aspecto visual. */
+.inspector-tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-3);
+}
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.is-active,
+.tab-btn[aria-selected="true"] {
+  color: var(--accent-bright);
+  border-bottom-color: var(--accent);
+}
+
+.tab-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.inspector-tab-panel[hidden] {
+  display: none !important;
+}
+
+/* ── Inspector: pildoras de modo ────────────────────────────────────
+   Misma familia visual que el constructor de condiciones (pildoras). */
+.mode-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.mode-pill {
+  min-height: 32px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mode-pill:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.mode-pill.is-active,
+.mode-pill[aria-checked="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-bright);
+}
+
+.mode-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Inspector: textareas de prompt + contadores ─────────────────── */
+.inspector textarea {
+  width: 100%;
+  font-family: var(--font);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text);
+  resize: vertical;
+}
+
+.inspector textarea:focus {
+  border-color: var(--accent);
+}
+
+.char-counter {
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  text-align: right;
+}
+
+/* ── Inspector: filas clave=valor de parametros ────────────────────
+   Cada fila es una pildora editable; la clave vacia marca la fila en
+   rojo y se descarta al serializar (nunca se escribe un string vacio). */
+.param-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2);
+  margin-bottom: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-base);
+}
+
+.param-row--invalid {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.param-row--invalid .param-key {
+  border-color: var(--danger);
+}
+
+.param-rows-error {
+  flex: 1 1 100%;
+  font-size: 0.78rem;
+  color: var(--danger);
+}
+
+.param-row-remove {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.param-row-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn.btn-ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--accent-bright);
+}
+
+.btn.btn-ghost:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
 /* Etiquetas Si/No junto a los sockets de rama del nodo condicion. */
 .node-branch-label {
   font-family: var(--mono);
