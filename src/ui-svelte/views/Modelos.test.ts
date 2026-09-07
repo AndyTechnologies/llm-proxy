@@ -77,12 +77,12 @@ describe("Modelos view (task 3.3)", () => {
     const { getByTestId } = render(Modelos, { props: { store } });
     const rows = within(getByTestId("models-list")).getAllByRole("listitem");
     expect(rows).toHaveLength(3);
-    // process-loaded model shows the "banner" badge + ctx
+    // process-loaded model shows the "activo en VRAM" badge + ctx
     expect(rows[0]!.textContent).toContain("qwen2.5:7b");
-    expect(rows[0]!.textContent).toContain("banner");
+    expect(rows[0]!.textContent).toContain("activo en VRAM");
     expect(rows[0]!.textContent).toContain("8192");
-    // plain loaded model
-    expect(rows[1]!.textContent).toContain("cargado");
+    // plain loaded model (registered but not in VRAM)
+    expect(rows[1]!.textContent).toContain("registrado");
     // unloaded model
     expect(rows[2]!.textContent).toContain("descargado");
   });

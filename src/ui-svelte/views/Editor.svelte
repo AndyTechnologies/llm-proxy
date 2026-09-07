@@ -87,6 +87,16 @@
 
   const selection = $derived($store.selection);
 
+  const selectedNode = $derived(
+    $store.selection.length > 0
+      ? $store.nodes.find((n) => n.id === $store.selection[0]) ?? null
+      : null
+  );
+
+  function nodeTypeLabel(type: string): string {
+    return NODE_LABELS[type as NodeType] ?? type;
+  }
+
   /** Loop container overlays (HTML, legacy `.loop-container-group[data-id]`)
    * positioned over the SVG via graph→client math. */
   const loopOverlays = $derived.by(() => {
@@ -154,6 +164,7 @@
     const dy = (dragPending.y - drag.startClientY) / view.zoom;
     store.actions.moveNode(drag.id, Math.round(drag.base.x + dx), Math.round(drag.base.y + dy));
     dragPending = null;
+    rafId = 0;
   }
 
   function onWindowPointerMove(e: PointerEvent): void {
@@ -624,6 +635,7 @@
                   class="port"
                   data-port={s.guard !== undefined || s.cx > 0 ? "out" : "in"}
                   data-guard={s.guard ?? undefined}
+                  data-cond={s.guard ?? undefined}
                   cx={s.cx}
                   cy={s.cy}
                   r="7"
@@ -696,6 +708,82 @@
         </div>
       {/each}
     </div>
+
+    <aside id="inspector" class="inspector" aria-label="Inspector de nodos" data-testid="node-inspector">
+      <h2 class="panel-title">Inspector</h2>
+      {#if selectedNode}
+        <div class="inspector-header">
+          <h3 class="inspector-title">{nodeTypeLabel(selectedNode.type)}</h3>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            aria-label="Cerrar inspector"
+            data-testid="close-inspector"
+            onclick={() => store.actions.select([])}
+          >&times;</button>
+        </div>
+        <dl class="inspector-props">
+          <div class="inspector-prop">
+            <dt>ID</dt>
+            <dd>{selectedNode.id}</dd>
+          </div>
+          {#if selectedNode.pos}
+            <div class="inspector-prop">
+              <dt>Posición</dt>
+              <dd>({selectedNode.pos.x}, {selectedNode.pos.y})</dd>
+            </div>
+          {/if}
+          {#if selectedNode.model}
+            <div class="inspector-prop">
+              <dt>Modelo</dt>
+              <dd>{selectedNode.model}</dd>
+            </div>
+          {/if}
+          {#if selectedNode.pipeline}
+            <div class="inspector-prop">
+              <dt>Pipeline</dt>
+              <dd>{selectedNode.pipeline}</dd>
+            </div>
+          {/if}
+          {#if selectedNode.condition}
+            <div class="inspector-prop">
+              <dt>Condición</dt>
+              <dd class="inspector-code">{JSON.stringify(selectedNode.condition)}</dd>
+            </div>
+          {/if}
+          {#if selectedNode.body && selectedNode.body.length > 0}
+            <div class="inspector-prop">
+              <dt>Bloques ({selectedNode.body.length})</dt>
+              <dd>
+                <ol class="inspector-list">
+                  {#each selectedNode.body as memberId}
+                    <li>{memberId}</li>
+                  {/each}
+                </ol>
+              </dd>
+            </div>
+          {/if}
+          {#if selectedNode.system}
+            <div class="inspector-prop">
+              <dt>System Prompt</dt>
+              <dd class="inspector-code inspector-truncate">{selectedNode.system}</dd>
+            </div>
+          {/if}
+        </dl>
+        <div class="inspector-actions">
+          <button
+            type="button"
+            class="btn btn-danger btn-sm"
+            data-testid="delete-node"
+            onclick={() => {
+              if (selectedNode) store.actions.deleteNode(selectedNode.id);
+            }}
+          >Eliminar nodo</button>
+        </div>
+      {:else}
+        <p class="hint">Seleccioná un nodo en el lienzo para ver y editar sus propiedades.</p>
+      {/if}
+    </aside>
   </div>
 
   <dialog id="validate-dialog" class="dialog" bind:this={validateDialog} data-testid="validate-dialog">

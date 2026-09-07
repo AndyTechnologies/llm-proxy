@@ -596,41 +596,41 @@ input[type="text"]:focus {
   cursor: grabbing;
 }
 
-.graph-node.selected rect.node-box {
+.graph-node.selected rect.node-rect {
   stroke: var(--accent);
   stroke-width: 2.5;
   filter: drop-shadow(0 0 8px var(--accent-glow));
 }
 
-.node-box {
+.node-rect {
   fill: var(--bg-card);
   stroke: var(--border-strong);
   stroke-width: 1.5;
   rx: 4;
 }
 
-.node-box[data-type="start"],
-.node-box[data-type="end"] {
+.node-rect[data-type="start"],
+.node-rect[data-type="end"] {
   fill: var(--accent-soft);
   stroke: rgba(88, 166, 255, 0.35);
 }
 
-.node-box[data-type="llm_call"] {
+.node-rect[data-type="llm_call"] {
   fill: #152319;
   stroke: rgba(76, 195, 138, 0.35);
 }
 
-.node-box[data-type="condition"] {
+.node-rect[data-type="condition"] {
   fill: #251d12;
   stroke: rgba(224, 143, 74, 0.35);
 }
 
-.node-box[data-type="loop"] {
+.node-rect[data-type="loop"] {
   fill: #1a231d;
   stroke: rgba(63, 185, 80, 0.35);
 }
 
-.node-box[data-type="pipeline"] {
+.node-rect[data-type="pipeline"] {
   fill: #12202e;
   stroke: rgba(88, 166, 255, 0.35);
 }
@@ -793,19 +793,19 @@ input[type="text"]:focus {
 }
 
 /* Ver flujo: bloque actual pulsa, los ya visitados quedan atenuados */
-.graph-node.flow-active .node-box {
+.graph-node.flow-active .node-rect {
   stroke: var(--accent-2);
   stroke-width: 2.5;
   filter: drop-shadow(0 0 6px rgba(63, 185, 80, 0.75));
 }
 
-.graph-node.flow-past .node-box {
+.graph-node.flow-past .node-rect {
   stroke: rgba(63, 185, 80, 0.55);
   stroke-width: 1.5;
   opacity: 0.85;
 }
 
-.edge-line.flow-past {
+.graph-edge.flow-past {
   stroke: var(--accent-2);
   stroke-width: 2.5;
   opacity: 0.9;
@@ -816,7 +816,7 @@ input[type="text"]:focus {
   fill: rgba(63, 185, 80, 0.14);
 }
 
-.node-label {
+.node-title {
   fill: var(--text);
   font-size: 12px;
   font-family: var(--mono);
@@ -831,99 +831,99 @@ input[type="text"]:focus {
   pointer-events: none;
 }
 
-/* Connection sockets (Blender/Godot-style ports). Input = green (receiving),
+/* Connection ports (Blender/Godot-style ports). Input = green (receiving),
    output = red (emitting) per the requested UX. */
-.socket {
+.port {
   stroke: none;
   fill: var(--socket-neutral, var(--accent));
   cursor: crosshair;
   transition: fill 0.15s ease, stroke 0.15s ease;
 }
 
-.socket.socket-in {
+.port.port-in {
   fill: var(--socket-in);
 }
 
-.socket.socket-out {
+.port.port-out {
   fill: var(--socket-out);
 }
 
 /* Rama de condicion: true arriba = exito (verde), false abajo = peligro
    (rojo). El usuario entiende la rama solo por el color, sin selector. */
-.socket.socket-out--true {
+.port.port-out--true {
   fill: var(--success);
 }
 
-.socket.socket-out--false {
+.port.port-out--false {
   fill: var(--danger);
 }
 
-.socket.socket-out--true:hover {
+.port.port-out--true:hover {
   fill: var(--socket-in-hover);
 }
 
-.socket.socket-out--false:hover {
+.port.port-out--false:hover {
   fill: var(--socket-out-hover);
 }
 
-.socket:hover {
+.port:hover {
   stroke: var(--accent-on);
   stroke-width: 2;
   fill: var(--socket-in-hover);
 }
 
-.socket.socket-out:hover {
+.port.port-out:hover {
   fill: var(--socket-out-hover);
 }
 
 /* Puerto de entrada candidato mientras se arrastra una conexion: brilla para
    indicar que soltar ahi conecta (el area de acierto es mas grande que el
    circulo visible). */
-.socket.socket-hot {
+.port.port-hot {
   fill: var(--socket-in-hover);
   stroke: var(--accent-on);
   stroke-width: 2.5;
   filter: drop-shadow(0 0 5px var(--socket-in-hover));
 }
 
-.graph-node.selected .socket {
+.graph-node.selected .port {
   stroke: var(--accent-on);
   stroke-width: 1.5;
 }
 
 /* Node delete button (small cross on the body) */
-.node-delete {
+.node-delete-btn {
   fill: var(--bg-card);
   stroke: var(--text-faint);
   stroke-width: 1.5;
   cursor: pointer;
 }
 
-.node-delete-glyph {
+.node-delete-glyph-btn {
   stroke: var(--text-faint);
   stroke-width: 1.5;
   stroke-linecap: round;
   pointer-events: none;
 }
 
-.node-delete:hover,
-.node-delete:hover + .node-delete-glyph {
+.node-delete-btn:hover,
+.node-delete-btn:hover + .node-delete-glyph-btn {
   fill: var(--danger);
   stroke: var(--danger);
 }
 
-.node-delete:hover + .node-label {
+.node-delete-btn:hover + .node-title {
   /* placeholder for any future glyph; kept for clarity */
 }
 
 /* Edges (free-form beziers) */
-.edge-line {
+.graph-edge {
   stroke: var(--text-faint);
   stroke-width: 2;
   fill: none;
 }
 
-.edge-line:hover {
+.graph-edge:hover {
   stroke: var(--accent-bright);
 }
 
@@ -936,21 +936,21 @@ input[type="text"]:focus {
 
 /* Aristas de rama de condicion: misma logica de color que los sockets — true
    verde, false rojo — para que el recorrido se lea de un vistazo. */
-.edge-line--true,
-.edge-draft.edge-line--true {
+.graph-edge--true,
+.edge-draft.graph-edge--true {
   stroke: var(--success);
 }
 
-.edge-line--false,
-.edge-draft.edge-line--false {
+.graph-edge--false,
+.edge-draft.graph-edge--false {
   stroke: var(--danger);
 }
 
-.edge-line--true:hover {
+.graph-edge--true:hover {
   stroke: var(--socket-in-hover);
 }
 
-.edge-line--false:hover {
+.graph-edge--false:hover {
   stroke: var(--socket-out-hover);
 }
 
@@ -975,7 +975,7 @@ input[type="text"]:focus {
   opacity: 0;
 }
 
-.edge-line:hover + .edge-delete,
+.graph-edge:hover + .edge-delete,
 .edge-delete:hover,
 .graph-node:hover ~ .edge-delete {
   opacity: 1;
@@ -1639,4 +1639,96 @@ dialog::backdrop {
 .palette-item:focus-visible {
   outline: 2px solid var(--accent, #58a6ff);
   outline-offset: 2px;
+}
+
+/* ── Node inspector panel ─────────────────────────────────────────── */
+/* The `.inspector` element is the third grid column of `.editor-layout`;
+   its shell styling (background/border/padding/scroll) comes from the
+   shared `.palette, .inspector` rule. */
+.inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2, 8px);
+}
+
+.inspector-title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.inspector-props {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+
+.inspector-prop {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inspector-prop dt {
+  color: var(--text-muted, #8b949e);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.inspector-prop dd {
+  margin: 0;
+  color: var(--text, #c9d1d9);
+  word-break: break-all;
+}
+
+.inspector-code {
+  background: var(--bg-base, #0d1117);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+
+.inspector-truncate {
+  max-height: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inspector-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text, #c9d1d9);
+}
+
+.inspector-list li {
+  margin-bottom: 2px;
+}
+
+.inspector-actions {
+  margin-top: var(--space-3, 12px);
+  padding-top: var(--space-2, 8px);
+  border-top: 1px solid var(--border, #30363d);
+}
+
+.inspector .btn-sm {
+  padding: 4px 10px;
+  font-size: 0.78rem;
+}
+
+.inspector .btn-danger {
+  color: var(--danger, #f85149);
+  border: 1px solid var(--danger, #f85149);
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.inspector .btn-danger:hover {
+  background: var(--danger-soft, rgba(248, 81, 73, 0.12));
 }

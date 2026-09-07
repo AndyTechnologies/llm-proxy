@@ -85,7 +85,10 @@ export function createRestService(base = ""): RestService {
     validatePipeline: (id, payload) => post(`/api/ui/pipelines/${encode(id)}/validate`, payload),
     retryStep: (executionId, nodeId) =>
       post<RetryStepResult>(`/api/ui/executions/${encode(executionId)}/steps/${encode(nodeId)}/retry`),
-    agentsStatus: () => api<AgentEntry[]>("/api/ui/agents/status"),
+    agentsStatus: async () => {
+      const res = await api<{ agents: AgentEntry[] }>("/api/ui/agents/status");
+      return res.agents;
+    },
     configureAgent: (config) => post("/api/ui/agents/configure", config),
   };
 }

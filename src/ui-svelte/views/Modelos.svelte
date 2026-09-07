@@ -74,13 +74,15 @@
   }
 
   function statusLabel(model: ModelEntry): string {
-    if (model.processLoaded && model.loaded) return "banner activo";
-    if (model.loaded) return "cargado";
+    if (model.processLoaded && model.loaded) return "activo en VRAM";
+    if (model.loaded) return "registrado";
     return "descargado";
   }
 
   function statusTone(model: ModelEntry): string {
-    return model.processLoaded || model.loaded ? "active" : "inactive";
+    if (model.processLoaded) return "active";
+    if (model.loaded) return "registered";
+    return "inactive";
   }
 </script>
 
