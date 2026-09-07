@@ -19,6 +19,7 @@ import {
   connectNodes,
   deleteNode as modelDeleteNode,
   addLoopMemberNode,
+  removeLoopMemberNode as modelRemoveLoopMember,
   buildPayload,
   type GraphNode,
   type GraphEdge,
@@ -70,6 +71,12 @@ export interface EditorActions {
   deleteNode(id: string): void;
   connect(from: string, to: string, guard?: string): void;
   reorderLoopMember(loopId: string, memberId: string, dir: -1 | 1): void;
+  /** Inspector field edit — merge a partial patch, mark dirty, NO history. */
+  updateNode(id: string, patch: Partial<GraphNode>): void;
+  /** Drop a member from a loop body (the member NODE stays in the graph). */
+  removeLoopMember(loopId: string, memberId: string): void;
+  /** Set (or clear, with an empty value) the guard on the outgoing edge. */
+  setEdgeGuard(from: string, guard: string | null): void;
   rename(name: string | null): void;
   select(ids: string[]): void;
   beginMove(): void;
@@ -140,6 +147,17 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
   /** Non-recorded state change (selection, validation, load flags). */
   function patch(fn: (s: EditorState) => EditorState): void {
     store.update((s) => ({ ...fn(s), canUndo: history.canUndo, canRedo: history.canRedo }));
+  }
+
+  /** Drop keys whose value is `undefined` (mirrors the legacy `delete n[k]`
+   * semantics: an undefined patch value clears the field instead of leaving
+   * an empty key behind). */
+  function dropUndefined<T extends object>(obj: T): T {
+    const out = { ...obj } as Record<string, unknown>;
+    for (const [k, v] of Object.entries(obj)) {
+      if (v === undefined) delete out[k];
+    }
+    return out as T;
   }
 
   const actions: EditorActions = {
@@ -243,6 +261,47 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
         nodes: modelReorderMember(s.nodes, loopId, memberId, dir),
         dirty: true,
       }));
+    },
+
+    /** Inspector field edit: merge a partial patch into one node and mark
+     * the graph dirty WITHOUT recording a history entry (undo/redo only
+     * covers add/move/delete/connect/reorder). Undefined patch values delete
+     * the field — the legacy inspector cleared empty inputs the same way. */
+    updateNode(id, patchValue) {
+      patch((s) => {
+        if (!s.nodes.some((n) => n.id === id)) return s;
+        const nodes = s.nodes.map((n) =>
+          n.id === id ? dropUndefined({ ...n, ...patchValue }) : n,
+        );
+        return { ...s, nodes, dirty: true };
+      });
+    },
+
+    /** Drop a member from a loop's body (the member NODE stays in the graph).
+     * Records a history entry like reorder — undoing restores the body. */
+    removeLoopMember(loopId, memberId) {
+      mutate((s) => ({
+        ...s,
+        nodes: modelRemoveLoopMember(s.nodes, loopId, memberId),
+        dirty: true,
+      }));
+    },
+
+    /** Set (or clear, with an empty value) the guard label on the node's
+     * outgoing edge. Inspector field edit: no history entry. */
+    setEdgeGuard(from, guard) {
+      patch((s) => {
+        const idx = s.edges.findIndex((e) => e.from === from);
+        if (idx < 0) return s;
+        const edge = s.edges[idx]!;
+        if ((edge.guard ?? "") === (guard ?? "")) return s;
+        const edges = s.edges.map((e, i) => {
+          if (i !== idx) return e;
+          // empty guard clears the label (legacy `delete edge.guard`)
+          return dropUndefined({ ...e, guard: guard || undefined });
+        });
+        return { ...s, edges, dirty: true };
+      });
     },
 
     /** Rename the pipeline (editor credential, not a graph mutation: naming

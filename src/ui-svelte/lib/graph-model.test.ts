@@ -46,6 +46,10 @@ import {
   paramsToRows,
   rowsToParams,
   describeLoop,
+  condAstToRows,
+  condRowComplete,
+  condRowsToAst,
+  removeLoopMemberNode,
 } from "./graph-model.js";
 
 describe("graph-model: createNode defaults", () => {
@@ -701,5 +705,105 @@ describe("graph-model: describeLoop (condicion de salida del bucle)", () => {
     expect(describeLoop(null)).toBe("");
     expect(describeLoop(undefined)).toBe("");
     expect(describeLoop("nope")).toBe("");
+  });
+});
+
+describe("graph-model: constructor de condiciones (filas editables)", () => {
+  it("condAstToRows aplana compare en una fila", () => {
+    expect(
+      condAstToRows({ op: "compare", field: "lastResponse.status", op2: "==", value: 200 }),
+    ).toEqual([{ field: "lastResponse.status", op: "==", value: 200, negated: false }]);
+  });
+
+  it("condAstToRows representa exists como fila sin valor", () => {
+    expect(condAstToRows({ op: "exists", field: "error" })).toEqual([
+      { field: "error", op: "exists", value: "", negated: false },
+    ]);
+  });
+
+  it("condAstToRows aplana not en negated", () => {
+    const ast = { op: "not", child: { op: "compare", field: "error", op2: "==", value: "boom" } };
+    expect(condAstToRows(ast)).toEqual([{ field: "error", op: "==", value: "boom", negated: true }]);
+  });
+
+  it("condAstToRows aplana logical (AND/OR) preservando el orden", () => {
+    const ast = {
+      op: "logical",
+      and: false,
+      args: [
+        { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+        { op: "exists", field: "error" },
+      ],
+    };
+    expect(condAstToRows(ast)).toEqual([
+      { field: "lastResponse.status", op: "==", value: 200, negated: false },
+      { field: "error", op: "exists", value: "", negated: false },
+    ]);
+  });
+
+  it("condAstToRows descarta formas no editables y entradas invalidas", () => {
+    expect(condAstToRows(null)).toEqual([]);
+    expect(condAstToRows({ op: "wat" })).toEqual([]);
+  });
+
+  it("condRowComplete exige valor en las comparaciones; exists siempre vale", () => {
+    expect(condRowComplete({ field: "error", op: "exists", value: "", negated: false })).toBe(true);
+    expect(condRowComplete({ field: "lastResponse.status", op: "==", value: "200", negated: false })).toBe(true);
+    expect(condRowComplete({ field: "lastResponse.status", op: "==", value: "", negated: false })).toBe(false);
+    expect(condRowComplete({ field: "lastResponse.status", op: "==", value: 0, negated: false })).toBe(true);
+  });
+
+  it("condRowsToAst: una fila unica va directa (envuelta en not si negada)", () => {
+    const rows = [{ field: "lastResponse.status", op: "==", value: 200, negated: false }];
+    expect(condRowsToAst(rows, true)).toEqual({ op: "compare", field: "lastResponse.status", op2: "==", value: 200 });
+    expect(condRowsToAst([{ ...rows[0]!, negated: true }], true)).toEqual({
+      op: "not",
+      child: { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+    });
+  });
+
+  it("condRowsToAst combina 2+ filas con el conector global y/o", () => {
+    const rows = [
+      { field: "lastResponse.status", op: "==", value: 200, negated: false },
+      { field: "error", op: "exists", value: "", negated: false },
+    ];
+    expect(condRowsToAst(rows, true)).toEqual({
+      op: "logical",
+      and: true,
+      args: [
+        { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+        { op: "exists", field: "error" },
+      ],
+    });
+    const or = condRowsToAst(rows, false);
+    expect(or?.op).toBe("logical");
+    expect((or as { and: boolean }).and).toBe(false);
+  });
+
+  it("condRowsToAst devuelve null con filas vacias o incompletas", () => {
+    expect(condRowsToAst([], true)).toBeNull();
+    expect(
+      condRowsToAst([{ field: "lastResponse.status", op: "==", value: "", negated: false }], true),
+    ).toBeNull();
+  });
+});
+
+describe("graph-model: removeLoopMemberNode (quitar un bloque del bucle)", () => {
+  it("saca el miembro del body y deja el nodo en el grafo", () => {
+    const nodes = [
+      { id: "l", type: "loop", body: ["a", "b"] },
+      { id: "a", type: "llm_call", model: "qwen:7b" },
+      { id: "b", type: "llm_call", model: "qwen:14b" },
+    ] as unknown as GraphNode[];
+    const out = removeLoopMemberNode(nodes, "l", "a");
+    expect(out).not.toBe(nodes);
+    expect(out.find((n) => n.id === "l")!.body).toEqual(["b"]);
+    expect(out.some((n) => n.id === "a")).toBe(true);
+  });
+
+  it("no-op para ids desconocidos o body ajeno (misma referencia)", () => {
+    const nodes = [{ id: "l", type: "loop", body: ["a"] }] as unknown as GraphNode[];
+    expect(removeLoopMemberNode(nodes, "l", "zzz")).toBe(nodes);
+    expect(removeLoopMemberNode(nodes, "wat", "a")).toBe(nodes);
   });
 });

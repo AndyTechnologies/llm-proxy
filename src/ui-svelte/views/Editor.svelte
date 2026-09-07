@@ -29,8 +29,28 @@
     stackLoopMembers,
     loopBodyRect,
     ownerLoopId,
+    COND_DEFAULT_FIELD,
+    COND_DEFAULT_OP,
+    campoLegible,
+    compareOps,
+    condAstToRows,
+    condRowComplete,
+    condRowsToAst,
+    ctxFields,
+    describeCondition,
+    describeLlmCall,
+    describeLoop,
+    describePipeline,
+    isCompleteNode,
+    operadorLegible,
+    paramsToRows,
+    rowsToParams,
+    type CondRow,
     type GraphEdge,
+    type ParamRow,
   } from "../lib/graph-model.js";
+  import type { ModelEntry } from "../stores/types.js";
+  import { tick } from "svelte";
   import {
     clientToGraph,
     graphToClient,
@@ -64,7 +84,11 @@
   const FLOW_STEP_MS = 300;
   const FLOW_TAIL_MS = 600;
 
-  let { store, hidden = false }: { store: EditorStore; hidden?: boolean } = $props();
+  let { store, hidden = false, models = [] }: {
+    store: EditorStore;
+    hidden?: boolean;
+    models: ModelEntry[];
+  } = $props();
 
   let canvasEl = $state<HTMLDivElement | null>(null);
   let validateDialog = $state<HTMLDialogElement | null>(null);
@@ -507,6 +531,414 @@
     const end = { x: to.pos.x, y: to.pos.y + NODE_H / 2 };
     return `M ${end.x} ${end.y} L ${end.x} ${end.y + 10} L ${end.x - 9} ${end.y + 1} Z`;
   }
+
+  /* ------------------------------------------------------------------ */
+  /* inspector (editable node fields)                                    */
+  /* ------------------------------------------------------------------ */
+
+  /** Standard context sizes offered in the llm_call ctx selector. */
+  const CONTEXT_STANDARDS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536];
+
+  /** llm_call mode pills (value, label, live help line). */
+  const MODES = [
+    ["generate", "Generar", "el modelo responde al prompt (historial tal cual)."],
+    ["refine", "Refinar", "re-alimenta la última respuesta del paso como nueva instrucción."],
+    ["passthrough", "Pasar", "replica el texto original sin llamar al modelo."],
+  ] as const;
+
+  /** Max preview length for the living node subtitle on the canvas. */
+  const MAX_NODE_PREVIEW = 20;
+
+  function shortText(text: string, max: number): string {
+    const t = String(text);
+    return t.length > max ? `${t.slice(0, max).trimEnd()}\u2026` : t;
+  }
+
+  /** Readable label for a graph node (model / pipeline name where relevant),
+   *  same contract the original `nodeChipLabel` had. */
+  function nodeChipLabel(n: GraphNode): string {
+    switch (n.type) {
+      case "llm_call":
+        return n.model ?? "Llamada LLM";
+      case "pipeline":
+        return n.pipeline ?? "Pipeline";
+      case "start":
+        return "Inicio";
+      case "end":
+        return "Fin";
+      case "condition":
+        return "Condición";
+      case "loop":
+        return "Bucle";
+      default:
+        return n.type;
+    }
+  }
+
+  /** Select label for a node-destination option (human label + id fallback). */
+  function nodeIdForSelect(n: GraphNode): string {
+    const label = nodeChipLabel(n);
+    return label === n.id ? label : `${label} (${n.id})`;
+  }
+
+  /** Living subtitle text for a canvas node (rendered under the title). */
+  function nodeSubtitle(n: GraphNode): string {
+    if (n.type === "llm_call") return describeLlmCall(n);
+    if (n.type === "pipeline") return describePipeline(n);
+    if (n.type === "condition" || n.type === "loop") {
+      return n.type === "loop" ? describeLoop(n) : describeCondition(n.condition);
+    }
+    return "";
+  }
+
+  /** Configured context of a model (ctx field), null when unknown. */
+  function modelCtx(id: string | undefined): number | null {
+    const m = models.find((x) => x.id === id);
+    return typeof m?.ctx === "number" ? m.ctx : null;
+  }
+
+  /** Guard label of the selected node's outgoing edge ("" when none). */
+  const outgoingGuard = $derived($store.edges.find((e) => e.from === selectedNode?.id)?.guard ?? "");
+
+  /** llm_call context-editor data (standards/selection/unsafe flags), or null
+   *  for any other node type. Recomputed whenever the node or models change. */
+  const ctxData = $derived.by(() => {
+    const n = selectedNode;
+    if (!n || n.type !== "llm_call") return null;
+    const current = modelCtx(n.model);
+    const override = (n.params as Record<string, unknown> | undefined)?.ctx;
+    const model = models.find((m) => m.id === n.model);
+    const ggufMax = typeof model?.ggufContextLength === "number" ? model.ggufContextLength : null;
+    const hwMax = typeof model?.hardwareMaxCtx === "number" ? model.hardwareMaxCtx : null;
+    const effectiveMax = ggufMax != null ? (hwMax != null ? Math.min(ggufMax, hwMax) : ggufMax) : hwMax;
+    const base = (effectiveMax != null
+      ? CONTEXT_STANDARDS.filter((c) => c <= effectiveMax)
+      : CONTEXT_STANDARDS
+    ).map((c) => String(c));
+    // El ctx configurado del modelo es una opcion propia del selector (evita
+    // el doble control selector + input para valores no estandar).
+    const currentKey = current != null ? String(current) : null;
+    const standards = currentKey && !base.includes(currentKey) ? [...base, currentKey] : base;
+    let selected = override != null ? String(override) : currentKey;
+    let isCustom = false;
+    if (selected && !standards.includes(selected)) isCustom = true;
+    const overrideKey = override != null ? String(override) : null;
+    const isUnsafe = (val: string): boolean => hwMax != null && Number(val) > hwMax;
+    const opts = standards.map((c) => ({
+      value: c,
+      unsafe: isUnsafe(c),
+      label: currentKey === c && c !== overrideKey
+        ? `${Number(c).toLocaleString()} (actual del modelo)`
+        : `${Number(c).toLocaleString()}${isUnsafe(c) ? " \u26a0" : ""}`,
+    }));
+    const effectiveCtx = typeof model?.effectiveCtx === "number" ? model.effectiveCtx : null;
+    return { current, currentKey, selected, isCustom, opts, isUnsafe, hwMax, effectiveCtx };
+  });
+
+  // Per-node tab selection lives OUTSIDE the node (strict graph schema) and
+  // outside the store: a per-instance Map keyed by node id, like legacy.
+  type TabKey = "basica" | "prompt" | "avanzado";
+  const TAB_NAMES: ReadonlyArray<[TabKey, string]> = [
+    ["basica", "Config. básica"],
+    ["prompt", "Prompt"],
+    ["avanzado", "Avanzado"],
+  ];
+  const inspectorTabs = new Map<string, TabKey>();
+  const tabKeysFor = (n: GraphNode | null): TabKey[] =>
+    n?.type === "llm_call" ? ["basica", "prompt", "avanzado"] : [];
+
+  // Draft state for the inspector. The drafts (not the store value) drive the
+  // inputs so typing never clobbers itself through a round-trip; the store
+  // receives only the committed, trimmed value. Everything re-initializes
+  // when the inspected node changes (guarded by lastInspectedId).
+  let lastInspectedId = $state<string | null>(null);
+  let ctxModelKey = $state<string | null>(null);
+  let activeTab = $state<TabKey>("basica");
+  let condRows = $state<CondRow[]>([]);
+  let condAnd = $state(true);
+  let paramRows = $state<ParamRow[]>([]);
+  let drafts = $state({ system: "", assistant: "", provider: "", pipeline: "" });
+  let ctxSelectDraft = $state("");
+  let ctxCustomDraft = $state("");
+  let ctxCustomMode = $state(false);
+  let inspectorEl = $state<HTMLElement | null>(null);
+  let condBuilderEl = $state<HTMLElement | null>(null);
+  let paramRowsEl = $state<HTMLElement | null>(null);
+
+  /** Re-initialize every inspector draft from the newly selected node. Runs
+   *  when the selection first id changes — or, for llm_call, when its model
+   *  changes (the ctx editor is model-dependent). Live field edits mutate
+   *  drafts + store together, so the same-node case never resets. */
+  $effect(() => {
+    const n = selectedNode;
+    const id = n?.id ?? null;
+    const modelKey = n && n.type === "llm_call" ? (n.model ?? "") : null;
+    if (id === lastInspectedId && (modelKey === null || modelKey === ctxModelKey)) return;
+    lastInspectedId = id;
+    ctxModelKey = modelKey;
+    const tabs = tabKeysFor(n);
+    activeTab = tabs.includes(inspectorTabs.get(id ?? "") as TabKey)
+      ? (inspectorTabs.get(id ?? "") as TabKey)
+      : "basica";
+    condRows =
+      n && (n.type === "condition" || n.type === "loop")
+        ? initCondRows(n.condition)
+        : [];
+    condAnd = n?.condition?.op === "logical" ? (n.condition as { and: boolean }).and !== false : true;
+    paramRows = n && n.type === "pipeline" ? paramsToRows(n.params) : [];
+    drafts = {
+      system: n?.system ?? "",
+      assistant: n?.assistant ?? "",
+      provider: n?.provider ?? "",
+      pipeline: n?.pipeline ?? "",
+    };
+    const cd = ctxData;
+    if (n && n.type === "llm_call" && cd) {
+      if (cd.isCustom) {
+        ctxSelectDraft = "custom";
+        ctxCustomMode = true;
+        ctxCustomDraft = cd.selected ?? "";
+      } else {
+        ctxSelectDraft = cd.selected ?? "";
+        ctxCustomMode = false;
+        ctxCustomDraft = "";
+      }
+    } else {
+      ctxSelectDraft = "";
+      ctxCustomMode = false;
+      ctxCustomDraft = "";
+    }
+  });
+
+  function initCondRows(condition: unknown): CondRow[] {
+    const rows = condAstToRows(condition);
+    return rows.length > 0
+      ? rows
+      : [{ field: COND_DEFAULT_FIELD, op: COND_DEFAULT_OP, value: "", negated: false }];
+  }
+
+  function tabNameOf(k: TabKey): string {
+    return TAB_NAMES.find(([key]) => key === k)?.[1] ?? k;
+  }
+
+  function onTabSelect(tab: TabKey): void {
+    const n = selectedNode;
+    if (!n) return;
+    inspectorTabs.set(n.id, tab);
+    activeTab = tab;
+  }
+
+  function onTabKeydown(e: KeyboardEvent, tab: TabKey): void {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const keys = tabKeysFor(selectedNode);
+    const idx = keys.indexOf(tab);
+    const dir = e.key === "ArrowRight" ? 1 : -1;
+    onTabSelect(keys[(idx + dir + keys.length) % keys.length]!);
+    void tick().then(() => {
+      inspectorEl
+        ?.querySelector(
+          `[data-tab-panel="${activeTab}"] input, [data-tab-panel="${activeTab}"] select, [data-tab-panel="${activeTab}"] textarea, [data-tab-panel="${activeTab}"] button`,
+        )
+        ?.focus();
+    });
+  }
+
+  /** Merge a patch with possibly-undefined field values into the node. */
+  function updateNode(patch: Record<string, unknown>): void {
+    const n = selectedNode;
+    if (!n) return;
+    store.actions.updateNode(n.id, patch as Partial<GraphNode>);
+  }
+
+  function onModelChange(e: Event): void {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    if (v) updateNode({ model: v });
+  }
+
+  function onModeSelect(mode: string): void {
+    if (mode === "generate") updateNode({ mode: undefined });
+    else updateNode({ mode });
+  }
+
+  function onTextInput(key: "system" | "assistant" | "provider", e: Event): void {
+    const raw = (e.currentTarget as HTMLTextAreaElement | HTMLInputElement).value;
+    if (key === "system") drafts.system = raw;
+    else if (key === "assistant") drafts.assistant = raw;
+    else drafts.provider = raw;
+    const v = raw.trim();
+    updateNode(v ? { [key]: v } : { [key]: undefined });
+  }
+
+  function onPipelineInput(e: Event): void {
+    const raw = (e.currentTarget as HTMLInputElement).value;
+    drafts.pipeline = raw;
+    updateNode({ pipeline: raw.trim() || undefined });
+  }
+
+  function writeCtx(val: string): void {
+    const n = selectedNode;
+    if (!n) return;
+    const params: Record<string, string> = { ...(n.params ?? {}) };
+    if (val === "") delete params.ctx;
+    else params.ctx = val;
+    updateNode(Object.keys(params).length > 0 ? { params } : { params: undefined });
+  }
+
+  function onCtxChange(e: Event): void {
+    const sel = e.currentTarget as HTMLSelectElement;
+    const val = sel.value;
+    ctxSelectDraft = val;
+    if (val === "custom") {
+      ctxCustomMode = true;
+      // re-commit the typed draft exactly like legacy re-reading the input
+      writeCtx(ctxCustomDraft);
+    } else {
+      ctxCustomMode = false;
+      ctxCustomDraft = "";
+      writeCtx(val);
+    }
+  }
+
+  function onCtxCustomInput(e: Event): void {
+    const raw = (e.currentTarget as HTMLInputElement).value;
+    ctxCustomDraft = raw;
+    const n = parseInt(raw, 10);
+    writeCtx(Number.isFinite(n) && n > 0 ? String(n) : "");
+  }
+
+  function onTargetChange(key: "on_429" | "tool_calls_route", e: Event): void {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    updateNode(v ? { [key]: v } : { [key]: undefined });
+  }
+
+  function onGuardChange(e: Event): void {
+    const n = selectedNode;
+    if (!n) return;
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    store.actions.setEdgeGuard(n.id, v || null);
+  }
+
+  /* -- condition builder -- */
+
+  function commitCond(): void {
+    const n = selectedNode;
+    if (!n || (n.type !== "condition" && n.type !== "loop")) return;
+    const ast = condRowsToAst(condRows, condAnd);
+    store.actions.updateNode(n.id, ast ? { condition: ast } : { condition: undefined });
+  }
+
+  const condPreview = $derived(condRowsToAst(condRows, condAnd));
+
+  function setCondField(i: number, v: string): void {
+    condRows[i].field = v;
+    commitCond();
+  }
+
+  function setCondOp(i: number, v: string): void {
+    condRows[i].op = v;
+    commitCond();
+  }
+
+  function setCondValue(i: number, v: string): void {
+    condRows[i].value = v;
+    commitCond();
+  }
+
+  function toggleCondNegate(i: number): void {
+    condRows[i].negated = !condRows[i].negated;
+    commitCond();
+  }
+
+  function setCondAnd(v: "and" | "or"): void {
+    condAnd = v === "and";
+    commitCond();
+  }
+
+  function focusCondField(idx: number | null): void {
+    void tick().then(() => {
+      const target = idx === null ? ".cond-row .cond-field" : `.cond-row[data-row="${idx}"] .cond-field`;
+      (condBuilderEl?.querySelector(target) as HTMLElement | null)?.focus();
+    });
+  }
+
+  function addCondRow(): void {
+    condRows = [...condRows, { field: COND_DEFAULT_FIELD, op: COND_DEFAULT_OP, value: "", negated: false }];
+    commitCond();
+    focusCondField(condRows.length - 1);
+  }
+
+  function removeCondRow(i: number): void {
+    const next = condRows.filter((_, x) => x !== i);
+    if (next.length === 0) {
+      next.push({ field: COND_DEFAULT_FIELD, op: COND_DEFAULT_OP, value: "", negated: false });
+    }
+    const focus = Math.min(i, next.length - 1);
+    condRows = next;
+    commitCond();
+    focusCondField(focus);
+  }
+
+  /* -- pipeline params -- */
+
+  function commitParams(): void {
+    const n = selectedNode;
+    if (!n || n.type !== "pipeline") return;
+    const params = rowsToParams(paramRows);
+    updateNode(Object.keys(params).length > 0 ? { params } : { params: undefined });
+  }
+
+  function setParamKey(i: number, v: string): void {
+    paramRows[i].key = v;
+    commitParams();
+  }
+
+  function setParamValue(i: number, v: string): void {
+    paramRows[i].value = v;
+    commitParams();
+  }
+
+  function focusParamKey(idx: number | null): void {
+    void tick().then(() => {
+      const target = idx === null ? ".param-row .param-key" : `.param-row[data-row="${idx}"] .param-key`;
+      (paramRowsEl?.querySelector(target) as HTMLElement | null)?.focus();
+    });
+  }
+
+  function addParamRow(): void {
+    if (paramRows.length === 0 || paramRows[paramRows.length - 1]!.key.trim() !== "") {
+      paramRows = [...paramRows, { key: "", value: "" }];
+    }
+    focusParamKey(paramRows.length - 1);
+  }
+
+  function removeParamRow(i: number): void {
+    const next = paramRows.filter((_, x) => x !== i);
+    if (next.length === 0) {
+      next.push({ key: "", value: "" });
+    }
+    const focus = Math.min(i, next.length - 1);
+    paramRows = next;
+    commitParams();
+    focusParamKey(focus);
+  }
+
+  /* -- loop members -- */
+
+  function memberRemove(loopId: string, memberId: string): void {
+    store.actions.removeLoopMember(loopId, memberId);
+  }
+
+  function memberLabel(id: string): string {
+    const m = graph.nodes.find((x) => x.id === id);
+    return m ? nodeChipLabel(m) : id;
+  }
+
+  /** Orphan destination options survive node deletion: shown read-only so a
+   *  reference to a removed node is never silently lost. */
+  function targetHas(x: string | undefined): boolean {
+    return x !== undefined && !graph.nodes.some((n) => n.id === x);
+  }
 </script>
 
 <section id="editor" class="view" aria-label="Editor de pipelines" data-testid="view-editor" hidden={hidden || undefined}>
@@ -514,6 +946,7 @@
     <button id="btn-new" class="btn" title="Nuevo pipeline" onclick={onNew} data-testid="btn-new">Nuevo</button>
     <input
       id="pipeline-name"
+      type="text"
       class="pipeline-name"
       aria-label="Nombre del pipeline"
       placeholder="Nombre del pipeline"
@@ -645,9 +1078,24 @@
               onpointerdown={(e) => onNodePointerDown(e, n)}
             >
               <rect class="node-rect" width={NODE_W} height={NODE_H} rx="10" />
-              <text class="node-title" x={NODE_W / 2} y={NODE_H / 2} dominant-baseline="middle" text-anchor="middle">
-                {NODE_LABELS[n.type]}
+              <text
+                class="node-title"
+                x={NODE_W / 2}
+                y={nodeSubtitle(n) ? 23 : NODE_H / 2}
+                dominant-baseline="middle"
+                text-anchor="middle"
+              >
+                {NODE_LABELS[n.type]}{isCompleteNode(n) ? "" : " \u00b7"}
               </text>
+              {#if nodeSubtitle(n)}
+                <text
+                  class="node-sub node-sub--{n.type}"
+                  x={NODE_W / 2}
+                  y={42}
+                  dominant-baseline="middle"
+                  text-anchor="middle"
+                >{nodeSubtitle(n)}</text>
+              {/if}
               {#each nodeSockets(n) as s, i (s.guard ?? i)}
                 <circle
                   class:port--input={!s.guard && s.cx === 0}
@@ -729,7 +1177,13 @@
       {/each}
     </div>
 
-    <aside id="inspector" class="inspector" aria-label="Inspector de nodos" data-testid="node-inspector">
+    <aside
+      id="inspector"
+      class="inspector"
+      aria-label="Inspector de nodos"
+      data-testid="node-inspector"
+      bind:this={inspectorEl}
+    >
       <h2 class="panel-title">Inspector</h2>
       {#if selectedNode}
         <div class="inspector-header">
@@ -742,54 +1196,332 @@
             onclick={() => store.actions.select([])}
           >&times;</button>
         </div>
-        <dl class="inspector-props">
-          <div class="inspector-prop">
-            <dt>ID</dt>
-            <dd>{selectedNode.id}</dd>
+        {#if selectedNode.type === "llm_call"}
+          <div class="inspector-tabs" role="tablist" aria-label="Secciones del nodo">
+            {#each tabKeysFor(selectedNode) as tab (tab)}
+              <button
+                type="button"
+                role="tab"
+                class="tab-btn"
+                data-tab={tab}
+                class:active={activeTab === tab}
+                aria-selected={activeTab === tab}
+                aria-controls={"tab-panel-" + tab}
+                tabindex={activeTab === tab ? 0 : -1}
+                onclick={() => onTabSelect(tab)}
+                onkeydown={(e) => onTabKeydown(e, tab)}
+              >{tabNameOf(tab)}</button>
+            {/each}
           </div>
-          {#if selectedNode.pos}
-            <div class="inspector-prop">
-              <dt>Posición</dt>
-              <dd>({selectedNode.pos.x}, {selectedNode.pos.y})</dd>
-            </div>
-          {/if}
-          {#if selectedNode.model}
-            <div class="inspector-prop">
-              <dt>Modelo</dt>
-              <dd>{selectedNode.model}</dd>
-            </div>
-          {/if}
-          {#if selectedNode.pipeline}
-            <div class="inspector-prop">
-              <dt>Pipeline</dt>
-              <dd>{selectedNode.pipeline}</dd>
-            </div>
-          {/if}
-          {#if selectedNode.condition}
-            <div class="inspector-prop">
-              <dt>Condición</dt>
-              <dd class="inspector-code">{JSON.stringify(selectedNode.condition)}</dd>
-            </div>
-          {/if}
-          {#if selectedNode.body && selectedNode.body.length > 0}
-            <div class="inspector-prop">
-              <dt>Bloques ({selectedNode.body.length})</dt>
-              <dd>
-                <ol class="inspector-list">
-                  {#each selectedNode.body as memberId}
-                    <li>{memberId}</li>
+
+          {#if activeTab === "basica"}
+            <div id="tab-panel-basica" class="tab-panel" role="tabpanel" aria-label="Config. básica">
+              <div class="field">
+                <label class="field-label" for="node-model">Modelo</label>
+                <select id="node-model" class="select" data-testid="node-model" onchange={onModelChange}>
+                  <option value="" selected={!selectedNode.model}>— sin modelo —</option>
+                  {#each models as m (m.id)}
+                    <option value={m.id} selected={selectedNode.model === m.id}>{m.id}</option>
                   {/each}
-                </ol>
-              </dd>
+                </select>
+              </div>
+
+              <div class="field">
+                <span class="field-label" id="mode-label">Modo</span>
+                <div class="mode-pills" role="group" aria-labelledby="mode-label">
+                  {#each MODES as [val, label, hint] (val)}
+                    <button
+                      type="button"
+                      class="mode-pill"
+                      data-mode={val}
+                      data-testid="node-mode"
+                      class:active={(selectedNode.mode ?? "generate") === val}
+                      title={hint}
+                      onclick={() => onModeSelect(val)}
+                    >{label}</button>
+                  {/each}
+                </div>
+              </div>
+
+              {#if ctxData}
+                <div class="field">
+                  <label class="field-label" for="node-ctx">Contexto (tokens)</label>
+                  <select id="node-ctx" class="select" data-testid="node-ctx" onchange={onCtxChange}>
+                    <option value="" selected={ctxSelectDraft === ""}>predeterminado</option>
+                    {#each ctxData.opts as o (o.value)}
+                      <option value={o.value} class:ctx-unsafe={o.unsafe} selected={ctxSelectDraft === o.value}>{o.label}</option>
+                    {/each}
+                    <option value="custom" selected={ctxSelectDraft === "custom"}>personalizado…</option>
+                  </select>
+                  {#if ctxCustomMode}
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      class="text-input"
+                      placeholder="ej. 6000"
+                      data-testid="node-ctx-custom"
+                      value={ctxCustomDraft}
+                      oninput={onCtxCustomInput}
+                    />
+                    {#if ctxCustomDraft !== "" && ctxData.isUnsafe(ctxCustomDraft)}
+                      <p class="ctx-unsafe" data-testid="ctx-unsafe-warning">
+                        ⚠ Más del máximo del modelo ({ctxData.hwMax!.toLocaleString()} tokens) — la generación puede fallar.
+                      </p>
+                    {/if}
+                  {/if}
+                </div>
+              {/if}
             </div>
           {/if}
-          {#if selectedNode.system}
-            <div class="inspector-prop">
-              <dt>System Prompt</dt>
-              <dd class="inspector-code inspector-truncate">{selectedNode.system}</dd>
+
+          {#if activeTab === "prompt"}
+            <div id="tab-panel-prompt" class="tab-panel" role="tabpanel" aria-label="Prompt">
+              <div class="field">
+                <label class="field-label" for="node-system">System prompt</label>
+                <textarea
+                  id="node-system"
+                  class="text-input"
+                  rows="4"
+                  data-testid="node-system"
+                  oninput={(e) => onTextInput("system", e)}
+                >{drafts.system}</textarea>
+                <span class="char-counter" data-testid="system-counter">{drafts.system.length}</span>
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="node-assistant">Assistant (rol del asistente)</label>
+                <textarea
+                  id="node-assistant"
+                  class="text-input"
+                  rows="3"
+                  data-testid="node-assistant"
+                  oninput={(e) => onTextInput("assistant", e)}
+                >{drafts.assistant}</textarea>
+              </div>
             </div>
           {/if}
-        </dl>
+
+          {#if activeTab === "avanzado"}
+            <div id="tab-panel-avanzado" class="tab-panel" role="tabpanel" aria-label="Avanzado">
+              <div class="field">
+                <label class="field-label" for="node-provider">Proveedor (server de la API)</label>
+                <input
+                  id="node-provider"
+                  class="text-input"
+                  data-testid="node-provider"
+                  value={drafts.provider}
+                  oninput={(e) => onTextInput("provider", e)}
+                />
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="node-on429">Si da 429 (rate limit)</label>
+                <select id="node-on429" class="select" data-testid="node-on429" onchange={(e) => onTargetChange("on_429", e)}>
+                  <option value="" selected={!selectedNode.on_429}>— (finalizar)</option>
+                  {#each graph.nodes as g (g.id)}
+                    <option value={g.id} selected={selectedNode.on_429 === g.id}>{nodeIdForSelect(g)}</option>
+                  {/each}
+                  {#if targetHas(selectedNode.on_429)}
+                    <option value={selectedNode.on_429} selected>(nodo inexistente)</option>
+                  {/if}
+                </select>
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="node-toolroute">Si pide tool calls</label>
+                <select id="node-toolroute" class="select" data-testid="node-toolroute" onchange={(e) => onTargetChange("tool_calls_route", e)}>
+                  <option value="" selected={!selectedNode.tool_calls_route}>— (finalizar)</option>
+                  {#each graph.nodes as g (g.id)}
+                    <option value={g.id} selected={selectedNode.tool_calls_route === g.id}>{nodeIdForSelect(g)}</option>
+                  {/each}
+                  {#if targetHas(selectedNode.tool_calls_route)}
+                    <option value={selectedNode.tool_calls_route} selected>(nodo inexistente)</option>
+                  {/if}
+                </select>
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="node-guard">Condición de salida</label>
+                <select id="node-guard" class="select" data-testid="node-guard" onchange={onGuardChange}>
+                  <option value="" selected={outgoingGuard === ""}>— (continuar)</option>
+                  {#each graph.nodes as g (g.id)}
+                    <option value={g.id} selected={outgoingGuard === g.id}>{nodeIdForSelect(g)}</option>
+                  {/each}
+                </select>
+              </div>
+            </div>
+          {/if}
+        {:else if selectedNode.type === "condition" || selectedNode.type === "loop"}
+          <div class="field" bind:this={condBuilderEl}>
+            <span class="field-label">{selectedNode.type === "loop" ? "Se ejecuta cuando:" : "Sale cuando:"}</span>
+            <ul class="cond-rows">
+              {#each condRows as row, i (i)}
+                <li class="cond-row" class:cond-row--invalid={!condRowComplete(row)} data-row={i}>
+                  {#if row.negated}
+                    <button
+                      type="button"
+                      class="cond-negate"
+                      data-testid="cond-negate"
+                      data-row={i}
+                      title="Quitar negación"
+                      onclick={() => toggleCondNegate(i)}
+                    >no</button>
+                  {/if}
+                  <select class="cond-field" data-testid="cond-field" data-row={i} onchange={(e) => setCondField(i, (e.currentTarget as HTMLSelectElement).value)}>
+                    {#each ctxFields as f (f)}
+                      <option value={f} selected={row.field === f}>{campoLegible(f)}</option>
+                    {/each}
+                  </select>
+                  <select class="cond-op" data-testid="cond-op" data-row={i} onchange={(e) => setCondOp(i, (e.currentTarget as HTMLSelectElement).value)}>
+                    {#each compareOps as op (op)}
+                      <option value={op} selected={row.op === op}>{operadorLegible(op)}</option>
+                    {/each}
+                  </select>
+                  <input
+                    type="text"
+                    class="cond-value"
+                    placeholder="valor…"
+                    data-testid="cond-value"
+                    data-row={i}
+                    value={row.value}
+                    oninput={(e) => setCondValue(i, (e.currentTarget as HTMLInputElement).value)}
+                  />
+                  {#if !condRowComplete(row)}
+                    <p class="cond-row-error" data-testid="cond-row-error">Completá campo, operador y valor.</p>
+                  {/if}
+                  <button
+                    type="button"
+                    class="cond-remove"
+                    data-testid="cond-remove"
+                    data-row={i}
+                    title="Borrar fila"
+                    onclick={() => removeCondRow(i)}
+                  >&times;</button>
+                </li>
+              {/each}
+            </ul>
+            {#if condRows.length > 1}
+              <select
+                class="cond-combine"
+                aria-label="Combinación de condiciones"
+                data-testid="cond-combine"
+                onchange={(e) => setCondAnd((e.currentTarget as HTMLSelectElement).value as "and" | "or")}
+              >
+                <option value="and" selected={condAnd}>todas (Y)</option>
+                <option value="or" selected={!condAnd}>cualquiera (O)</option>
+              </select>
+            {/if}
+            <button type="button" class="cond-add" data-testid="cond-add" onclick={addCondRow}>
+              + Agregar otra condición
+            </button>
+            <p class="cond-preview" data-testid="cond-preview">
+              {condRows.every(condRowComplete) ? describeCondition(condPreview) : "\u2026"}
+            </p>
+          </div>
+
+          {#if selectedNode.type === "loop"}
+            <div class="field">
+              <span class="field-label">Bloques del bucle ({selectedNode.body?.length ?? 0})</span>
+              <ul class="loop-members">
+                {#each selectedNode.body ?? [] as memberId (memberId)}
+                  <li class="loop-member" data-member-id={memberId}>
+                    <span class="loop-member-name">{memberLabel(memberId)}</span>
+                    <span class="loop-member-buttons">
+                      <button
+                        type="button"
+                        class="icon-btn"
+                        title="Subir"
+                        data-testid="loop-member-up"
+                        onclick={() => store.actions.reorderLoopMember(selectedNode.id, memberId, -1)}
+                      >▲</button>
+                      <button
+                        type="button"
+                        class="icon-btn"
+                        title="Bajar"
+                        data-testid="loop-member-down"
+                        onclick={() => store.actions.reorderLoopMember(selectedNode.id, memberId, 1)}
+                      >▼</button>
+                      <button
+                        type="button"
+                        class="icon-btn icon-btn--danger"
+                        title="Sacar del bucle"
+                        data-testid="loop-member-remove"
+                        onclick={() => memberRemove(selectedNode.id, memberId)}
+                      >×</button>
+                    </span>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+        {:else if selectedNode.type === "pipeline"}
+          <div class="field">
+            <label class="field-label" for="pipeline-name-node">Nombre del pipeline</label>
+            <input
+              id="pipeline-name-node"
+              class="text-input pipeline-name"
+              data-testid="pipeline-name"
+              value={drafts.pipeline}
+              oninput={onPipelineInput}
+            />
+          </div>
+
+          <div class="field" bind:this={paramRowsEl}>
+            <span class="field-label">Parámetros</span>
+            <ul class="param-rows">
+              {#each paramRows as row, i (i)}
+                <li class="param-row" data-row={i}>
+                  <input
+                    type="text"
+                    class="param-key"
+                    placeholder="key"
+                    data-testid="param-key"
+                    data-row={i}
+                    value={row.key}
+                    oninput={(e) => setParamKey(i, (e.currentTarget as HTMLInputElement).value)}
+                  />
+                  <input
+                    type="text"
+                    class="param-value"
+                    placeholder="valor"
+                    data-testid="param-value"
+                    data-row={i}
+                    value={row.value}
+                    oninput={(e) => setParamValue(i, (e.currentTarget as HTMLInputElement).value)}
+                  />
+                  <button
+                    type="button"
+                    class="param-remove"
+                    data-testid="param-remove"
+                    data-row={i}
+                    title="Quitar parámetro"
+                    onclick={() => removeParamRow(i)}
+                  >&times;</button>
+                </li>
+              {/each}
+            </ul>
+            <button type="button" class="param-add" data-testid="param-add" onclick={addParamRow}>
+              + Agregar parámetro
+            </button>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="node-guard">Condición de salida</label>
+            <select id="node-guard" class="select" data-testid="node-guard" onchange={onGuardChange}>
+              <option value="" selected={outgoingGuard === ""}>— (continuar)</option>
+              {#each graph.nodes as g (g.id)}
+                <option value={g.id} selected={outgoingGuard === g.id}>{nodeIdForSelect(g)}</option>
+              {/each}
+            </select>
+          </div>
+        {:else if selectedNode.type === "start"}
+          <p class="hint">El pipeline arranca acá.</p>
+        {:else if selectedNode.type === "end"}
+          <p class="hint">El pipeline termina acá.</p>
+        {:else}
+          <p class="hint">Nodo de control — no requiere configuración.</p>
+        {/if}
         <div class="inspector-actions">
           <button
             type="button"

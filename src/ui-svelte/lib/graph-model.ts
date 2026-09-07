@@ -50,6 +50,10 @@ export interface GraphNode {
   system?: string;
   params?: Record<string, string>;
   ctx?: number | string;
+  assistant?: string;
+  provider?: string;
+  on_429?: string;
+  tool_calls_route?: string;
   [key: string]: unknown;
 }
 
@@ -724,4 +728,85 @@ export function rowsToParams(rows: unknown): Record<string, string> {
 export function describeLoop(node: unknown): string {
   if (!node || typeof node !== "object") return "";
   return describeCondition((node as Record<string, unknown>).condition);
+}
+
+/** Editable builder row for the condition AST (field/op/value + negate). */
+export interface CondRow {
+  field: string;
+  op: string;
+  value: string | number;
+  negated: boolean;
+}
+
+/** Defaults for the first builder row of a node without a condition. */
+export const COND_DEFAULT_FIELD = "lastResponse.status";
+export const COND_DEFAULT_OP = "==";
+
+/**
+ * Flatten a condition AST into editable builder rows (ported 1:1 from the
+ * vanilla SPA). Each leaf (compare/exists), with or without `not`, becomes a
+ * row; a logical node flattens recursively. Shapes the builder cannot edit
+ * are dropped — the user rebuilds them with the explicit controls.
+ */
+export function condAstToRows(ast: unknown): CondRow[] {
+  const rows: CondRow[] = [];
+  const visit = (expr: unknown, negated: boolean): void => {
+    if (!expr || typeof expr !== "object") return;
+    const e = expr as Record<string, unknown>;
+    if (e.op === "not") {
+      visit(e.child, !negated);
+    } else if (e.op === "compare") {
+      rows.push({
+        field: e.field as string,
+        op: e.op2 as string,
+        value: e.value as string | number,
+        negated,
+      });
+    } else if (e.op === "exists") {
+      rows.push({ field: e.field as string, op: "exists", value: "", negated });
+    } else if (e.op === "logical" && Array.isArray(e.args)) {
+      for (const a of e.args) visit(a, negated);
+    }
+  };
+  visit(ast, false);
+  return rows;
+}
+
+/** An "exists" row is always complete; a comparison requires a value. */
+export function condRowComplete(row: CondRow): boolean {
+  return row.op === "exists" || String(row.value ?? "") !== "";
+}
+
+/**
+ * Serialize builder rows into a valid AST — or null when any comparison
+ * lacks a value. One row goes direct (wrapped in `not` when negated); 2+
+ * rows combine under the global AND/OR connector.
+ */
+export function condRowsToAst(rows: CondRow[], and: boolean): ConditionAst | null {
+  if (rows.length === 0 || rows.some((r) => !condRowComplete(r))) return null;
+  const args = rows.map((r): ConditionAst => {
+    const leaf: ConditionAst =
+      r.op === "exists"
+        ? { op: "exists", field: r.field }
+        : { op: "compare", field: r.field, op2: r.op, value: r.value };
+    return r.negated ? { op: "not", child: leaf } : leaf;
+  });
+  return args.length === 1 ? args[0] : { op: "logical", and: and !== false, args };
+}
+
+/**
+ * Drop a member id from a loop's body; the member NODE stays in the graph
+ * (only the membership is removed, matching the vanilla inspector). Returns
+ * the same reference on no-op so callers can skip history entries.
+ */
+export function removeLoopMemberNode(nodes: GraphNode[], loopId: string, memberId: string): GraphNode[] {
+  let changed = false;
+  const out = nodes.map((n) => {
+    if (n.id !== loopId || !Array.isArray(n.body)) return n;
+    const body = n.body.filter((m) => m !== memberId);
+    if (body.length === n.body.length) return n;
+    changed = true;
+    return { ...n, body };
+  });
+  return changed ? out : nodes;
 }

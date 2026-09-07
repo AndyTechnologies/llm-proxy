@@ -90,6 +90,9 @@
 
   const stores = deps.makeStores();
   const sse: SseService = deps.makeSse(stores);
+  // Auto-subscribable reference for the dashboard store (the `stores` map
+  // itself is a plain object, so `$stores.x` would try to subscribe to it).
+  const dashboardStore = stores.dashboard;
 
   function viewFromHash(): ViewId {
     const hash = window.location.hash.replace(/^#/, "");
@@ -163,7 +166,7 @@
 </header>
 
 <main id="main" class="app-main">
-  <Editor hidden={active !== "editor"} store={stores.editor} />
+  <Editor hidden={active !== "editor"} store={stores.editor} models={$dashboardStore.models} />
   <Pipelines hidden={active !== "pipelines"} store={stores.dashboard} editor={stores.editor} />
   <Modelos hidden={active !== "models"} store={stores.dashboard} />
   <Ejecuciones hidden={active !== "executions"} store={stores.dashboard} />

@@ -465,3 +465,97 @@ describe("editor store interactions (task 3.4)", () => {
     expect(store.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["m1", "m2"]);
   });
 });
+
+describe("editor store: inspector field edits (updateNode)", () => {
+  it("updateNode merges the patch and marks the graph dirty", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    expect(store.getSnapshot().dirty).toBe(false);
+    store.actions.updateNode("n2", { system: "Sé breve" });
+    const s = store.getSnapshot();
+    expect(s.dirty).toBe(true);
+    expect(s.nodes.find((n) => n.id === "n2")!.system).toBe("Sé breve");
+  });
+
+  it("updateNode with undefined deletes the field (legacy delete semantics)", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.updateNode("n2", { system: "Hola" });
+    store.actions.updateNode("n2", { system: undefined });
+    const n = store.getSnapshot().nodes.find((x) => x.id === "n2")!;
+    expect("system" in n).toBe(false);
+  });
+
+  it("updateNode never records a history entry (field edits are not undoable)", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.updateNode("n2", { system: "Hola" });
+    expect(store.getSnapshot().canUndo).toBe(false);
+    store.actions.undo();
+    expect(store.getSnapshot().nodes.find((n) => n.id === "n2")!.system).toBe("Hola");
+  });
+
+  it("updateNode ignores unknown ids", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.updateNode("ghost", { system: "x" });
+    expect(store.getSnapshot().dirty).toBe(false);
+  });
+});
+
+describe("editor store: removeLoopMember", () => {
+  const loopPipeline = {
+    id: "demo",
+    name: "Demo",
+    nodes: [
+      { id: "loop", type: "loop" as const, body: ["m1", "m2"] },
+      { id: "m1", type: "llm_call" as const, model: "a" },
+      { id: "m2", type: "llm_call" as const, model: "b" },
+    ],
+    edges: [],
+  };
+
+  it("removes the member from the loop body and records history", async () => {
+    const store = createEditorStore(deps({ api: { ...deps().api, getPipeline: async () => loopPipeline } }));
+    await store.actions.loadPipeline("demo");
+    store.actions.removeLoopMember("loop", "m1");
+    expect(store.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["m2"]);
+    expect(store.getSnapshot().nodes.some((n) => n.id === "m1")).toBe(true); // el nodo sigue
+    store.actions.undo();
+    expect(store.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["m1", "m2"]);
+  });
+
+  it("removeLoopMember no-ops on unknown ids (no history entry)", async () => {
+    const store = createEditorStore(deps({ api: { ...deps().api, getPipeline: async () => loopPipeline } }));
+    await store.actions.loadPipeline("demo");
+    store.actions.removeLoopMember("loop", "ghost");
+    expect(store.getSnapshot().canUndo).toBe(false);
+  });
+});
+
+describe("editor store: setEdgeGuard (guardia de salida)", () => {
+  it("sets the guard on the outgoing edge and marks dirty, no history", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.setEdgeGuard("n2", "true");
+    const s = store.getSnapshot();
+    expect(s.edges.find((e) => e.from === "n2")!.guard).toBe("true");
+    expect(s.dirty).toBe(true);
+    expect(s.canUndo).toBe(false);
+  });
+
+  it("clears the guard with an empty value", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.setEdgeGuard("n2", "true");
+    store.actions.setEdgeGuard("n2", "");
+    expect(store.getSnapshot().edges.find((e) => e.from === "n2")).not.toHaveProperty("guard");
+  });
+
+  it("no-ops for a node without an outgoing edge", async () => {
+    const store = createEditorStore(deps());
+    await store.actions.loadPipeline("demo");
+    store.actions.setEdgeGuard("n3", "true"); // end node has no outgoing edge
+    expect(store.getSnapshot().dirty).toBe(false);
+  });
+});

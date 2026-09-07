@@ -269,3 +269,66 @@ test.describe("SSE live updates", () => {
     await expect(page.locator("#executions-list .list-item")).toHaveCount(2);
   });
 });
+
+test.describe("node inspector (editable, post-migration acceptance)", () => {
+  test("model, mode and system prompt edit through the inspector and persist", async ({ page }) => {
+    await page.locator("#graph-canvas").focus();
+    await page.keyboard.press("2"); // llm_call
+    const node = page.locator('#graph-svg .graph-node[data-type="llm_call"]');
+    await node.click();
+    const inspector = page.locator('[data-testid="node-inspector"]');
+    await expect(inspector).toBeVisible();
+
+    // Modelo: cambia el select y el subtítulo del nodo refleja el nuevo modelo.
+    await inspector.locator('[data-testid="node-model"]').selectOption("llama-3.1-70b.gguf");
+    await expect(node.locator(".node-sub")).toContainText("llama-3.1-70b.gguf");
+
+    // Modo: pill refine actualiza el modo del nodo (subtítulo en español).
+    await inspector.locator('.mode-pill[data-mode="refine"]').click();
+    await expect(node.locator(".node-sub")).toContainText("refinar");
+
+    // Tab Prompt: escribir system prompt actualiza el contador.
+    await inspector.locator('[role="tab"][data-tab="prompt"]').click();
+    const sys = inspector.locator('[data-testid="node-system"]');
+    await sys.fill("Hola");
+    await expect(inspector.locator('[data-testid="system-counter"]')).toHaveText("4");
+
+    // Persistencia: cerrar el inspector (placeholder) y reabrir conserva el texto.
+    await inspector.locator('[data-testid="close-inspector"]').click();
+    await expect(inspector.locator('[data-testid="node-system"]')).toBeHidden();
+    await expect(inspector).toContainText("Seleccioná un nodo en el lienzo");
+    await node.click();
+    await expect(inspector.locator('[data-testid="node-system"]')).toBeVisible();
+    await inspector.locator('[role="tab"][data-tab="prompt"]').click();
+    await expect(inspector.locator('[data-testid="node-system"]')).toHaveValue("Hola");
+  });
+
+  test("the condition builder writes the AST and updates the preview", async ({ page }) => {
+    await page.locator("#graph-canvas").focus();
+    await page.keyboard.press("3"); // condition
+    const node = page.locator('#graph-svg .graph-node[data-type="condition"]');
+    await node.click();
+    const inspector = page.locator('[data-testid="node-inspector"]');
+    await expect(inspector).toBeVisible();
+
+    // Arranca con una fila default incompleta — el preview muestra elipsis.
+    const preview = inspector.locator('[data-testid="cond-preview"]');
+    await expect(preview).toHaveText("\u2026");
+
+    // Completar la fila: lastResponse.status == 200 → preview en lenguaje natural.
+    const row = inspector.locator('.cond-row[data-row="0"]');
+    await row.locator('[data-testid="cond-field"]').selectOption("lastResponse.status");
+    await row.locator('[data-testid="cond-op"]').selectOption("==");
+    await row.locator('[data-testid="cond-value"]').fill("200");
+    await expect(preview).not.toHaveText("\u2026");
+    await expect(preview).toContainText("200");
+  });
+
+  test("the pipeline name input keeps the dark theme (no white default)", async ({ page }) => {
+    const name = page.locator("#pipeline-name");
+    await expect(name).toBeVisible();
+    await expect(name).toHaveAttribute("type", "text");
+    // Regression: the Svelte port rendered a browser-default white input.
+    await expect(name).not.toHaveCSS("background-color", "rgb(255, 255, 255)");
+  });
+});

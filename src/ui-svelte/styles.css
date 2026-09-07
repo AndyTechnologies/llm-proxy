@@ -540,6 +540,20 @@ input[type="text"]:focus {
   border-color: var(--accent);
 }
 
+/* Pipeline name input in the editor toolbar and node inspector — explicit
+   dark theme (the field-label variant also renders as a .text-input). */
+.pipeline-name {
+  min-width: 14rem;
+  background: var(--bg-card);
+  color: var(--text);
+}
+
+.trace-verbose input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 1rem;
+  height: 1rem;
+}
+
 .graph-canvas {
   position: relative;
   flex: 1;
