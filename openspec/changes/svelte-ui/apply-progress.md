@@ -1,8 +1,18 @@
 # Apply Progress — svelte-ui (Unit 1 + Unit 2 + Unit 3)
 
-Status: **Units 1–3 IMPLEMENTED — all Phase 1–4 tasks green except the
-post-verify legacy delete (4.4 gate); Unit 3 attempt pending settle**.
+Status: **ALL 22 TASKS COMPLETE — Phase 1–4 green; legacy `src/ui/*` deleted
+(4.4, commit 6898c5f); final verify pending on this branch**.
 Date: 2026-09-06
+
+## Unit 3 final state (this branch, after remediation + 4.4)
+
+- `bun test` → 792 pass / 0 fail (1951 expects; after `build:ui`)
+- `bun run test:e2e` → 17 pass / 0 fail (dashboard.spec.ts)
+- `bun test ./scripts/binary-smoke.test.ts` → 6 pass / 0 fail
+- `bun run typecheck` → clean; `bun run lint` → clean
+- `bun run build:ui` → 32.14 KB gzip app JS ≤ 100 KB budget
+- Legacy `src/ui/*` removed; references updated (README, index.ts, server.ts,
+  graph-model.test.ts port-oracle comment)
 
 ## Scope
 

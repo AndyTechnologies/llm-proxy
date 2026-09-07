@@ -47,9 +47,9 @@ Chain strategy: feature-branch-chain
 - [x] 4.1 `package.json` (edit): `build:binary` + `--asset dist/ui`.
 - [x] 4.2 Bundle guard: gzip prod app JS ≤ 100 KB, recorded via `scripts/measure-bundle.ts`.
 - [x] 4.3 MAJOR-3 `scripts/binary-smoke.ts`: build from unrelated cwd; assert embedded `/ui` (read-only) + `/ui/assets/*` (read-only), disk fallback, `UI_DIR` override.
-- [ ] 4.4 Gate: typecheck + lint + `bun test` green; delete `src/ui/*` only after verify.
-  - Gate part DONE (1.7–2.3 green; 756 tests; bundle guard; smoke PASS). Delete of
-    legacy `src/ui/*` intentionally deferred — runs only after `sdd-verify` confirms
-    the svelte-ui implementation. Rollback boundary stays until verify.
+- [x] 4.4 Gate: typecheck + lint + `bun test` green; delete `src/ui/*` only after verify.
+  - DONE: gate green (792 unit, 17 e2e, 6 binary-smoke); legacy `src/ui/*` deleted
+    (commit 6898c5f) and references updated (README, index.ts, server.ts). Verify re-run
+    is the next step on this branch.
 
 Ordering: P1 → P2 (resolver/build); 1.3–1.4 → 3.x; P4 needs P1–3. RED before GREEN where marked.
