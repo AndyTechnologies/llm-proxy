@@ -31,7 +31,10 @@ import { createHistory } from "../lib/history.js";
 /** Backend access the editor store needs (injected, faked in tests). */
 export interface EditorApi {
   getPipeline(id: string): Promise<{ id: string; name: string | null; nodes: GraphNode[]; edges: GraphEdge[] }>;
-  validate(payload: { nodes: GraphNode[]; edges: GraphEdge[] }): Promise<{
+  validate(
+    payload: { nodes: GraphNode[]; edges: GraphEdge[] },
+    pipelineId?: string,
+  ): Promise<{
     valid: boolean;
     errors?: string[];
   }>;
@@ -267,14 +270,29 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
     async validate() {
       const s = get(store);
       const payload = buildPayload({ nodes: s.nodes, edges: s.edges });
-      const result = await deps.api.validate(payload);
+      const result = await deps.api.validate(payload, s.pipelineId ?? undefined);
       patch((prev) => ({ ...prev, validation: result }));
     },
 
     async apply() {
       try {
-        const result = await deps.api.apply();
-        patch((s) => ({ ...s, applyError: null }));
+        const s = get(store);
+        // The editor applies its working graph as a (new or updated) chain —
+        // same raw config the static UI sent: { chains: {...} } (the transport
+        // wraps it as { config: { chains } } for POST /api/ui/apply).
+        const id = s.pipelineId ?? "nuevo-pipeline";
+        const payload = buildPayload({ nodes: s.nodes, edges: s.edges });
+        const result = await deps.api.apply({
+          chains: {
+            [id]: {
+              displayName: id,
+              provider: "llama-server",
+              nodes: payload.nodes,
+              edges: payload.edges,
+            },
+          },
+        });
+        patch((s) => ({ ...s, applyError: null, dirty: false }));
         return result;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

@@ -17,11 +17,11 @@
   import { onMount, onDestroy } from "svelte";
   import type { AppDeps, ViewId } from "./app-types.js";
   import { NAV_VIEWS } from "./app-types.js";
-  import { createEditorStore } from "./stores/editor-store.js";
-  import { createDashboardStore } from "./stores/dashboard-store.js";
+  import { createEditorStore, type EditorApi } from "./stores/editor-store.js";
+  import { createDashboardStore, type DashboardApi } from "./stores/dashboard-store.js";
   import { createTraceService } from "./services/trace-service.js";
   import { createSseService } from "./services/sse-service.js";
-  import { createRestService } from "./services/rest-service.js";
+  import { createRestService, type RestService } from "./services/rest-service.js";
   import { SSE_STATE, type SSEState, type TraceEntry } from "./stores/types.js";
   import type { SseService } from "./services/sse-service.js";
   import { applySseEvent } from "./lib/sse-effects.js";
@@ -43,10 +43,35 @@
   /** Browser wiring: real REST api + real EventSource + trace. */
   function defaultDeps(): AppDeps {
     const rest = createRestService();
+    // Adapter: the dashboard store consumes the DashboardApi contract while
+    // rest-service is the thin transport — map names 1:1 (the raw RestService
+    // does not satisfy DashboardApi: listPipelines vs pipelines, etc.).
+    const dashboardApi: DashboardApi = {
+      pipelines: rest.listPipelines,
+      models: async () => {
+        const res = await rest.listModels();
+        return { ...res, lifecycle: res.lifecycle ?? null };
+      },
+      executions: rest.listExecutions,
+      agents: rest.agentsStatus,
+      config: rest.getConfig,
+      retryStep: rest.retryStep,
+      applyConfig: rest.applyConfig,
+      unloadAllModels: rest.unloadAllModels,
+    };
+    const editorApi: EditorApi = {
+      getPipeline: rest.getPipeline,
+      // EditorApi.validate(payload, pipelineId?) vs RestService.validatePipeline(id, payload):
+      // the editor validates its working copy against a chain id (the router
+      // only uses the id for the graph name — "nuevo-pipeline" for a new one).
+      validate: (payload, pipelineId) =>
+        rest.validatePipeline(pipelineId ?? "nuevo-pipeline", payload),
+      apply: rest.applyConfig,
+    };
     return {
       makeStores: () => ({
-        editor: createEditorStore({ api: rest }),
-        dashboard: createDashboardStore({ api: rest }),
+        editor: createEditorStore({ api: editorApi }),
+        dashboard: createDashboardStore({ api: dashboardApi }),
         trace: createTraceService(),
       }),
       makeSse: (stores) =>
@@ -93,7 +118,13 @@
     sse.start();
     void stores.dashboard.actions.refreshAll();
     const onHash = (): void => {
-      active = viewFromHash();
+      const next = viewFromHash();
+      // Refresh pipelines when entering the Pipelines view so an apply
+      // performed in the editor is observable there without a page reload.
+      if (next === "pipelines" && active !== "pipelines") {
+        void stores.dashboard.actions.scheduleRefresh("pipelines");
+      }
+      active = next;
     };
     window.addEventListener("hashchange", onHash);
     return () => {
