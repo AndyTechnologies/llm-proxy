@@ -61,6 +61,12 @@ export interface ExecutionEntry {
   totalLatencyMs?: number;
 }
 
+/** Result of retrying a failed execution step. */
+export interface RetryStepResult {
+  success: boolean;
+  retryExecutionId?: string;
+}
+
 /** Agent entry from GET /api/ui/agents/status. */
 export interface AgentEntry {
   id: string;

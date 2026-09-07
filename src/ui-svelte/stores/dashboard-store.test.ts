@@ -31,6 +31,9 @@ function fakeApi() {
     executions: 0,
     agents: 0,
     config: 0,
+    retryStep: 0,
+    applyConfig: 0,
+    unloadAllModels: 0,
   };
   return {
     calls,
@@ -40,6 +43,10 @@ function fakeApi() {
       executions: async () => ((calls.executions += 1), rows.executions),
       agents: async () => ((calls.agents += 1), rows.agents),
       config: async () => ((calls.config += 1), rows.config),
+      retryStep: async (_executionId: string, _nodeId: string) =>
+        ((calls.retryStep += 1), { success: true, retryExecutionId: "ex2" }),
+      applyConfig: async (_config: unknown) => ((calls.applyConfig += 1), undefined),
+      unloadAllModels: async () => ((calls.unloadAllModels += 1), { unloaded: 2 }),
     },
   };
 }
@@ -92,6 +99,13 @@ describe("dashboard store (consolidated domains)", () => {
     expect(s.agents).toEqual([]);
     expect(s.config).toBeNull();
     expect(s.errors).toEqual({});
+    expect(s.failedNodes).toEqual({});
+    expect(s.retrying).toBe(false);
+    expect(s.retryError).toBeNull();
+    expect(s.applying).toBe(false);
+    expect(s.applyError).toBeNull();
+    expect(s.unloadingAll).toBe(false);
+    expect(s.unloadAllError).toBeNull();
   });
 
   it("loadPipelines stores the summary rows", async () => {
@@ -189,5 +203,135 @@ describe("dashboard store (consolidated domains)", () => {
     expect(s.agents).toEqual([]);
     expect(s.config).toBeNull();
     expect(s.errors).toEqual({});
+  });
+});
+
+describe("dashboard store (action wiring: retry / apply / unload)", () => {
+  it("recordStepFailed stores the failed node per execution", () => {
+    const store = createDashboardStore(deps());
+    store.actions.recordStepFailed("ex1", "n2");
+    expect(store.getSnapshot().failedNodes).toEqual({ ex1: "n2" });
+  });
+
+  it("retryStep passes the execution id and the recorded node to the api", async () => {
+    const seen: { executionId: string; nodeId: string }[] = [];
+    const api = {
+      ...fakeApi().api,
+      retryStep: async (executionId: string, nodeId: string) => {
+        seen.push({ executionId, nodeId });
+        return { success: true };
+      },
+    };
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    store.actions.recordStepFailed("ex1", "n2");
+    await store.actions.retryStep("ex1");
+    expect(seen[0]).toEqual({ executionId: "ex1", nodeId: "n2" });
+  });
+
+  it("retryStep revalidates executions on success", async () => {
+    const { api, calls } = fakeApi();
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    store.actions.recordStepFailed("ex1", "n2");
+    await store.actions.retryStep("ex1");
+    expect(calls.retryStep).toBe(1);
+    expect(calls.executions).toBe(1);
+    const s = store.getSnapshot();
+    expect(s.retrying).toBe(false);
+    expect(s.retryError).toBeNull();
+    expect(s.executions).toEqual(rows.executions);
+  });
+
+  it("retryStep is a no-op when no failed node was recorded", async () => {
+    const { api, calls } = fakeApi();
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    await store.actions.retryStep("ex-unknown");
+    expect(calls.retryStep).toBe(0);
+    expect(calls.executions).toBe(0);
+  });
+
+  it("retryStep stays in-flight until the api responds", async () => {
+    let resolveRetry!: (result: { success: boolean; retryExecutionId?: string }) => void;
+    const api = {
+      ...fakeApi().api,
+      retryStep: (_executionId: string, _nodeId: string) =>
+        new Promise<{ success: boolean; retryExecutionId?: string }>((resolve) => {
+          resolveRetry = resolve;
+        }),
+    };
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    store.actions.recordStepFailed("ex1", "n2");
+    const pending = store.actions.retryStep("ex1");
+    expect(store.getSnapshot().retrying).toBe(true);
+    resolveRetry({ success: true });
+    await pending;
+    expect(store.getSnapshot().retrying).toBe(false);
+  });
+
+  it("retryStep surfaces the api error without breaking the store", async () => {
+    const api = {
+      ...fakeApi().api,
+      retryStep: async (_executionId: string, _nodeId: string) => {
+        throw new Error("boom");
+      },
+    };
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    store.actions.recordStepFailed("ex1", "n2");
+    await store.actions.retryStep("ex1");
+    const s = store.getSnapshot();
+    expect(s.retryError).toMatch(/boom/);
+    expect(s.retrying).toBe(false);
+  });
+
+  it("applyConfig posts the config and reloads config + models", async () => {
+    const { api, calls } = fakeApi();
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    const cfg = { llama: { lifecycle: { ttl: 600, vram: { mode: "dynamic", freeGb: 2, capGb: 8 } } } };
+    await store.actions.applyConfig(cfg);
+    expect(calls.applyConfig).toBe(1);
+    expect(calls.config).toBe(1);
+    expect(calls.models).toBe(1);
+    const s = store.getSnapshot();
+    expect(s.applying).toBe(false);
+    expect(s.applyError).toBeNull();
+    expect(s.config).toEqual(rows.config);
+  });
+
+  it("applyConfig surfaces the api error", async () => {
+    const api = {
+      ...fakeApi().api,
+      applyConfig: async (_config: unknown) => {
+        throw new Error("boom");
+      },
+    };
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    await store.actions.applyConfig({});
+    const s = store.getSnapshot();
+    expect(s.applyError).toMatch(/boom/);
+    expect(s.applying).toBe(false);
+  });
+
+  it("unloadAllModels posts the unload and reloads models", async () => {
+    const { api, calls } = fakeApi();
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    await store.actions.unloadAllModels();
+    expect(calls.unloadAllModels).toBe(1);
+    expect(calls.models).toBe(1);
+    const s = store.getSnapshot();
+    expect(s.unloadingAll).toBe(false);
+    expect(s.unloadAllError).toBeNull();
+  });
+
+  it("unloadAllModels surfaces the api error", async () => {
+    const api = {
+      ...fakeApi().api,
+      unloadAllModels: async (): Promise<{ unloaded: number }> => {
+        throw new Error("boom");
+      },
+    };
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    await store.actions.unloadAllModels();
+    const s = store.getSnapshot();
+    expect(s.unloadAllError).toMatch(/boom/);
+    expect(s.unloadingAll).toBe(false);
   });
 });

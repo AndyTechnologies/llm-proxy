@@ -10,6 +10,7 @@ import { createDashboardStore, type DashboardApi, type DashboardStore } from "..
 import { createEditorStore, type EditorApi, type EditorStore } from "../stores/editor-store.js";
 import { createSseService, type SseService } from "../services/sse-service.js";
 import { createTraceService, type TraceService } from "../services/trace-service.js";
+import { applySseEvent } from "../lib/sse-effects.js";
 import { SSE_STATE, type SSEEventName, type SSEState } from "../stores/types.js";
 import type { AppDeps, AppStores } from "../app-types.js";
 import type { GraphNode, GraphEdge } from "../lib/graph-model.js";
@@ -74,10 +75,27 @@ export interface FakeDashboardData {
 
 export function makeFakeDashboardApi(
   data: Partial<FakeDashboardData> = {},
-): DashboardApi & { calls: { [K in keyof DashboardApi]: number } } {
-  const calls = { pipelines: 0, models: 0, executions: 0, agents: 0, config: 0 };
+): DashboardApi & {
+  calls: { [K in keyof DashboardApi]: number };
+  /** Last config passed to applyConfig (asserted in component tests). */
+  lastAppliedConfig: unknown;
+  /** Last (executionId, nodeId) passed to retryStep. */
+  lastRetry: { executionId: string; nodeId: string } | null;
+} {
+  const calls = {
+    pipelines: 0,
+    models: 0,
+    executions: 0,
+    agents: 0,
+    config: 0,
+    retryStep: 0,
+    applyConfig: 0,
+    unloadAllModels: 0,
+  };
   return {
     calls,
+    lastAppliedConfig: undefined,
+    lastRetry: null,
     async pipelines() {
       calls.pipelines += 1;
       return data.pipelines ?? [];
@@ -101,6 +119,19 @@ export function makeFakeDashboardApi(
     async config() {
       calls.config += 1;
       return data.config ?? {};
+    },
+    async retryStep(executionId: string, nodeId: string) {
+      calls.retryStep += 1;
+      this.lastRetry = { executionId, nodeId };
+      return { success: true, retryExecutionId: "ex-retry" };
+    },
+    async applyConfig(config: unknown) {
+      calls.applyConfig += 1;
+      this.lastAppliedConfig = config;
+    },
+    async unloadAllModels() {
+      calls.unloadAllModels += 1;
+      return { unloaded: 0 };
     },
   };
 }
@@ -236,11 +267,10 @@ export function makeAppDeps(data: Partial<FakeDashboardData> = {}): MakeAppDepsR
           return source;
         },
         reconnectDelayMs: 5,
-        onEvent: (type) => {
-          created.trace.log("sse", type);
-          if (type === "pipeline:reloaded") created.dashboard.actions.scheduleRefresh("pipelines");
-          else if (type === "models:changed") created.dashboard.actions.scheduleRefresh("models");
-          else created.dashboard.actions.scheduleRefresh("executions");
+        onEvent: (type, data) => {
+          // Same mapping the browser wiring uses (lib/sse-effects.ts), so
+          // harness and production can never drift.
+          applySseEvent({ type, data }, created);
         },
       });
       result.sse = sse;
