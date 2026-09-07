@@ -267,6 +267,22 @@ describe("Editor interactions (task 3.4)", () => {
     );
   });
 
+  it("makes the in-canvas move arrows keyboard-operable buttons (a11y)", async () => {
+    const loop = { id: "loop", type: "loop" as const, pos: { x: 0, y: 0 }, body: ["m1", "m2"] };
+    const m1 = { id: "m1", type: "llm_call" as const, pos: { x: 0, y: 70 }, model: "a", prompt: "" };
+    const m2 = { id: "m2", type: "llm_call" as const, pos: { x: 0, y: 140 }, model: "b", prompt: "" };
+    const { store, container } = await renderWith([loop, m1, m2]);
+    const up = container.querySelector('[data-testid="member-move-up"][data-node-id="m2"]') as HTMLElement;
+    // interactive semantics: exposed to the a11y tree and focusable
+    expect(up.getAttribute("role")).toBe("button");
+    expect(up.getAttribute("tabindex")).toBe("0");
+    // Enter activates exactly like a click
+    fireEvent.keyDown(up, { key: "Enter" });
+    await waitFor(() =>
+      expect(store.getSnapshot().nodes.find((n) => n.id === "loop")!.body).toEqual(["m2", "m1"]),
+    );
+  });
+
   it("lists nodes in the carousel and selects from a chip", async () => {
     const { store, container } = await renderWith([start, call]);
     const switcher = container.querySelector("#node-switcher");

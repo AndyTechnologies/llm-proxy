@@ -58,6 +58,17 @@ describe("Pipelines view (task 3.3)", () => {
     await waitFor(() => expect(editor.getSnapshot().pipelineId).toBe("rag"));
   });
 
+  it("renders rows as real list items with a nested button (a11y)", async () => {
+    const store = makeDashboardStore({
+      pipelines: [{ id: "rag", displayName: "RAG" }] as PipelineSummary[],
+    });
+    await store.actions.loadPipelines();
+    const { getByTestId } = render(Pipelines, { props: { store, editor: makeEditorStore() } });
+    const rows = within(getByTestId("pipelines-list")).getAllByRole("listitem");
+    expect(rows[0]!.tagName).toBe("LI");
+    expect(within(rows[0]!).getByRole("button", { name: "RAG" })).toBeTruthy();
+  });
+
   it("respects the hidden prop", () => {
     const { container } = render(Pipelines, {
       props: { store: makeDashboardStore(), editor: makeEditorStore(), hidden: true },

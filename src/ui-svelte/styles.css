@@ -1362,6 +1362,13 @@ input[type="text"]:focus {
   gap: var(--space-2);
 }
 
+/* Pipelines renders a real <ul> — clear the browser list chrome. */
+ul.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 .list-item {
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -1608,7 +1615,9 @@ dialog::backdrop {
   gap: 6px;
 }
 
-/* .list-item rows are interactive buttons in the Svelte views — reset. */
+/* List rows are the interactive surface in the Svelte views. Div rows
+   (models/executions) and li rows (pipelines) reset the card chrome; the
+   inner .list-item-action button carries the actual interaction. */
 .list-item {
   font: inherit;
   text-align: left;
@@ -1617,7 +1626,16 @@ dialog::backdrop {
   cursor: pointer;
   width: 100%;
 }
-.list-item:focus-visible,
+.list-item .list-item-action {
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  color: inherit;
+}
+.list-item .list-item-action:focus-visible,
 .palette-item:focus-visible {
   outline: 2px solid var(--accent, #58a6ff);
   outline-offset: 2px;

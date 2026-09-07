@@ -633,6 +633,9 @@
               {#if ownerLoopId(graph.nodes, n.id) !== null && n.type !== "loop"}
                 <text
                   class="member-move-up"
+                  role="button"
+                  tabindex="0"
+                  aria-label="Subir bloque del bucle"
                   data-testid="member-move-up"
                   data-node-id={n.id}
                   x={NODE_W - 38}
@@ -643,9 +646,19 @@
                     memberMove(ownerLoopId(graph.nodes, n.id)!, n.id, -1);
                   }}
                   onpointerdown={(e) => e.stopPropagation()}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      memberMove(ownerLoopId(graph.nodes, n.id)!, n.id, -1);
+                    }
+                  }}
                 >▲</text>
                 <text
                   class="member-move-down"
+                  role="button"
+                  tabindex="0"
+                  aria-label="Bajar bloque del bucle"
                   data-testid="member-move-down"
                   data-node-id={n.id}
                   x={NODE_W - 18}
@@ -656,6 +669,13 @@
                     memberMove(ownerLoopId(graph.nodes, n.id)!, n.id, 1);
                   }}
                   onpointerdown={(e) => e.stopPropagation()}
+                  onkeydown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      memberMove(ownerLoopId(graph.nodes, n.id)!, n.id, 1);
+                    }
+                  }}
                 >▼</text>
               {/if}
             </g>

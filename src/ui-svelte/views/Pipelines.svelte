@@ -27,22 +27,22 @@
   {#if $store.pipelines.length === 0}
     <p class="hint">No hay pipelines registrados.</p>
   {:else}
-    <div id="pipelines-list" class="list" role="list" data-testid="pipelines-list">
+<ul id="pipelines-list" class="list" data-testid="pipelines-list">
       {#each $store.pipelines as pipeline (pipeline.id)}
-        <button
-          type="button"
-          role="listitem"
-          class="list-item"
-          data-pipeline-id={pipeline.id}
-          data-testid={`pipeline-row-${pipeline.id}`}
-          onclick={() => openPipeline(pipeline.id)}
-        >
-          <span class="primary">{pipeline.displayName ?? pipeline.id}</span>
-          {#if pipeline.nodeCount !== undefined}
-            <span class="secondary">{pipeline.nodeCount} nodos</span>
-          {/if}
-        </button>
+        <li class="list-item" data-pipeline-id={pipeline.id}>
+          <button
+            type="button"
+            class="list-item-action"
+            data-testid={`pipeline-row-${pipeline.id}`}
+            onclick={() => openPipeline(pipeline.id)}
+          >
+            <span class="primary">{pipeline.displayName ?? pipeline.id}</span>
+            {#if pipeline.nodeCount !== undefined}
+              <span class="secondary">{pipeline.nodeCount} nodos</span>
+            {/if}
+          </button>
+        </li>
       {/each}
-    </div>
+    </ul>
   {/if}
 </section>
