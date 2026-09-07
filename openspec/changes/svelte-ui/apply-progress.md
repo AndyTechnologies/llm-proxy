@@ -6,7 +6,9 @@ Date: 2026-09-06
 
 ## Unit 3 final state (this branch, after remediation + 4.4)
 
-- `bun test` → 792 pass / 0 fail (1951 expects; after `build:ui`)
+- `bun test` → 716 pass / 0 fail (1807 expects; after 4.4 deleted the legacy
+  `src/ui/graph-model.test.js` suite — its 76 cases are covered by the TS port
+  oracle in `src/ui-svelte/lib/graph-model.test.ts`)
 - `bun run test:e2e` → 17 pass / 0 fail (dashboard.spec.ts)
 - `bun test ./scripts/binary-smoke.test.ts` → 6 pass / 0 fail
 - `bun run typecheck` → clean; `bun run lint` → clean
