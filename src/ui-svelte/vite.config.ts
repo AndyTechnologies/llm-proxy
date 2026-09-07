@@ -14,6 +14,10 @@ import { defineConfig } from "vite";
  */
 export default defineConfig({
   plugins: [svelte()],
+  // The Bun backend serves the compiled SPA under /ui (never at the site
+  // root), so every emitted asset URL must be prefixed accordingly —
+  // otherwise index.html points at root-absolute /assets/* that 404.
+  base: "/ui/",
   build: {
     outDir: fileURLToPath(new URL("../../dist/ui", import.meta.url)),
     emptyOutDir: true,

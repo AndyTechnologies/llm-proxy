@@ -41,7 +41,7 @@ export interface RestService {
   configureAgent(config: unknown): Promise<unknown>;
 }
 
-export function createRestService(base: string): RestService {
+export function createRestService(base = ""): RestService {
   const api = async <T>(path: string, init?: RequestInit): Promise<T> => {
     const res = await fetch(`${base}${path}`, {
       ...init,

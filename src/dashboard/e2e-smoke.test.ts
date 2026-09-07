@@ -87,9 +87,9 @@ describe.skipIf(!BUILT)("compiled /ui E2E smoke (svelte-ui 2.2)", () => {
     // Phase 3 moved the a11y shell out of index.html INTO App.svelte, so the
     // banner landmark and Spanish nav label now live in the hashed JS chunk.
     const index = await (await get("/ui")).text();
-    const asset = index.match(/src="(\/?assets\/[^"]+\.js)"/);
+    const asset = index.match(/src="(?:\/ui\/)?(assets\/[^"]+\.js)"/);
     expect(asset).not.toBeNull();
-    const js = await (await get(`/ui/${asset![1].replace(/^\//, "")}`)).text();
+    const js = await (await get(`/ui/${asset![1]}`)).text();
     expect(js).toContain("role=\"banner\"");
     expect(js).toContain("aria-label=\"Principal\"");
     expect(js).toContain("Saltar al contenido principal");
@@ -97,9 +97,9 @@ describe.skipIf(!BUILT)("compiled /ui E2E smoke (svelte-ui 2.2)", () => {
 
   it("serves a hashed JS asset referenced by index.html with application/javascript", async () => {
     const index = await (await get("/ui")).text();
-    const asset = index.match(/src="(\/?assets\/[^"]+\.js)"/);
+    const asset = index.match(/src="(?:\/ui\/)?(assets\/[^"]+\.js)"/);
     expect(asset).not.toBeNull();
-    const res = await get(`/ui/${asset![1].replace(/^\//, "")}`);
+    const res = await get(`/ui/${asset![1]}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("javascript");
     expect(await res.text()).not.toBe("");
@@ -107,9 +107,9 @@ describe.skipIf(!BUILT)("compiled /ui E2E smoke (svelte-ui 2.2)", () => {
 
   it("serves a hashed CSS asset referenced by index.html with text/css", async () => {
     const index = await (await get("/ui")).text();
-    const asset = index.match(/href="(\/?assets\/[^"]+\.css)"/);
+    const asset = index.match(/href="(?:\/ui\/)?(assets\/[^"]+\.css)"/);
     expect(asset).not.toBeNull();
-    const res = await get(`/ui/${asset![1].replace(/^\//, "")}`);
+    const res = await get(`/ui/${asset![1]}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/css");
   });
