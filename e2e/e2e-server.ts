@@ -92,8 +92,16 @@ const UI_DIR = process.env.UI_DIR ?? join(import.meta.dir, "..", "dist", "ui");
  * `tracker` and `bus` live at module scope so the SSE-live debug seam
  * (`POST /api/ui/_e2e/complete`) can record + publish deterministically.
  */
-const tracker = createExecutionTracker({ maxHistory: 100 });
-const bus = createEventBus({ bufferSize: 100 });
+let tracker = createExecutionTracker({ maxHistory: 100 });
+let bus = createEventBus({ bufferSize: 100 });
+
+/**
+ * Chains applied through the editor (magic "applies" in the harness): the
+ * simulated persist/reload writes them here, and the Pipelines list is
+ * derived from `exampleChainSummaries() + appliedChains` so the editor's
+ * apply round-trip is observable end-to-end.
+ */
+let appliedChains: string[] = [];
 
 function buildDeps(): ServerDeps {
   const metrics = createMetricsCollector();
@@ -106,12 +114,27 @@ function buildDeps(): ServerDeps {
   const applyService = createApplyService({
     configPath: "/tmp/e2e-llm-proxy.config.yaml",
     persist: async () => "yaml",
-    reload: () => {},
+    // The harness simulates persistence: chains applied through the editor
+    // join the pipeline summaries so the Pipelines list reflects them.
+    reload: (chains) => {
+      appliedChains.length = 0;
+      appliedChains.push(...chains);
+    },
     getCurrentChains: () => ["customer-support"],
   });
 
   const dashboardHandler = createDashboardRouter({
-    chainSummaries: exampleChainSummaries,
+    chainSummaries: () => [
+      ...exampleChainSummaries(),
+      ...appliedChains
+        .filter((id) => !["customer-support", "summarize"].includes(id))
+        .map((id) => ({
+          id,
+          description: "Applied from the editor",
+          nodeCount: 1,
+          lastExecution: null as string | null,
+        })),
+    ],
     getPipeline: (id) => (id === EXAMPLE_PIPELINE.id ? EXAMPLE_PIPELINE : undefined),
     registeredModels: () => ["llama-3.1-8b.gguf", "llama-3.1-70b.gguf"],
     modelDetails: () => [
@@ -143,13 +166,16 @@ function buildDeps(): ServerDeps {
   } as ServerDeps;
 }
 
-const app = createApp(buildDeps());
+let app = createApp(buildDeps());
 
 // ── SSE-live debug seam (harness only, svelte-ui 2.4) ──
 // `POST /api/ui/_e2e/complete` records one more completed execution on the
 // shared tracker and publishes `execution:completed` to the bus, so the
 // "SSE live updates" spec can assert that the open page appends the new
-// execution without a reload. Never wired into the real entry point.
+// execution without a reload. `POST /api/ui/_e2e/reset` rebuilds the harness
+// from scratch (fresh tracker/bus/applied-chains, reseeding the single
+// example execution) so tests stay deterministic across runs — including
+// Playwright reusing an already-running server locally.
 const harnessApp = async (req: Request, srv: ReturnType<typeof Bun.serve>) => {
   const url = new URL(req.url);
   if (req.method === "POST" && url.pathname === "/api/ui/_e2e/complete") {
@@ -162,6 +188,23 @@ const harnessApp = async (req: Request, srv: ReturnType<typeof Bun.serve>) => {
     tracker.recordComplete(executionId);
     bus.publish({ type: "execution:completed", executionId });
     return Response.json({ ok: true, executionId });
+  }
+  if (req.method === "POST" && url.pathname === "/api/ui/_e2e/reset") {
+    tracker = createExecutionTracker({ maxHistory: 100 });
+    bus = createEventBus({ bufferSize: 100 });
+    appliedChains = [];
+    app = createApp(buildDeps());
+    return Response.json({ ok: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/ui/apply") {
+    const body = await req.text();
+    console.log("[e2e] apply body:", body.slice(0, 2000));
+    const appResp = await app(
+      new Request(req.url, { method: req.method, headers: req.headers, body }),
+      srv,
+    );
+    console.log("[e2e] apply status:", appResp.status);
+    return appResp;
   }
   return app(req, srv);
 };

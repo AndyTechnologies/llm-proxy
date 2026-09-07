@@ -19,7 +19,10 @@
 import { test, expect } from "@playwright/test";
 
 /** Open the dashboard root. Runs before every test so state is fresh. */
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, request }) => {
+  // Rebuild the harness: fresh tracker (1 seeded execution), no applied
+  // chains — deterministic regardless of run order or server reuse.
+  await request.post("/api/ui/_e2e/reset");
   await page.goto("/ui");
 });
 
@@ -169,6 +172,12 @@ test.describe("validate + apply", () => {
   });
 
   test("apply applies the pipeline through the apply dialog", async ({ page }) => {
+    // A chain needs at least one node (chainConfigSchema.nodes.min(1)) — the
+    // user builds a minimal graph before applying it.
+    await page.locator("#graph-canvas").focus();
+    await page.keyboard.press("1");
+    await expect(page.locator("#graph-svg .graph-node")).toHaveCount(1);
+
     await page.locator("#btn-apply").click();
     await expect(page.locator("#apply-dialog")).toBeVisible();
     await page.locator("#apply-dialog #btn-confirm-apply").click();
