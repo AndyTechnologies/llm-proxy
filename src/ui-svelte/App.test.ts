@@ -121,3 +121,39 @@ describe("App shell (task 3.3)", () => {
     expect(f.stores!.trace.getEntries().some((t) => t.kind === "sse")).toBe(true);
   });
 });
+
+describe("App trace panel (spec scenario 11)", () => {
+  it("renders the trace log with boot entries", async () => {
+    const f = renderApp();
+    await waitFor(() => expect(f.stores!.trace.getEntries().some((t) => t.message === "boot")).toBe(true));
+    const panel = f.getByTestId("trace-panel");
+    expect(within(panel).getByTestId("trace-list")).toBeTruthy();
+    expect(within(panel).getByText("boot")).toBeTruthy();
+  });
+
+  it("toggles the trace panel open and closed from the header control", async () => {
+    const f = renderApp();
+    await waitFor(() => expect(f.getByTestId("trace-list")).toBeTruthy());
+    fireEvent.click(f.getByTestId("trace-toggle"));
+    await waitFor(() => expect(f.queryByTestId("trace-list")).toBeNull());
+    fireEvent.click(f.getByTestId("trace-toggle"));
+    await waitFor(() => expect(f.getByTestId("trace-list")).toBeTruthy());
+  });
+
+  it("verbose mode reveals entry details", async () => {
+    const f = renderApp();
+    await waitFor(() => expect(f.getByTestId("trace-list")).toBeTruthy());
+    f.stores!.trace.log("fetch", "models:ok", { status: 200, ms: 12 });
+    await waitFor(() => expect(f.getByText("models:ok")).toBeTruthy());
+    expect(f.queryByTestId("trace-detail")).toBeNull();
+    fireEvent.click(f.getByTestId("trace-verbose"));
+    await waitFor(() => expect(f.getByTestId("trace-detail")).toBeTruthy());
+    expect(f.getByTestId("trace-detail").textContent).toContain("200");
+  });
+
+  it("feeds step:failed into the dashboard store (retry data path)", async () => {
+    const f = renderApp();
+    f.sources[0]!.emit("step:failed", { executionId: "ex2", nodeId: "n3" });
+    await waitFor(() => expect(f.stores!.dashboard.getSnapshot().failedNodes).toEqual({ ex2: "n3" }));
+  });
+});
