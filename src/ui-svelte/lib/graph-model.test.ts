@@ -6,8 +6,7 @@
  * `src/ui/graph-model.test.js` suite (which ships behavior the editor
  * depends on). The production module `src/ui-svelte/lib/graph-model.ts` must
  * pass every case below unchanged in spirit — types are added, semantics are
- * preserved. `src/ui/graph-model.js` stays on disk (rollback boundary);
- * `src/ui-svelte/lib/graph-model.ts` is the authoritative port.
+ * preserved.
  *
  * These tests reference production code (`./graph-model.js`) that does not
  * exist yet → RED.

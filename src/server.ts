@@ -140,9 +140,10 @@ export interface ServerDeps {
    */
   noteActivity?: (model: string) => (() => void) | void;
   /**
-   * Static SPA directory (`src/ui`). When present, `/ui` serves index.html and
-   * siblings as static assets with correct content types + a path-traversal
-   * guard (Slice D, dashboard-ui Req "Static SPA serving").
+   * Static SPA directory (compiled `dist/ui`, overwritten by a built SPA).
+   * When present, `/ui` serves index.html and siblings as static assets with
+   * correct content types + a path-traversal guard (Slice D, dashboard-ui Req
+   * "Static SPA serving").
    */
   uiDir?: string;
   /**

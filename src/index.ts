@@ -511,9 +511,8 @@ const dashboardHandler = createDashboardRouter({
 // bundle under `dist/ui` (built with `bun run build:ui`). `UI_DIR` always
 // wins. Without it, the resolution is: compiled `./dist/ui` when the build
 // exists, else the embedded copy next to this module when one is present.
-// The embedded check explicitly excludes the legacy `src/ui` source tree
-// (recognized by its `app.js` marker): it still ships the OLD SPA until
-// Phase 4.4 deletes it, and it must never shadow the compiled bundle.
+// The compiled bundle in `dist/ui` is authoritative (the legacy `src/ui`
+// source tree was deleted in Phase 4.4).
 // A missing build falls through to `./dist/ui`, where the server's /ui
 // handler returns the "run build:ui" 404.
 async function resolveUiDir(): Promise<string> {

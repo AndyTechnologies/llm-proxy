@@ -150,7 +150,7 @@ chains:
 | -------------- | ---------------------------------------------- |
 | `CONFIG_FILE`  | Override the config file path.                 |
 | `BEARER_TOKEN` | When set, require `Authorization: Bearer <token>` on every request. |
-| `UI_DIR`       | Override the dashboard SPA directory served at `/ui` (default `./src/ui`). |
+| `UI_DIR`       | Override the dashboard SPA directory served at `/ui` (default compiled `dist/ui`, built with `bun run build:ui`). |
 
 ---
 
@@ -244,7 +244,7 @@ src/orchestrator/  chain parsing (parser) + execution (engine)
 src/routes/        HTTP handlers: chat, completions, health, models
 src/middleware/    auth guard, error handling, passthrough proxy
 src/dashboard/     /api/ui/* REST+SSE, apply, tracker, metrics, retry
-src/ui/            dashboard SPA (static HTML/CSS/JS served at /ui)
+src/ui-svelte/     dashboard SPA source (Svelte, compiled to dist/ui served at /ui)
 src/types/         shared + OpenAI types
 src/utils/         logging, ids, content extraction, sanitization
 ```
