@@ -1,16 +1,77 @@
 <script lang="ts">
   /**
-   * Modelos view — model registry + lifecycle backend panel (task 3.3).
+   * Modelos view — model registry + lifecycle backend panel (tasks 3.3/3.6,
+   * verify scenario 10).
    *
-   * The panel fields render the loaded config and VRAM state; saving the
-   * lifecycle settings and the unload actions wire up in task 3.6.
+   * The panel edits a local draft seeded from the loaded config, validates
+   * client-side, and applies the MERGED config through the dashboard store
+   * (api.applyConfig), which reloads config + models so the view reflects
+   * the saved values. VRAM modes/labels mirror the legacy /ui select;
+   * freeGb/capGb visibility follows the legacy toggling by mode.
    */
   import type { DashboardStore } from "../stores/dashboard-store.js";
   import type { ModelEntry } from "../stores/types.js";
+  import {
+    VRAM_MODES,
+    VRAM_MODE_LABELS,
+    toLifecycleDraft,
+    mergeLifecycleConfig,
+    validateLifecycleDraft,
+    lifecycleDraftEquals,
+    isVramMode,
+    type LifecycleDraft,
+  } from "../lib/lifecycle-form.js";
 
   let { store, hidden = false }: { store: DashboardStore; hidden?: boolean } = $props();
 
-  const VRAM_MODES = ["auto", "off", "free", "cap"];
+  /** Draft of the visible panel fields; re-seeded whenever the loaded config
+   * changes and the user has not touched the form (apply reloads included). */
+  let draft = $state<LifecycleDraft>(toLifecycleDraft($store.config));
+  let touched = $state(false);
+  let formError = $state<string | null>(null);
+
+  $effect(() => {
+    if (!touched) draft = toLifecycleDraft($store.config);
+  });
+
+  const isDirty = $derived(!lifecycleDraftEquals(draft, toLifecycleDraft($store.config)));
+  const showFreeGb = $derived(draft.vramMode === "dynamic" || draft.vramMode === "margin");
+
+  function setDraft(patch: Partial<LifecycleDraft>): void {
+    touched = true;
+    formError = null;
+    draft = { ...draft, ...patch };
+  }
+
+  function handleTtl(event: Event): void {
+    setDraft({ ttl: Number((event.currentTarget as HTMLInputElement).value) });
+  }
+
+  function handleMode(event: Event): void {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    if (isVramMode(value)) setDraft({ vramMode: value });
+  }
+
+  function handleFreeGb(event: Event): void {
+    setDraft({ freeGb: Number((event.currentTarget as HTMLInputElement).value) });
+  }
+
+  function handleCapGb(event: Event): void {
+    setDraft({ capGb: Number((event.currentTarget as HTMLInputElement).value) });
+  }
+
+  async function save(): Promise<void> {
+    const error = validateLifecycleDraft(draft);
+    formError = error;
+    if (error) return;
+    const merged = mergeLifecycleConfig($store.config ?? {}, draft);
+    await store.actions.applyConfig(merged);
+    touched = false;
+  }
+
+  function unloadAll(): void {
+    void store.actions.unloadAllModels();
+  }
 
   function statusLabel(model: ModelEntry): string {
     if (model.processLoaded && model.loaded) return "banner activo";
@@ -34,36 +95,45 @@
         class="text-input"
         type="number"
         min="0"
-        value={$store.config?.llama?.lifecycle?.ttl ?? ""}
-        disabled
+        step="1"
+        value={draft.ttl}
+        oninput={handleTtl}
         data-testid="lc-ttl"
       />
       <label class="lc-label" for="lc-vram-mode">Modo VRAM</label>
-      <select id="lc-vram-mode" class="text-input" disabled data-testid="lc-vram-mode">
+      <select
+        id="lc-vram-mode"
+        class="text-input"
+        value={draft.vramMode}
+        onchange={handleMode}
+        data-testid="lc-vram-mode"
+      >
         {#each VRAM_MODES as mode (mode)}
-          <option value={mode} selected={$store.config?.llama?.lifecycle?.vram?.mode === mode}>{mode}</option>
+          <option value={mode}>{VRAM_MODE_LABELS[mode]}</option>
         {/each}
       </select>
-      <label class="lc-label" for="lc-freegb">VRAM libre (GiB)</label>
+      <label class="lc-label" for="lc-freegb" hidden={!showFreeGb || undefined}>VRAM libre (GiB)</label>
       <input
         id="lc-freegb"
         class="text-input"
         type="number"
         min="0"
         step="0.5"
-        value={$store.config?.llama?.lifecycle?.vram?.freeGb ?? ""}
-        disabled
+        value={draft.freeGb}
+        oninput={handleFreeGb}
+        hidden={!showFreeGb || undefined}
         data-testid="lc-freegb"
       />
-      <label class="lc-label" for="lc-capgb">VRAM cap (GiB)</label>
+      <label class="lc-label" for="lc-capgb" hidden={showFreeGb || undefined}>VRAM cap (GiB)</label>
       <input
         id="lc-capgb"
         class="text-input"
         type="number"
         min="0"
         step="0.5"
-        value={$store.config?.llama?.lifecycle?.vram?.capGb ?? ""}
-        disabled
+        value={draft.capGb}
+        oninput={handleCapGb}
+        hidden={showFreeGb || undefined}
         data-testid="lc-capgb"
       />
       <label class="lc-label" for="lc-status">Estado</label>
@@ -77,9 +147,34 @@
         {/if}
       </span>
     </div>
+    {#if formError}
+      <p class="validation-error" data-testid="lc-form-error">{formError}</p>
+    {/if}
+    {#if $store.applyError}
+      <p class="validation-error" data-testid="lc-apply-error">{$store.applyError}</p>
+    {/if}
+    {#if $store.unloadAllError}
+      <p class="validation-error" data-testid="lc-unload-error">{$store.unloadAllError}</p>
+    {/if}
     <div class="lc-actions">
-      <button id="lc-save" class="btn btn-primary" disabled data-testid="lc-save">Guardar ajustes</button>
-      <button id="lc-unload-all" class="btn btn-danger" disabled data-testid="lc-unload-all">Descargar todos</button>
+      <button
+        id="lc-save"
+        class="btn btn-primary"
+        disabled={!isDirty || $store.applying}
+        onclick={save}
+        data-testid="lc-save"
+      >
+        {#if $store.applying}Guardando…{:else}Guardar ajustes{/if}
+      </button>
+      <button
+        id="lc-unload-all"
+        class="btn btn-danger"
+        disabled={$store.unloadingAll}
+        onclick={unloadAll}
+        data-testid="lc-unload-all"
+      >
+        {#if $store.unloadingAll}Descargando…{:else}Descargar todos{/if}
+      </button>
     </div>
   </div>
 

@@ -9,10 +9,12 @@
  * screen's module-eval-time binding can race the jsdom preload.
  */
 import { describe, it, expect } from "bun:test";
-import { render, within } from "@testing-library/svelte";
+import { render, within, fireEvent, waitFor } from "@testing-library/svelte";
 import Modelos from "./Modelos.svelte";
-import { makeDashboardStore } from "../test-setup/fakes.js";
-import type { ModelEntry } from "../stores/types.js";
+import { createDashboardStore } from "../stores/dashboard-store.js";
+import { makeDashboardStore, makeFakeDashboardApi } from "../test-setup/fakes.js";
+import type { FakeDashboardData } from "../test-setup/fakes.js";
+import type { ModelEntry, LifecycleConfig } from "../stores/types.js";
 
 const MODELS = [
   { id: "qwen2.5:7b", loaded: true, processLoaded: true, ctx: 8192 },
@@ -90,5 +92,88 @@ describe("Modelos view (task 3.3)", () => {
     await store.actions.loadModels();
     const { getByText } = render(Modelos, { props: { store } });
     expect(getByText(/No hay modelos/i)).toBeTruthy();
+  });
+});
+
+describe("Modelos view (lifecycle apply, spec scenario 10)", () => {
+  const CONFIG = {
+    llama: { lifecycle: { ttl: 30, vram: { mode: "dynamic", freeGb: 2, capGb: 8 } } },
+  } as LifecycleConfig;
+
+  function renderPanel(data: Partial<FakeDashboardData>) {
+    const api = makeFakeDashboardApi(data);
+    const store = createDashboardStore({ api, refreshWindowMs: 50 });
+    return { api, store };
+  }
+
+  it("renders the schema VRAM modes with their labels", async () => {
+    const store = makeDashboardStore({
+      config: {
+        llama: { lifecycle: { ttl: 30, vram: { mode: "margin", freeGb: 4, capGb: 12 } } },
+      } as LifecycleConfig,
+    });
+    await store.actions.loadConfig();
+    const { getByTestId } = render(Modelos, { props: { store } });
+    const select = getByTestId("lc-vram-mode") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(["dynamic", "margin", "cap"]);
+    expect(select.value).toBe("margin");
+  });
+
+  it("enables save only when dirty and applies the merged config", async () => {
+    const { api, store } = renderPanel({ config: CONFIG });
+    await store.actions.loadConfig();
+    const { getByTestId } = render(Modelos, { props: { store } });
+    const save = getByTestId("lc-save") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    await fireEvent.input(getByTestId("lc-ttl"), { target: { value: "60" } });
+    await waitFor(() => expect(save.disabled).toBe(false));
+    fireEvent.click(save);
+    await waitFor(() => expect(api.calls.applyConfig).toBe(1));
+    expect(api.lastAppliedConfig).toEqual({
+      llama: { lifecycle: { ttl: 60, vram: { mode: "dynamic", freeGb: 2, capGb: 8 } } },
+    });
+    await waitFor(() => expect(api.calls.config).toBe(2));
+    await waitFor(() => expect(save.disabled).toBe(true));
+  });
+
+  it("blocks save and surfaces the error when the TTL is invalid", async () => {
+    const { api, store } = renderPanel({ config: CONFIG });
+    await store.actions.loadConfig();
+    const { getByTestId } = render(Modelos, { props: { store } });
+    const save = getByTestId("lc-save") as HTMLButtonElement;
+    await fireEvent.input(getByTestId("lc-ttl"), { target: { value: "-5" } });
+    await waitFor(() => expect(save.disabled).toBe(false));
+    fireEvent.click(save);
+    await waitFor(() => expect(getByTestId("lc-form-error")).toBeTruthy());
+    expect(api.calls.applyConfig).toBe(0);
+  });
+
+  it("shows the freeGb field for dynamic/margin and the capGb field only for cap", async () => {
+    const store = makeDashboardStore({
+      config: {
+        llama: { lifecycle: { ttl: 30, vram: { mode: "margin", freeGb: 4, capGb: 12 } } },
+      } as LifecycleConfig,
+    });
+    await store.actions.loadConfig();
+    const { getByTestId } = render(Modelos, { props: { store } });
+    const freegb = getByTestId("lc-freegb");
+    const capgb = getByTestId("lc-capgb");
+    expect(freegb).toBeVisible();
+    expect(capgb).not.toBeVisible();
+    await fireEvent.change(getByTestId("lc-vram-mode"), { target: { value: "cap" } });
+    await waitFor(() => expect(capgb).toBeVisible());
+    expect(freegb).not.toBeVisible();
+  });
+
+  it("unloads all models through the api and reloads the registry", async () => {
+    const { api, store } = renderPanel({
+      models: [{ id: "qwen:7b", loaded: true }] as ModelEntry[],
+      modelsDir: "/models",
+    });
+    await store.actions.loadModels();
+    const { getByTestId } = render(Modelos, { props: { store } });
+    fireEvent.click(getByTestId("lc-unload-all"));
+    await waitFor(() => expect(api.calls.unloadAllModels).toBe(1));
+    await waitFor(() => expect(api.calls.models).toBe(2));
   });
 });
