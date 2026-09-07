@@ -1,9 +1,11 @@
 <script lang="ts">
   /**
-   * Agentes view (svelte-ui task 3.3).
+   * Agentes view (svelte-ui task 3.3 + 3.6).
    *
-   * Agent status rows (OpenCode, Pi) from the dashboard store; the
-   * per-agent configure action lands with task 3.6.
+   * Agent status rows (OpenCode, Pi) from the dashboard store; each row has a
+   * "Configurar" button that syncs the agent's provider with the gateway
+   * (store action -> POST /api/ui/agents/configure) with pending / success /
+   * inline-error feedback.
    */
   import type { DashboardStore } from "../stores/dashboard-store.js";
 
@@ -27,6 +29,25 @@
             <span class="status status--active">proveedor presente</span>
           {/if}
           <span class="secondary">{agent.modelCount ?? 0} modelos</span>
+          <button
+            type="button"
+            class="btn btn-small agent-configure"
+            data-testid="agent-configure"
+            data-agent-id={agent.id}
+            disabled={$store.configuring[agent.id] === true}
+            onclick={() => store.actions.configureAgent(agent.id)}
+          >
+            {#if $store.configuring[agent.id]}
+              configurando…
+            {:else}
+              Configurar
+            {/if}
+          </button>
+          {#if $store.configureErrors[agent.id]}
+            <span class="agent-configure-error" data-testid="agent-configure-error" data-agent-id={agent.id}>
+              {$store.configureErrors[agent.id]}
+            </span>
+          {/if}
         </div>
       {/each}
     </div>

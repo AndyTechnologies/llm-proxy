@@ -34,6 +34,7 @@ function fakeApi() {
     retryStep: 0,
     applyConfig: 0,
     unloadAllModels: 0,
+    configureAgent: 0,
   };
   return {
     calls,
@@ -47,6 +48,8 @@ function fakeApi() {
         ((calls.retryStep += 1), { success: true, retryExecutionId: "ex2" }),
       applyConfig: async (_config: unknown) => ((calls.applyConfig += 1), undefined),
       unloadAllModels: async () => ((calls.unloadAllModels += 1), { unloaded: 2 }),
+      configureAgent: async (_config: { agent: string; apiKey?: string }) =>
+        ((calls.configureAgent += 1), { ok: true, requiresRestart: true }),
     },
   };
 }
@@ -333,5 +336,48 @@ describe("dashboard store (action wiring: retry / apply / unload)", () => {
     const s = store.getSnapshot();
     expect(s.unloadAllError).toMatch(/boom/);
     expect(s.unloadingAll).toBe(false);
+  });
+
+  it("configureAgent posts the agent id and reloads agents on success", async () => {
+    const { api, calls } = fakeApi();
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    await store.actions.configureAgent("a1");
+    expect(calls.configureAgent).toBe(1);
+    expect(calls.agents).toBe(1);
+    const s = store.getSnapshot();
+    expect(s.configuring.a1).toBe(false);
+    expect(s.configureErrors.a1).toBe("");
+    expect(s.agents).toEqual(rows.agents);
+  });
+
+  it("configureAgent is per-agent pending until the api responds", async () => {
+    let resolveConfigure!: (result: { ok: boolean; requiresRestart: boolean }) => void;
+    const api = {
+      ...fakeApi().api,
+      configureAgent: (_config: { agent: string; apiKey?: string }) =>
+        new Promise<{ ok: boolean; requiresRestart: boolean }>((resolve) => {
+          resolveConfigure = resolve;
+        }),
+    };
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    const pending = store.actions.configureAgent("a1");
+    expect(store.getSnapshot().configuring.a1).toBe(true);
+    resolveConfigure({ ok: true, requiresRestart: true });
+    await pending;
+    expect(store.getSnapshot().configuring.a1).toBe(false);
+  });
+
+  it("configureAgent surfaces the api error next to the agent", async () => {
+    const api = {
+      ...fakeApi().api,
+      configureAgent: async (_config: { agent: string; apiKey?: string }) => {
+        throw new Error("boom");
+      },
+    };
+    const store = createDashboardStore({ api, schedule: manualScheduler().schedule, onError: () => {} });
+    await store.actions.configureAgent("a1");
+    const s = store.getSnapshot();
+    expect(s.configureErrors.a1).toMatch(/boom/);
+    expect(s.configuring.a1).toBe(false);
   });
 });

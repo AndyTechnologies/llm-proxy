@@ -12,7 +12,7 @@
  * exist yet → RED.
  */
 import { describe, it, expect } from "bun:test";
-import type { GraphNode } from "./graph-model.js";
+import type { GraphNode, GraphEdge } from "./graph-model.js";
 import {
   createNode,
   nodeTypes,
@@ -38,6 +38,7 @@ import {
   bezierEdge,
   stackLoopMembers,
   ownerLoopId,
+  addLoopMemberNode,
   stripLoopInternalEdges,
   llmModeLegible,
   describeLlmCall,
@@ -159,10 +160,27 @@ describe("graph-model: node manipulation helpers", () => {
     expect(next).toEqual([{ from: "cond", to: "yes", guard: "true" }]);
   });
 
-  it("connectNodes replaces an existing from→to edge and rejects self-edges", () => {
+  it("connectNodes replaces an existing same-guard from→to edge and rejects self-edges", () => {
     const edges = [{ from: "a", to: "b", guard: "true" }];
-    expect(connectNodes(edges, "a", "b")).toEqual([{ from: "a", to: "b" }]);
+    // Same connection (same from→to→guard) is deduped, never duplicated.
+    expect(connectNodes(edges, "a", "b", "true")).toEqual([{ from: "a", to: "b", guard: "true" }]);
+    // An unguarded connection is a different connection kind and coexists.
+    expect(connectNodes(edges, "a", "b")).toEqual([
+      { from: "a", to: "b", guard: "true" },
+      { from: "a", to: "b" },
+    ]);
     expect(connectNodes([], "a", "a")).toHaveLength(0);
+  });
+
+  it("connectNodes keeps both condition branches to the same target (rejoin)", () => {
+    let edges: GraphEdge[] = [];
+    edges = connectNodes(edges, "cond", "call", "true");
+    edges = connectNodes(edges, "cond", "call", "false");
+    expect(edges).toHaveLength(2);
+    expect(edges.map((e) => e.guard).sort()).toEqual(["false", "true"]);
+    // Re-drawing either branch does not create a third edge.
+    const again = connectNodes(edges, "cond", "call", "true");
+    expect(again).toHaveLength(2);
   });
 });
 
@@ -426,6 +444,20 @@ describe("graph-model: ownerLoopId + stripLoopInternalEdges", () => {
       { from: "start", to: "loop" },
       { from: "loop", to: "end" },
     ]);
+  });
+
+  it("addLoopMemberNode appends a member to a loop body without duplicating", () => {
+    const nodes: GraphNode[] = [
+      { id: "loop", type: "loop", body: ["a"] },
+      { id: "a", type: "llm_call" },
+      { id: "b", type: "llm_call" },
+    ];
+    const next = addLoopMemberNode(nodes, "loop", "b");
+    expect(next.find((n) => n.id === "loop")!.body).toEqual(["a", "b"]);
+    // Already a member → same array reference (no-op).
+    expect(addLoopMemberNode(nodes, "loop", "a")).toBe(nodes);
+    // Unknown loop → same reference.
+    expect(addLoopMemberNode(nodes, "missing", "b")).toBe(nodes);
   });
 });
 

@@ -58,6 +58,7 @@
       retryStep: rest.retryStep,
       applyConfig: rest.applyConfig,
       unloadAllModels: rest.unloadAllModels,
+      configureAgent: rest.configureAgent,
     };
     const editorApi: EditorApi = {
       getPipeline: rest.getPipeline,

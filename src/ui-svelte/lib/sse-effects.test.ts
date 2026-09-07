@@ -41,6 +41,7 @@ function harness() {
     retryStep: async () => ({ success: true }),
     applyConfig: async () => undefined,
     unloadAllModels: async () => ({ unloaded: 0 }),
+    configureAgent: async () => ({ ok: true, requiresRestart: true }),
   };
   return { calls, api };
 }

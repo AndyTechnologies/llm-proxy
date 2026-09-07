@@ -126,8 +126,8 @@ test.describe("editor interaction (SVG render)", () => {
 
   test("self-edge connect is rejected on the 24px snap", async ({ page }) => {
     await page.locator("#graph-canvas").focus();
-    await page.keyboard.press("1"); // start
-    const node = page.locator('#graph-svg .graph-node[data-type="start"]');
+    await page.keyboard.press("2"); // llm_call: has both input and output ports
+    const node = page.locator('#graph-svg .graph-node[data-type="llm_call"]');
     const output = node.locator(".port--output");
     const input = node.locator(".port--input");
     // Attempt to connect a node to itself (marked invalid by the editor).
@@ -143,6 +143,75 @@ test.describe("editor interaction (SVG render)", () => {
     await node.click();
     await page.keyboard.press("Delete");
     await expect(page.locator("#graph-svg .graph-node")).toHaveCount(0);
+  });
+});
+
+test.describe("editor port/graph identity (regression — post Svelte migration)", () => {
+  test("start exposes only an output port and end only an input port", async ({ page }) => {
+    await page.locator("#graph-canvas").focus();
+    await page.keyboard.press("1"); // start
+    await page.keyboard.press("6"); // end
+    const start = page.locator('#graph-svg .graph-node[data-type="start"]');
+    const end = page.locator('#graph-svg .graph-node[data-type="end"]');
+    await expect(start.locator(".port--output")).toHaveCount(1);
+    await expect(start.locator(".port--input")).toHaveCount(0);
+    await expect(end.locator(".port--input")).toHaveCount(1);
+    await expect(end.locator(".port--output")).toHaveCount(0);
+  });
+
+  test("condition branches carry data-cond true/false ports", async ({ page }) => {
+    await page.locator("#graph-canvas").focus();
+    await page.keyboard.press("3"); // condition
+    const cond = page.locator('#graph-svg .graph-node[data-type="condition"]');
+    await expect(cond.locator('.port[data-cond="true"]')).toHaveCount(1);
+    await expect(cond.locator('.port[data-cond="false"]')).toHaveCount(1);
+  });
+
+  test("connecting two condition branches to one target draws exactly two edges (no each_key_duplicate)", async ({ page }) => {
+    await page.locator("#graph-canvas").focus();
+    await page.keyboard.press("3"); // condition
+    await page.keyboard.press("2"); // llm_call target
+    const cond = page.locator('#graph-svg .graph-node[data-type="condition"]');
+    const target = page.locator('#graph-svg .graph-node[data-type="llm_call"]').locator(".port--input");
+    await cond.locator('.port[data-cond="true"]').dragTo(target);
+    await expect(page.locator("#graph-svg .graph-edge")).toHaveCount(1);
+    await cond.locator('.port[data-cond="false"]').dragTo(target);
+    await expect(page.locator("#graph-svg .graph-edge")).toHaveCount(2);
+    // Both branch edges carry their guard — enabled by the guard-aware edge key
+    // (was: Svelte each_key_duplicate crash with two edges to the same target).
+    await expect(page.locator('#graph-svg .graph-edge[data-guard="true"]')).toHaveCount(1);
+    await expect(page.locator('#graph-svg .graph-edge[data-guard="false"]')).toHaveCount(1);
+  });
+
+  test("a connection renders as one edge group with a curve and a solid tip", async ({ page }) => {
+    await page.locator("#graph-canvas").focus();
+    await page.keyboard.press("1"); // start
+    await page.keyboard.press("2"); // llm_call
+    const output = page.locator('#graph-svg .graph-node[data-type="start"] .port--output');
+    const input = page.locator('#graph-svg .graph-node[data-type="llm_call"] .port--input');
+    await output.dragTo(input);
+    const edge = page.locator("#graph-svg .graph-edge");
+    await expect(edge).toHaveCount(1);
+    // Exactly one curve and one filled arrow about the connection.
+    await expect(edge.locator(".graph-edge-curve")).toHaveCount(1);
+    await expect(edge.locator(".graph-edge-tip")).toHaveCount(1);
+  });
+
+  test("a block added to a loop body exposes no external sockets", async ({ page }) => {
+    await page.locator("#graph-canvas").focus();
+    await page.keyboard.press("4"); // loop
+    const loop = page.locator('#graph-svg .graph-node[data-type="loop"]');
+    await expect(loop).toHaveCount(1);
+    // Add a member via the loop container's add-block button (below the SVG).
+    const addBtn = page.locator(".loop-container-group .loop-add");
+    await expect(addBtn).toHaveCount(1);
+    await addBtn.click();
+    // The newly bucketed llm_call member must not expose external in/out
+    // sockets — member sockets are internal to the loop body.
+    const memberOutputs = page.locator('#graph-svg .graph-node[data-type="llm_call"] .port--output');
+    const memberInputs = page.locator('#graph-svg .graph-node[data-type="llm_call"] .port--input');
+    await expect(memberOutputs).toHaveCount(0);
+    await expect(memberInputs).toHaveCount(0);
   });
 });
 

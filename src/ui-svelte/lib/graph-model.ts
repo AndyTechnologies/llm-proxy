@@ -212,7 +212,10 @@ export function connectNodes(
   guard?: string,
 ): GraphEdge[] {
   if (from === to) return edges;
-  const next = edges.filter((e) => !(e.from === from && e.to === to));
+  const guardKey = (g: string | undefined): string => g ?? "";
+  const next = edges.filter(
+    (e) => !(e.from === from && e.to === to && guardKey(e.guard) === guardKey(guard)),
+  );
   next.push(guard ? { from, to, guard } : { from, to });
   return next;
 }
@@ -458,6 +461,24 @@ export function ownerLoopId(nodes: GraphNode[], nodeId: string): string | null {
     if (n.type === "loop" && Array.isArray(n.body) && n.body.includes(nodeId)) return n.id;
   }
   return null;
+}
+
+/** Add `memberId` to a loop node's body (pure). No-op when the loop is unknown
+ *  or the member is already in the body; returns the input reference otherwise. */
+export function addLoopMemberNode(
+  nodes: GraphNode[],
+  loopId: string,
+  memberId: string,
+): GraphNode[] {
+  let changed = false;
+  const out = nodes.map((n) => {
+    if (n.type !== "loop" || n.id !== loopId) return n;
+    const body = n.body ?? [];
+    if (body.includes(memberId)) return n;
+    changed = true;
+    return { ...n, body: [...body, memberId] };
+  });
+  return changed ? out : nodes;
 }
 
 /** Drop edges that connect into/out of loop body members (obsolete auto-chain). */

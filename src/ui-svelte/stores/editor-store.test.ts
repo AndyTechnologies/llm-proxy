@@ -368,6 +368,31 @@ describe("editor store interactions (task 3.4)", () => {
     expect(store.getSnapshot().nodes[0]!.id).toBe("loop");
   });
 
+  it("addLoopMember adds a fresh llm_call member without relying on positional bucketing", async () => {
+    // The loop has NO position here (a node inserted by keyboard only gets a
+    // materialized position at render time) — the old loopAddBlock flow relied
+    // on bucketDroppedNode and silently failed to add the member, leaving the
+    // member exposed with external sockets.
+    const noPosLoop = {
+      ...loopPipeline,
+      nodes: [{ id: "loop", type: "loop" as const, body: [] }],
+    };
+    const store = createEditorStore(deps({ api: { ...deps().api, getPipeline: async () => noPosLoop } }));
+    await store.actions.loadPipeline("demo");
+    store.actions.addLoopMember("loop", { x: 40, y: 114 });
+    const s = store.getSnapshot();
+    const loop = s.nodes.find((n) => n.id === "loop")!;
+    expect(loop.body ?? []).toHaveLength(1);
+    const member = s.nodes.find((n) => n.id === (loop.body ?? [])[0])!;
+    expect(member.type).toBe("llm_call");
+    expect(member.pos).toEqual({ x: 40, y: 114 });
+    // It is selected and dirty (one history entry removes node + membership).
+    expect(s.selection).toEqual([member.id]);
+    expect(s.dirty).toBe(true);
+    store.actions.undo();
+    expect(store.getSnapshot().nodes).toHaveLength(1);
+  });
+
   it("buckets a drag that ends inside a loop container as ONE history entry", async () => {
     const withCall = {
       ...loopPipeline,

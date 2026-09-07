@@ -91,6 +91,7 @@ export function makeFakeDashboardApi(
     retryStep: 0,
     applyConfig: 0,
     unloadAllModels: 0,
+    configureAgent: 0,
   };
   return {
     calls,
@@ -132,6 +133,10 @@ export function makeFakeDashboardApi(
     async unloadAllModels() {
       calls.unloadAllModels += 1;
       return { unloaded: 0 };
+    },
+    async configureAgent(_config: { agent: string; apiKey?: string }) {
+      calls.configureAgent += 1;
+      return { ok: true, requiresRestart: true };
     },
   };
 }

@@ -428,8 +428,10 @@
     const overlay = loopOverlays.find((o) => o.id === loopId);
     if (!overlay) return;
     const r = overlay.rect;
-    // a position inside the container so the store buckets the new member
-    store.actions.addNode("llm_call", {
+    // Adds the member to the loop body directly (store action) — no reliance
+    // on positional bucketing, which breaks for a loop whose position is only
+    // materialized at render time.
+    store.actions.addLoopMember(loopId, {
       x: r.x + r.width / 2 - NODE_W / 2,
       y: r.y + r.height - NODE_H / 2 - 8,
     });
@@ -464,8 +466,10 @@
     return () => canvas.removeEventListener("wheel", onWheel);
   });
 
-  /** Node-scoped templates. */
+  /** Node-scoped templates. Loop body members expose no external sockets;
+   *  start emits only a single output and end only a single input. */
   function nodeSockets(n: GraphNode): { cx: number; cy: number; guard?: string }[] {
+    if (ownerLoopId(graph.nodes, n.id) !== null && n.type !== "loop") return [];
     if (n.type === "condition") {
       const cs = conditionSockets(n.pos ?? { x: 0, y: 0 });
       return [
@@ -475,20 +479,33 @@
       ];
     }
     const sp = socketPositions(n.pos ?? { x: 0, y: 0 });
-    return [
-      { cx: sp.in.x - (n.pos?.x ?? 0), cy: sp.in.y - (n.pos?.y ?? 0) },
-      { cx: sp.out.x - (n.pos?.x ?? 0), cy: sp.out.y - (n.pos?.y ?? 0) },
-    ];
+    const sockets: { cx: number; cy: number; guard?: string }[] = [];
+    if (n.type !== "start") {
+      sockets.push({ cx: sp.in.x - (n.pos?.x ?? 0), cy: sp.in.y - (n.pos?.y ?? 0) });
+    }
+    if (n.type !== "end") {
+      sockets.push({ cx: sp.out.x - (n.pos?.x ?? 0), cy: sp.out.y - (n.pos?.y ?? 0) });
+    }
+    return sockets;
   }
 
-  function edgePath(e: GraphEdge): string {
+  /** Bezier curve path for an edge (no arrowhead — that is a separate tip). */
+  function edgeCurve(e: GraphEdge): string {
     const from = graph.nodes.find((n) => n.id === e.from);
     const to = graph.nodes.find((n) => n.id === e.to);
     if (!from?.pos || !to?.pos) return "";
     const start = outSocketFor(from, from.pos, e.guard);
     const end = { x: to.pos.x, y: to.pos.y + NODE_H / 2 };
-    const d = bezierEdge(start.x, start.y, end.x, end.y);
-    return `${d} L ${end.x} ${end.y + 10} L ${end.x - 9} ${end.y + 1} Z`; // arrowhead
+    return bezierEdge(start.x, start.y, end.x, end.y);
+  }
+
+  /** Filled arrowhead shape at the target end of an edge. */
+  function edgeTip(e: GraphEdge): string {
+    const from = graph.nodes.find((n) => n.id === e.from);
+    const to = graph.nodes.find((n) => n.id === e.to);
+    if (!from?.pos || !to?.pos) return "";
+    const end = { x: to.pos.x, y: to.pos.y + NODE_H / 2 };
+    return `M ${end.x} ${end.y} L ${end.x} ${end.y + 10} L ${end.x - 9} ${end.y + 1} Z`;
   }
 </script>
 
@@ -594,13 +611,16 @@
           onpointerdown={onBackgroundPointerDown}
         />
         <g data-testid="viewport" transform={`translate(${view.panX} ${view.panY}) scale(${view.zoom})`}>
-          {#each graph.edges as edge (edge.id ?? `${edge.from}>${edge.to}`)}
-            <path
+          {#each graph.edges as edge (edge.id ?? `${edge.from}>${edge.to}:${edge.guard ?? ""}`)}
+            <g
               class="graph-edge"
               data-testid="graph-edge"
-              d={edgePath(edge)}
+              data-guard={edge.guard ?? undefined}
               class:edge-invalid={connect?.invalid === true && connect?.fromId === edge.from}
-            />
+            >
+              <path class="graph-edge-curve" d={edgeCurve(edge)} />
+              <path class="graph-edge-tip" d={edgeTip(edge)} />
+            </g>
           {/each}
 
           {#if connect}

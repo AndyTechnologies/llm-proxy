@@ -73,7 +73,6 @@ describe("Editor interactions (task 3.4)", () => {
     expect(svg!.querySelectorAll('.graph-node[data-type="llm_call"]')).toHaveLength(1);
     const node = svg!.querySelector('.graph-node[data-type="start"]')!;
     expect(node.querySelector(".port--output")).toBeTruthy();
-    expect(node.querySelector(".port--input")).toBeTruthy();
   });
 
   it("renders conditional outputs with their guards", async () => {
@@ -85,11 +84,12 @@ describe("Editor interactions (task 3.4)", () => {
     expect(outputs[1]!.getAttribute("data-guard")).toBe("false");
   });
 
-  it("renders edges as bezier paths", async () => {
+  it("renders edges as bezier curve groups with a solid tip", async () => {
     const { container } = await renderWith([start, call], [{ from: "start", to: "call" }]);
     const edges = container.querySelectorAll("#graph-svg .graph-edge");
     expect(edges).toHaveLength(1);
-    expect(edges[0]!.getAttribute("d")).toContain("C");
+    expect(edges[0]!.querySelector(".graph-edge-curve")!.getAttribute("d")).toContain("C");
+    expect(edges[0]!.querySelector(".graph-edge-tip")).toBeTruthy();
   });
 
   it("adds nodes with the numeric keys 1-6", async () => {
@@ -155,13 +155,15 @@ describe("Editor interactions (task 3.4)", () => {
   });
 
   it("rejects a self-loop connection without invalid styling", async () => {
-    const { store, container } = await renderWith([start, call]);
-    const out = container.querySelector('.graph-node[data-type="start"] .port--output')!;
-    const input = container.querySelector('.graph-node[data-type="start"] .port--input')!;
-    pointer(out, "pointerdown", 200, 68);
-    pointer(window, "pointermove", 100, 68);
+    const { store, container } = await renderWith([call]);
+    const node = container.querySelector('.graph-node[data-type="llm_call"]')!;
+    const out = node.querySelector(".port--output")!;
+    const input = node.querySelector(".port--input")!;
+    // llm_call has both output (right, x=560) and input (left, x=400)
+    pointer(out, "pointerdown", 560, 68);
+    pointer(window, "pointermove", 450, 68);
     expect(input).toBeTruthy(); // own input socket exists
-    pointer(window, "pointerup", 40, 68); // own input (40, 68)
+    pointer(window, "pointerup", 400, 68); // own input (400, 68)
     await waitFor(() => expect(store.getSnapshot().edges).toHaveLength(0));
     expect(container.querySelectorAll("#graph-svg .graph-edge")).toHaveLength(0);
     expect(container.querySelectorAll(".graph-node.edge-invalid")).toHaveLength(0);
@@ -337,5 +339,91 @@ describe("Editor interactions (task 3.4)", () => {
     expect(getByTestId("btn-flow")).toBeTruthy();
     expect(getByTestId("btn-clear")).toBeTruthy();
     expect(getByLabelText("Nombre del pipeline")).toBeTruthy();
+  });
+
+  it("start node has only an output port (no input — it never receives)", async () => {
+    const { container } = await renderWith([start]);
+    const node = container.querySelector('.graph-node[data-type="start"]')!;
+    const outputs = node.querySelectorAll(".port--output");
+    const inputs = node.querySelectorAll(".port--input");
+    expect(outputs).toHaveLength(1);
+    expect(inputs).toHaveLength(0);
+    expect(outputs[0]!.getAttribute("data-port")).toBe("out");
+  });
+
+  it("end node has only an input port (no output — it never emits)", async () => {
+    const { container } = await renderWith([endUsed]);
+    const node = container.querySelector('.graph-node[data-type="end"]')!;
+    const outputs = node.querySelectorAll(".port--output");
+    const inputs = node.querySelectorAll(".port--input");
+    expect(outputs).toHaveLength(0);
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]!.getAttribute("data-port")).toBe("in");
+  });
+
+  it("llm_call node has both input and output ports", async () => {
+    const { container } = await renderWith([call]);
+    const node = container.querySelector('.graph-node[data-type="llm_call"]')!;
+    expect(node.querySelectorAll(".port--output")).toHaveLength(1);
+    expect(node.querySelectorAll(".port--input")).toHaveLength(1);
+  });
+
+  it("loop member nodes do NOT expose external input/output ports", async () => {
+    const loop = { id: "loop", type: "loop" as const, pos: { x: 0, y: 0 }, body: ["m1"] };
+    const m1 = { id: "m1", type: "llm_call" as const, pos: { x: 0, y: 70 }, model: "a", prompt: "" };
+    const { container } = await renderWith([loop, m1]);
+    const member = container.querySelector('.graph-node[data-node-id="m1"]')!;
+    expect(member.querySelectorAll(".port--input")).toHaveLength(0);
+    expect(member.querySelectorAll(".port--output")).toHaveLength(0);
+    // member still has the reorder arrows (internal UI, not external sockets)
+    expect(member.querySelector('[data-testid="member-move-up"]')).toBeTruthy();
+    expect(member.querySelector('[data-testid="member-move-down"]')).toBeTruthy();
+  });
+
+  it("condition branch output ports carry data-cond true/false", async () => {
+    const cond = { id: "c", type: "condition" as const, pos: { x: 40, y: 200 } };
+    const { container } = await renderWith([cond]);
+    const ports = container.querySelectorAll('.graph-node[data-type="condition"] .port');
+    expect(ports).toHaveLength(3);
+    expect(ports[0]!.getAttribute("data-cond")).toBeFalsy();
+    expect(ports[1]!.getAttribute("data-cond")).toBe("true");
+    expect(ports[2]!.getAttribute("data-cond")).toBe("false");
+  });
+
+  it("each connection renders exactly one edge group with a curve and a solid tip", async () => {
+    const { container } = await renderWith(
+      [start, call, endUsed],
+      [{ from: "start", to: "call" }, { from: "call", to: "end" }],
+    );
+    const edges = container.querySelectorAll("#graph-svg .graph-edge");
+    expect(edges).toHaveLength(2);
+    for (const edge of edges) {
+      const curve = edge.querySelector(".graph-edge-curve")!;
+      const tip = edge.querySelector(".graph-edge-tip")!;
+      const d = curve.getAttribute("d");
+      expect(d).toContain("M");
+      expect(d).toContain("C");
+      // the tip is its own filled shape — no extra stroke lines appended
+      // to the curve (was: `... L x y L x y Z` → a visible double line).
+      expect(tip.getAttribute("d")).toContain("Z");
+      expect((edge as Element).getAttribute("d")).toBeNull();
+    }
+  });
+
+  it("conditional edges carry data-guard true/false on their group", async () => {
+    const cond = { id: "c", type: "condition" as const, pos: { x: 40, y: 200 } };
+    const call2 = { id: "call", type: "llm_call" as const, pos: { x: 400, y: 200 }, model: "m" };
+    const { container } = await renderWith(
+      [cond, call2],
+      [
+        { from: "c", to: "call", guard: "true" },
+        { from: "c", to: "call", guard: "false" },
+      ],
+    );
+    const edges = container.querySelectorAll("#graph-svg .graph-edge");
+    expect(edges).toHaveLength(2);
+    const guards = Array.from(edges).map((e) => e.getAttribute("data-guard"));
+    expect(guards).toContain("true");
+    expect(guards).toContain("false");
   });
 });

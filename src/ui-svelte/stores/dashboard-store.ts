@@ -31,6 +31,7 @@ export interface DashboardApi {
   retryStep(executionId: string, nodeId: string): Promise<RetryStepResult>;
   applyConfig(config: unknown): Promise<unknown>;
   unloadAllModels(): Promise<{ unloaded: number }>;
+  configureAgent(config: { agent: string; apiKey?: string }): Promise<unknown>;
 }
 
 export type RefreshDomain = "pipelines" | "models" | "executions" | "agents" | "config";
@@ -56,6 +57,10 @@ export interface DashboardState {
   applyError: string | null;
   unloadingAll: boolean;
   unloadAllError: string | null;
+  /** agent id → configure in flight. */
+  configuring: Record<string, boolean>;
+  /** agent id → inline configure error (null when none). */
+  configureErrors: Record<string, string>;
 }
 
 export interface DashboardActions {
@@ -76,6 +81,8 @@ export interface DashboardActions {
   applyConfig(config: unknown): Promise<void>;
   /** Unload every loaded model; reload models on success. */
   unloadAllModels(): Promise<void>;
+  /** Configure (sync) an agent's provider with the gateway; reload agents on success. */
+  configureAgent(agentId: string): Promise<void>;
   reset(): void;
 }
 
@@ -114,6 +121,8 @@ const INITIAL: DashboardState = {
   applyError: null,
   unloadingAll: false,
   unloadAllError: null,
+  configuring: {},
+  configureErrors: {},
 };
 
 export function createDashboardStore(deps: DashboardDeps): DashboardStore {
@@ -221,6 +230,29 @@ export function createDashboardStore(deps: DashboardDeps): DashboardStore {
         store.update((s) => ({ ...s, unloadAllError: message }));
       } finally {
         store.update((s) => ({ ...s, unloadingAll: false }));
+      }
+    },
+
+    async configureAgent(agentId) {
+      store.update((s) => ({
+        ...s,
+        configuring: { ...s.configuring, [agentId]: true },
+        configureErrors: { ...s.configureErrors, [agentId]: "" },
+      }));
+      try {
+        await deps.api.configureAgent({ agent: agentId });
+        await actions.loadAgents();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        store.update((s) => ({
+          ...s,
+          configureErrors: { ...s.configureErrors, [agentId]: message },
+        }));
+      } finally {
+        store.update((s) => ({
+          ...s,
+          configuring: { ...s.configuring, [agentId]: false },
+        }));
       }
     },
 

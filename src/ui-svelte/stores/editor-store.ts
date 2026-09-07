@@ -18,6 +18,7 @@ import {
   moveNode as modelMoveNode,
   connectNodes,
   deleteNode as modelDeleteNode,
+  addLoopMemberNode,
   buildPayload,
   type GraphNode,
   type GraphEdge,
@@ -61,6 +62,10 @@ export interface EditorState extends GraphState {
 export interface EditorActions {
   loadPipeline(id: string): Promise<void>;
   addNode(type: NodeType, pos?: Point): void;
+  /** Create an llm_call member and add it to the given loop's body directly
+   *  (does not depend on positional bucketing — robust even when the loop's
+   *  position is only materialized at render time). */
+  addLoopMember(loopId: string, pos: Point): void;
   moveNode(id: string, x: number, y: number): void;
   deleteNode(id: string): void;
   connect(from: string, to: string, guard?: string): void;
@@ -194,6 +199,21 @@ export function createEditorStore(deps: EditorDeps): EditorStore {
         nodes: modelMoveNode(s.nodes, id, x, y),
         dirty: true,
       }));
+    },
+
+    addLoopMember(loopId, pos) {
+      const id = `node-${++nodeCounter}`;
+      const fresh = { ...createNode("llm_call", id), pos: { ...pos } };
+      mutate((s) => {
+        const withNode = [...s.nodes, fresh];
+        const withBody = addLoopMemberNode(withNode, loopId, id);
+        return {
+          ...s,
+          nodes: withBody,
+          selection: [id],
+          dirty: true,
+        };
+      });
     },
 
     deleteNode(id) {
