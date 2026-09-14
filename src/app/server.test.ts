@@ -55,4 +55,34 @@ describe("buildFetchHandler", () => {
     // Binding is config-driven; the default (loopback) is asserted in config.test.
     expect(res.status).toBe(200);
   });
+
+  test("wired /v1 dispatcher handles the paths it owns", async () => {
+    const { log } = makeLogger();
+    const v1 = async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/v1/models") {
+        return Response.json({ object: "list", data: [] });
+      }
+      return null; // decline everything else
+    };
+    const handler = buildFetchHandler({ config: baseConfig, logger: log, v1 });
+    const res = await handler(new Request("http://127.0.0.1:4317/v1/models"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ object: "list", data: [] });
+  });
+
+  test("a declined /v1 path falls through to the 404 envelope", async () => {
+    const { log } = makeLogger();
+    const v1 = async () => null;
+    const handler = buildFetchHandler({ config: baseConfig, logger: log, v1 });
+    const res = await handler(new Request("http://127.0.0.1:4317/v1/embeddings"));
+    expect(res.status).toBe(404);
+  });
+
+  test("without a v1 dispatcher, /v1 paths answer 404 (proxy not wired)", async () => {
+    const { log } = makeLogger();
+    const handler = buildFetchHandler({ config: baseConfig, logger: log });
+    const res = await handler(new Request("http://127.0.0.1:4317/v1/models"));
+    expect(res.status).toBe(404);
+  });
 });

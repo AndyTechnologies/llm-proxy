@@ -55,15 +55,15 @@ TDD: every task: RED test → GREEN impl (`bun test`).
 
 ## Phase 4: Secrets, Providers, Proxy
 
-- [ ] 4.1 `src/secrets/keychain.ts`: AES-256-GCM; tamper → error
-- [ ] 4.2 Keys never logged; masked UI
-- [ ] 4.3 Port Provider seam + openai types; `adapter-{openai,anthropic,openrouter}.ts`
-- [ ] 4.4 Bearer auth + `${ENV}` headers; missing key → misconfigured
-- [ ] 4.5 RED: fallback on 429/5xx/net; stream no-dup
-- [ ] 4.6 `/v1/*` on 4317; unmapped → 404
-- [ ] 4.7 SSE relay; one `data: [DONE]`; disconnect abort
-- [ ] 4.8 Auth off default; 401 envelope when on
-- [ ] 4.9 Loopback bind default
+- [x] 4.1 `src/secrets/keychain.ts`: AES-256-GCM; tamper → error
+- [x] 4.2 Keys never logged; masked UI
+- [x] 4.3 Port Provider seam + openai types; `adapter-{openai,anthropic,openrouter}.ts`
+- [x] 4.4 Bearer auth + `${ENV}` headers; missing key → misconfigured
+- [x] 4.5 RED: fallback on 429/5xx/net; stream no-dup
+- [x] 4.6 `/v1/*` on 4317; unmapped → 404
+- [x] 4.7 SSE relay; one `data: [DONE]`; disconnect abort
+- [x] 4.8 Auth off default; 401 envelope when on
+- [x] 4.9 Loopback bind default
 
 ## Phase 5: Sandbox, Embeddings, RAG
 

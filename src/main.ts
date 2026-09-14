@@ -13,6 +13,10 @@ import { createWebServer } from "./app/server.js";
 import { jsonLogger, type AppLogger } from "./app/types.js";
 import { checkForUpdate, type UpdateCheckResult } from "./app/update.js";
 import { measureColdStart, coldStartOk } from "./app/startup.js";
+import { SecretStore, platformKeychainBackend } from "./secrets/keychain.js";
+import { buildProviderRegistry } from "./providers/registry.js";
+import { makeV1Handler } from "./routes/v1.js";
+import { makeAuthGate } from "./routes/auth.js";
 
 export const APP_VERSION = "0.1.0";
 export const UPDATE_CHANNEL = "stable";
@@ -48,7 +52,21 @@ export async function boot(env: Record<string, string | undefined> = process.env
   const logger = jsonLogger((line) => process.stdout.write(`${line}\n`));
   const db = openAppDataDatabase(appData);
   const config = resolveAppConfig(env);
-  const server = await createWebServer({ config, logger });
+
+  // Keychain-backed secrets → external provider adapters → OpenAI-compatible
+  // /v1 proxy on port 4317. Auth (WEAVELLM_AUTH) is off by default.
+  const secretStore = new SecretStore(db, platformKeychainBackend());
+  const registry = await buildProviderRegistry({ db, store: secretStore });
+  const v1 = makeV1Handler({
+    registry,
+    // The managed llama-server backend is booted by the engine phase; until
+    // then, local model ids do not resolve and answer 404 (spec envelope).
+    localProvider: () => null,
+    localModels: () => [],
+    virtualModels: () => [],
+    auth: makeAuthGate({ enabled: config.authEnabled, store: secretStore }),
+  });
+  const server = await createWebServer({ config, logger, v1 });
 
   // Background update check — never blocks boot; offline is silent.
   void checkForUpdate({

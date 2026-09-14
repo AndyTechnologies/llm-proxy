@@ -1,8 +1,17 @@
 import type { AppConfig, AppLogger } from "./types.js";
 
+/**
+ * Optional OpenAI-compatible /v1 dispatcher (external-proxy): returns a
+ * Response for /v1 paths it owns, or null to decline (the server then 404s).
+ * Absent by default so the app server stays API-only until wired at boot.
+ */
+export type V1Dispatcher = (req: Request) => Promise<Response | null>;
+
 export interface ServerDeps {
   config: AppConfig;
   logger: AppLogger;
+  /** Wire the /v1 OpenAI-compatible surface (port 4317) when provided. */
+  v1?: V1Dispatcher;
 }
 
 export interface WebServer {
@@ -31,6 +40,9 @@ export function buildFetchHandler(deps: ServerDeps): (req: Request) => Promise<R
     let res: Response;
     if (req.method === "GET" && url.pathname === "/api/health") {
       res = Response.json({ status: "ok" });
+    } else if (deps.v1 !== undefined && url.pathname.startsWith("/v1/")) {
+      const v1res = await deps.v1(req);
+      res = v1res ?? notFound();
     } else {
       res = notFound();
     }
