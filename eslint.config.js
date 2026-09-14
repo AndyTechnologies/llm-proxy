@@ -46,6 +46,7 @@ export default defineConfig([
 	{
 		ignores: [
 			"dist/**",
+			"frontend/dist/**",
 			"test-results/**",
 			"playwright-report/**",
 			"blob-report/**",

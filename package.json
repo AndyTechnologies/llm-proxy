@@ -1,18 +1,20 @@
 {
-  "name": "llm-proxy",
+  "name": "weavellm",
   "version": "0.1.0",
-  "description": "Intelligent LLM gateway with configurable chain orchestration, OpenAI-compatible API",
+  "description": "WeaveLLM — local AI desktop runtime with a visual workflow editor, model management, and an OpenAI-compatible proxy",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/main.js",
   "bin": {
-    "llm-proxy": "./dist/index.js"
+    "weavellm": "./dist/main.js"
   },
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "build": "bun build src/index.ts --target=bun --outdir dist",
-    "build:binary": "bun build src/index.ts --compile --outfile dist/llm-proxy",
+    "dev": "bun run --watch src/main.ts",
+    "dev:frontend": "astro dev --root frontend",
+    "build": "bun build src/main.ts --target=bun --outdir dist",
+    "build:frontend": "astro build --root frontend",
+    "build:binary": "bun build src/main.ts --compile --outfile dist/weavellm",
     "build:binaries": "bun run scripts/build-binaries.ts",
-    "start": "bun run src/index.ts",
+    "start": "bun run src/main.ts",
     "test": "bun test",
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",
@@ -29,9 +31,10 @@
     "llama",
     "llama.cpp",
     "llama-server",
-    "orchestration",
-    "ai",
-    "api"
+    "workflow",
+    "rag",
+    "desktop",
+    "ai"
   ],
   "author": {
     "name": "AndyTechnologies",
@@ -48,14 +51,20 @@
     "url": "https://github.com/AndyTechnologies/llm-proxy/issues"
   },
   "engines": {
-    "bun": ">=1.4"
+    "bun": ">=1.4",
+    "node": ">=22.12.0"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.44",
     "@ai-sdk/provider": "4.0.10",
+    "@astrojs/svelte": "9.0.1",
+    "@xyflow/svelte": "1.6.6",
     "ai": "7.0.93",
+    "astro": "7.3.2",
     "express": "^5.2.1",
     "helmet": "^8.0.0",
+    "svelte": "5.57.0",
+    "yaml": "2.9.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {

@@ -1,0 +1,31 @@
+---
+// WeaveLLM shell: static SPA hosting Svelte islands.
+import ModelBadge from "../svelte/ModelBadge.svelte";
+import "../styles/global.css";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WeaveLLM</title>
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>WeaveLLM</h1>
+      <span class="tagline">Local model runtime</span>
+    </header>
+    <main class="app-main">
+      <section class="panel" aria-label="Local models">
+        <h2>Local models</h2>
+        <ModelBadge
+          client:load
+          name="qwen2.5-coder-3b-instruct"
+          quant="Q4_K_M"
+          ctx={32768}
+        />
+      </section>
+    </main>
+  </body>
+</html>

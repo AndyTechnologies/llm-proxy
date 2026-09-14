@@ -30,3 +30,6 @@ playwright/.cache/
 # Local runtime config (machine-specific paths). Template: config.example.yaml
 llm-proxy.config.yaml
 llama-swap.config.yaml
+
+# Astro generated types
+.astro/
