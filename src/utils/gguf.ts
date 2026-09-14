@@ -548,3 +548,56 @@ function positiveFraction(v: unknown): number | undefined {
 function clamp(n: number, min: number, max: number): number {
   return Math.min(Math.max(n, min), max);
 }
+
+// ── YaRN original-context derivation + rope-scale guard (gguf-metadata) ──
+
+/** Minimum accepted rope-scale ratio; any target below the original context is rejected. */
+export const MIN_ROPE_SCALE = 1;
+
+/**
+ * The model's ORIGINAL (unscaled) context window for YaRN: the parsed
+ * `{arch}.context_length` value (model-advanced-config). Null when the GGUF
+ * does not declare it — no automatic YaRN can be applied then.
+ */
+export function yarnOrigCtx(
+  parseResult: Pick<GgufParseResult, "ggufContextLength">,
+): number | null {
+  const raw = parseResult.ggufContextLength;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return null;
+  return Math.floor(raw);
+}
+
+/**
+ * Rope-scale factor = target ÷ original. Rejects degenerate inputs and any
+ * ratio below 1 (scaling DOWN is meaningless/unsupported — guard ≥ 1).
+ */
+export function yarnScale(origCtx: number, targetCtx: number): number {
+  if (typeof origCtx !== "number" || !Number.isFinite(origCtx) || origCtx <= 0) {
+    throw new RangeError("yarn_orig_ctx must be a positive integer");
+  }
+  if (typeof targetCtx !== "number" || !Number.isFinite(targetCtx) || targetCtx < 1) {
+    throw new RangeError("target ctx must be a positive integer");
+  }
+  const scale = targetCtx / origCtx;
+  if (scale < MIN_ROPE_SCALE) {
+    throw new RangeError(
+      `YaRN config rejected: rope scale ${scale.toFixed(3)} is below 1 ` +
+        `(target ctx ${targetCtx} must be >= yarn_orig_ctx ${origCtx})`,
+    );
+  }
+  return scale;
+}
+
+/**
+ * Resolve automatic YaRN from GGUF metadata: derives yarn_orig_ctx and the
+ * scale for the requested target ctx. Returns null when the GGUF has no
+ * context_length (no YaRN, no guard). Throws when the scale would be < 1.
+ */
+export function resolveYaRN(
+  parseResult: Pick<GgufParseResult, "ggufContextLength">,
+  opts: { targetCtx: number },
+): { origCtx: number; scale: number } | null {
+  const origCtx = yarnOrigCtx(parseResult);
+  if (origCtx === null) return null;
+  return { origCtx, scale: yarnScale(origCtx, opts.targetCtx) };
+}

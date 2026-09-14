@@ -12,6 +12,9 @@ import {
   hardwareMaxCtx,
   effectiveCtx,
   contextLengthByName,
+  yarnOrigCtx,
+  yarnScale,
+  resolveYaRN,
   MIN_EFFECTIVE_CTX,
   MAX_EFFECTIVE_CTX,
   DEFAULT_EFFECTIVE_CTX,
@@ -459,5 +462,37 @@ describe("effectiveCtx", () => {
     expect(effectiveCtx({ userCtx: 1_000_000, min: 512, max: 131072 })).toBe(131072);
     // Swapped bounds are coerced (lo/hi), not a crash.
     expect(effectiveCtx({ userCtx: 100, min: 131072, max: 512 })).toBe(512);
+  });
+});
+
+// ── YaRN original-context derivation + rope-scale guard (Phase 2, gguf-metadata) ──
+
+describe("yarnScale / resolveYaRN", () => {
+  test("derives yarn_orig_ctx from the parsed {arch}.context_length (32K → scale 4)", () => {
+    const parse = { ggufContextLength: 32768 };
+    expect(yarnOrigCtx(parse)).toBe(32768);
+    expect(yarnScale(32768, 131072)).toBe(4);
+    const resolved = resolveYaRN(parse, { targetCtx: 131072 });
+    expect(resolved).toEqual({ origCtx: 32768, scale: 4 });
+  });
+
+  test("rejects a target below the original context (scale < 1) with a clear message", () => {
+    expect(() => yarnScale(32768, 8192)).toThrow(/scale below 1|rejected|>= 1/i);
+    expect(() => resolveYaRN({ ggufContextLength: 32768 }, { targetCtx: 8192 })).toThrow(
+      /scale below 1|rejected|>= 1/i,
+    );
+  });
+
+  test("accepts scale exactly 1 (target == original context)", () => {
+    const resolved = resolveYaRN({ ggufContextLength: 32768 }, { targetCtx: 32768 });
+    expect(resolved).toEqual({ origCtx: 32768, scale: 1 });
+  });
+
+  test("returns null when the GGUF has no context_length (no YaRN, no guard)", () => {
+    expect(resolveYaRN({ ggufContextLength: null }, { targetCtx: 131072 })).toBeNull();
+  });
+
+  test("rejects degenerate targets (non-positive)", () => {
+    expect(() => yarnScale(32768, 0)).toThrow();
   });
 });

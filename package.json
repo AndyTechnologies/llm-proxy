@@ -16,9 +16,6 @@
     "build:binaries": "bun run scripts/build-binaries.ts",
     "start": "bun run src/main.ts",
     "test": "bun test",
-    "test:e2e": "playwright test",
-    "test:e2e:install": "playwright install --with-deps chromium",
-    "e2e-server": "bun run e2e/e2e-server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "eslint --fix ."

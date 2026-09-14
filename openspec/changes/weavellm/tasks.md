@@ -34,14 +34,14 @@ TDD: every task: RED test → GREEN impl (`bun test`).
 
 ## Phase 2: Backend & Model Config
 
-- [ ] 2.1 `src/utils/gguf.ts`: derive `yarn_orig_ctx`; 32K→128K scale 4
-- [ ] 2.2 Scale guard: reject ratio <1
-- [ ] 2.3 `src/backend/manager.ts`: single spawn, `--port 0` regex, health, idle kill, restart
-- [ ] 2.4 RED: metachar spawn-args denied → GREEN array builder
-- [ ] 2.5 b9908+ gate: old binary fails startup
-- [ ] 2.6 YaRN flags `--rope-scaling yarn` from config
-- [ ] 2.7 KV q8_0 args; `--cache-ram` host-only
-- [ ] 2.8 `model_config` store + sampler overrides
+- [x] 2.1 `src/utils/gguf.ts`: derive `yarn_orig_ctx`; 32K→128K scale 4
+- [x] 2.2 Scale guard: reject ratio <1
+- [x] 2.3 `src/backend/manager.ts`: single spawn, `--port 0` regex, health, idle kill, restart
+- [x] 2.4 RED: metachar spawn-args denied → GREEN array builder
+- [x] 2.5 b9908+ gate: old binary fails startup
+- [x] 2.6 YaRN flags `--rope-scaling yarn` from config
+- [x] 2.7 KV q8_0 args; `--cache-ram` host-only
+- [x] 2.8 `model_config` store + sampler overrides
 
 ## Phase 3: Catalog & Downloads
 
