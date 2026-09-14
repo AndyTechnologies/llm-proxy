@@ -45,13 +45,13 @@ TDD: every task: RED test → GREEN impl (`bun test`).
 
 ## Phase 3: Catalog & Downloads
 
-- [ ] 3.1 `src/downloads/{engine,gosh}.ts`: queue, resume, cancel; `sha256:<hex>` args
-- [ ] 3.2 RED: missing `sha256:` prefix errors
-- [ ] 3.3 sha256 verify; mismatch discards, unregistered
-- [ ] 3.4 resume/resume-all; cancel → resumable state
-- [ ] 3.5 `src/catalog/`: curated, HF search, local path; reject non-GGUF
-- [ ] 3.6 Registry reloads from SQLite after restart
-- [ ] 3.7 NIAH probe: per-model pass/fail
+- [x] 3.1 `src/downloads/{engine,gosh}.ts`: queue, resume, cancel; `sha256:<hex>` args
+- [x] 3.2 RED: missing `sha256:` prefix errors
+- [x] 3.3 sha256 verify; mismatch discards, unregistered
+- [x] 3.4 resume/resume-all; cancel → resumable state
+- [x] 3.5 `src/catalog/`: curated, HF search, local path; reject non-GGUF
+- [x] 3.6 Registry reloads from SQLite after restart
+- [x] 3.7 NIAH probe: per-model pass/fail
 
 ## Phase 4: Secrets, Providers, Proxy
 

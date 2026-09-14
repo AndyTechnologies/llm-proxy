@@ -100,6 +100,9 @@ CREATE TABLE IF NOT EXISTS downloads (
   url        TEXT NOT NULL,
   state      TEXT NOT NULL DEFAULT 'queued',
   bytes      INTEGER NOT NULL DEFAULT 0,
+  file_name  TEXT,
+  sha256     TEXT,
+  dir        TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`;
 
