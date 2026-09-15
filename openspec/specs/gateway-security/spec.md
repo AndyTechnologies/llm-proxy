@@ -18,23 +18,24 @@ The system SHALL apply helmet middleware to all responses, setting standard HTTP
 
 ### Requirement: Optional Bearer token authentication
 
-The system SHALL support optional Bearer token authentication via a `BEARER_TOKEN` environment variable. When set, the system SHALL reject requests missing a valid `Authorization: Bearer <token>` header with HTTP 401.
+The system SHALL default to NO authentication. When enabled via settings, the system SHALL validate the `Authorization: Bearer <key>` header against the keychain-stored auth key (keychain-secrets). Requests with a missing or invalid key SHALL be rejected with HTTP 401 and the authentication_error envelope.
+(Previously: gated by the `BEARER_TOKEN` environment variable; when set, missing/invalid token → 401.)
 
 #### Scenario: Valid token accepted
 
-- GIVEN `BEARER_TOKEN` is set to `"secret123"`
+- GIVEN auth enabled with keychain-stored key `secret123`
 - WHEN a request includes `Authorization: Bearer secret123`
 - THEN the request proceeds normally
 
 #### Scenario: Missing token returns 401
 
-- GIVEN `BEARER_TOKEN` is set
+- GIVEN auth enabled
 - WHEN a request omits the Authorization header
 - THEN the system responds with HTTP 401 and `{ error: { message: "Unauthorized", type: "authentication_error" } }`
 
-#### Scenario: No token configured disables auth
+#### Scenario: Default disables auth
 
-- GIVEN `BEARER_TOKEN` is not set
+- GIVEN auth never enabled (default)
 - WHEN any request arrives
 - THEN the request proceeds without authentication
 
@@ -63,3 +64,18 @@ The system SHALL NOT allow client-controlled input to determine the upstream URL
 - GIVEN a request to any endpoint
 - WHEN the system resolves the upstream target
 - THEN the target URL comes from config/provider settings, never from request body fields
+### Requirement: Localhost-only binding by default
+
+The proxy SHALL bind to 127.0.0.1 by default. Binding to other interfaces SHALL require explicit configuration.
+
+#### Scenario: Default loopback bind
+
+- GIVEN no network override
+- WHEN the proxy starts
+- THEN it listens on 127.0.0.1 only
+
+#### Scenario: Explicit external bind
+
+- GIVEN network configuration permitting a specific interface
+- WHEN the proxy starts
+- THEN it binds only to that configured interface
