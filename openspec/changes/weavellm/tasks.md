@@ -77,11 +77,11 @@ TDD: every task: RED test → GREEN impl (`bun test`).
 
 ## Phase 6: Workflow Engine, Editor, /ws
 
-- [ ] 6.1 `src/orchestrator/graph.ts`: DAG validate (cycles, refs, types)
-- [ ] 6.2 `src/orchestrator/engine.ts`: topo exec, fan/join, `runChain`, logs
-- [ ] 6.3 10+ node taxonomy parity
-- [ ] 6.4 MoA 3+1 parallel synthesis
-- [ ] 6.5 `on_429` + `tool_calls_route`
+- [x] 6.1 `src/orchestrator/graph.ts`: DAG validate (cycles, refs, types)
+- [x] 6.2 `src/orchestrator/engine.ts`: topo exec, fan/join, `runChain`, logs
+- [x] 6.3 10+ node taxonomy parity
+- [x] 6.4 MoA 3+1 parallel synthesis
+- [x] 6.5 `on_429` + `tool_calls_route`
 - [ ] 6.6 `gateway/<name>` + `X-Chain-ID`
 - [ ] 6.7 Editor canvas, palette, inline errors
 - [ ] 6.8 YAML round-trip; bad import names node
