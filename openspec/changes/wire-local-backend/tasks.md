@@ -68,7 +68,7 @@ every task.
 
 ---
 
-## Task 4 — Implement `LocalBackendHub` lifecycle orchestrator
+## Task 4 — Implement `LocalBackendHub` lifecycle orchestrator <!-- [x] complete tanda 2 -->
 
 - **id**: 4
 - **title**: Implement LocalBackendHub core module
@@ -88,7 +88,7 @@ every task.
 
 ---
 
-## Task 5 — Test LocalBackendHub orchestration with fakes
+## Task 5 — Test LocalBackendHub orchestration with fakes <!-- [x] complete tanda 2 -->
 
 - **id**: 5
 - **title**: Write hub unit test matrix
@@ -107,7 +107,7 @@ every task.
 
 ---
 
-## Task 6 — Wire `/api/models` management routes behind auth
+## Task 6 — Wire `/api/models` management routes behind auth <!-- [x] complete tanda 2 -->
 
 - **id**: 6
 - **title**: Add /api/models route group to ApiDeps
@@ -145,7 +145,7 @@ every task.
 
 ---
 
-## Task 8 — Wire hub into boot (preflight → restoreActive → non-null closures)
+## Task 8 — Wire hub into boot (preflight → restoreActive → non-null closures) <!-- [x] complete tanda 2 -->
 
 - **id**: 8
 - **title**: Integrate hub into main.ts boot path
@@ -164,7 +164,7 @@ every task.
 
 ---
 
-## Task 9 — Prove the local chat path end-to-end through v1 and the runner
+## Task 9 — Prove the local chat path end-to-end through v1 and the runner <!-- [x] complete tanda 2 -->
 
 - **id**: 9
 - **title**: Add v1/runner integration tests over hub closures
