@@ -120,3 +120,44 @@
 - `src/main.ts` — hub constructed after registry, `preflight` → `restoreActive` before handlers; shared `makeAuthGate` for v1+api; non-null closures into `makeRuntimeServices`/`makeV1Handler`/`createWebServer`; `BootResult.shutdown` (+SIGINT/SIGTERM).
 - `src/main.test.ts` — hermetic missing-binary boot, seeded-active error-state boot, script-binary clean boot + shutdown (4/4).
 - `src/routes/v1.integration.test.ts` — NEW: 7 end-to-end tests (real hub + fake spawns + real Bun.serve stub).
+
+---
+
+## Corrective Round 1 — close schema provenance testing gap (post hard-verify)
+**Date**: 2026-09-15
+**Commit**: test(db): pin active column in fresh-DB schema test (`d7e6d08`)
+**Trigger**: hard-verify verdict `testing-error` — removing `active INTEGER NOT NULL DEFAULT 0` from the `MODELS_TABLE` CREATE was NOT observable by any test (`migrateModelsActive` unconditionally self-heals fresh DBs; end-state byte-identical).
+
+### Fix
+
+Added `fresh DB: MODELS_TABLE CREATE statement pins active column provenance` to `src/db/schema.test.ts`:
+
+```typescript
+expect(MODELS_TABLE).toMatch(/active\s+INTEGER NOT NULL DEFAULT 0/);
+```
+
+- **Option chosen**: acta recommendation 1 (pin `MODELS_TABLE` constant directly) — the cheapest robust option.
+- **Regex, not the acta's literal `includes("active INTEGER NOT NULL DEFAULT 0")`**: the literal has a single space, but the DDL writes `active        INTEGER` (8 spaces) — the literal would fail against green code.
+- **Option 2 (sqlite_master) was empirically REJECTED**: verified with bun+SQLite that `ALTER TABLE ADD COLUMN` rewrites `sqlite_master.sql` to include the new column (`CREATE TABLE models (id TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0)`). Asserting the stored SQL therefore cannot distinguish CREATE provenance from ALTER provenance — it would be a false fix.
+
+### Soundness proof (break-test, hard-verify methodology)
+
+Removed the `active` line from `MODELS_TABLE` (same break as the acta), ran focused suite:
+
+| State | Result |
+|-------|--------|
+| Before fix (acta baseline) | `10 pass / 0 fail` — break INVISIBLE |
+| After fix, break applied | `10 pass / 1 fail` — new test catches it, all migration tests still green (self-heal intact) |
+| After fix, break reverted | `11 pass / 0 fail` |
+
+### Verification evidence
+
+- `bun run typecheck` → clean
+- `bun run lint` → clean
+- `bun test src/db/schema.test.ts` → **11/11 pass**
+- `bun test` (full suite) → **438/438 pass, 41 files** (437 baseline + 1)
+
+### Remaining (from hard-verify)
+
+- Surfaces 3–5 (`--embeddings`, hub latch/503, `resolveLlamaBin`) not yet break-tested — re-launch hard-verify recommended.
+- `spawn-args.test.ts` count discrepancy (17 actual vs 18 reported) to resolve at archive.

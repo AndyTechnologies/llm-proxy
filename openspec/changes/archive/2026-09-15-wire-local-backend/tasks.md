@@ -11,6 +11,7 @@ every task.
 ---
 
 ## Task 1 — Add `models.active` column with idempotent ALTER <!-- [x] complete tanda 1 -->
+- [x] complete tanda 1
 
 - **id**: 1
 - **title**: Add `active` column migration and `embedding_model` settings convention
@@ -30,6 +31,7 @@ every task.
 ---
 
 ## Task 2 — Add `llamaBin` to app config from new env var <!-- [x] complete tanda 1 -->
+- [x] complete tanda 1
 
 - **id**: 2
 - **title**: Add `WEAVELLM_LLAMA_BIN` → `llamaBin` config
@@ -50,6 +52,7 @@ every task.
 ---
 
 ## Task 3 — Support `--embeddings` in spawn args <!-- [x] complete tanda 1 -->
+- [x] complete tanda 1
 
 - **id**: 3
 - **title**: Add `embeddings?: boolean` spawn flag
@@ -69,6 +72,7 @@ every task.
 ---
 
 ## Task 4 — Implement `LocalBackendHub` lifecycle orchestrator <!-- [x] complete tanda 2 -->
+- [x] complete tanda 2
 
 - **id**: 4
 - **title**: Implement LocalBackendHub core module
@@ -89,6 +93,7 @@ every task.
 ---
 
 ## Task 5 — Test LocalBackendHub orchestration with fakes <!-- [x] complete tanda 2 -->
+- [x] complete tanda 2
 
 - **id**: 5
 - **title**: Write hub unit test matrix
@@ -108,6 +113,7 @@ every task.
 ---
 
 ## Task 6 — Wire `/api/models` management routes behind auth <!-- [x] complete tanda 2 -->
+- [x] complete tanda 2
 
 - **id**: 6
 - **title**: Add /api/models route group to ApiDeps
@@ -127,6 +133,7 @@ every task.
 ---
 
 ## Task 7 — Add optional `localModels` to `/api/health` <!-- [x] complete tanda 1 -->
+- [x] complete tanda 1
 
 - **id**: 7
 - **title**: Extend health endpoint with localModels field
@@ -146,6 +153,7 @@ every task.
 ---
 
 ## Task 8 — Wire hub into boot (preflight → restoreActive → non-null closures) <!-- [x] complete tanda 2 -->
+- [x] complete tanda 2
 
 - **id**: 8
 - **title**: Integrate hub into main.ts boot path
@@ -165,6 +173,7 @@ every task.
 ---
 
 ## Task 9 — Prove the local chat path end-to-end through v1 and the runner <!-- [x] complete tanda 2 -->
+- [x] complete tanda 2
 
 - **id**: 9
 - **title**: Add v1/runner integration tests over hub closures

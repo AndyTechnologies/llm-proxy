@@ -1,10 +1,66 @@
-# Backend Management Specification
+# Delta for Backend Management
 
-## Purpose
+**Files:** `openspec/specs/backend-management/spec.md`
 
-llm-proxy SHALL NOT assume an external `llamaServer`. Instead it SHALL own the lifecycle of the `llama-server` binary (`llama serve`) as an internal component — spawning one process per active model (no router mode), supervising it, and shutting it down. Per-model configuration SHALL come from the app's model configuration (model-advanced-config, SQLite-backed) driven through the UI; workflows are authored as YAML graphs in the workflow editor. This capability makes the tool self-hosting its backend, unblocking runtime verification.
+### Changes
 
-## Requirements
+1. Remove all "intentionally deferred" / "local provider is not connected at boot" markers.
+2. Introduce `LocalBackendHub` as the single orchestrator for all local model managers.
+3. Replace the single-manager model with per-model `LlamaProcessManager` instances stored in a `Map<string, LlamaProcessManager>`.
+4. Add version-floor preflight: ENOENT → per-model error + boot continues; below b9908 → `process.exit(1)`.
+5. Add activate/deactivate endpoints with state transitions.
+6. Add in-flight drain on deactivation (30s safety timeout).
+7. Add idle-stop 10 min (configurable, up from 5 min).
+8. Add spawn failure → error state + 503 propagation.
+
+## ADDED Requirements
+
+### Requirement: Activate and deactivate endpoints
+
+`POST /api/models/:id/activate` SHALL create a `LlamaProcessManager`, spawn the process, persist `active=1` in SQLite, and return `{state: "active", pid, port}`. `POST /api/models/:id/deactivate` SHALL drain in-flight requests, stop the process, persist `active=0` in SQLite, and return `{state: "disabled"}`. All management endpoints SHALL be behind the existing auth gate.
+
+#### Scenario: Activate a model
+
+- GIVEN a registered model with a valid GGUF file and `active=0`
+- WHEN `POST /api/models/:id/activate` is called
+- THEN the process starts, the response is `{state: "active", pid: <number>, port: <number>}`, and `active=1` is persisted in SQLite
+
+#### Scenario: Activate an already-active model
+
+- GIVEN a model already in active state
+- WHEN `POST /api/models/:id/activate` is called
+- THEN the response returns the current `{state: "active", pid, port}` without re-spawning
+
+#### Scenario: Deactivate a model
+
+- GIVEN an active model with no in-flight requests
+- WHEN `POST /api/models/:id/deactivate` is called
+- THEN the process stops, the response is `{state: "disabled"}`, and `active=0` is persisted in SQLite
+
+#### Scenario: Activate with missing GGUF returns error
+
+- GIVEN a model whose GGUF file does not exist
+- WHEN `POST /api/models/:id/activate` is called
+- THEN the response is an error with a clear message naming the missing file
+
+### Requirement: Version-floor ENOENT handling
+
+The version-floor preflight SHALL distinguish between ENOENT (binary not found) and version-too-old:
+
+- ENOENT → per-model error state with actionable message; boot continues.
+- Parseable but below b9908 → `process.exit(1)` (global fail-fast).
+- Parseable and current → proceed.
+
+#### Scenario: ENOENT is per-model, not global
+
+- GIVEN a binary path that does not exist
+- WHEN the app runs preflight
+- THEN all models enter error state with "llama-server binary not found at '<path>'" and boot continues (the system remains operational for external providers and workflows)
+
+---
+
+
+## MODIFIED Requirements
 
 ### Requirement: Spawn and supervise the llama-server process
 
@@ -98,21 +154,6 @@ The system SHALL validate the llama-server binary at startup via a `--version` p
 - WHEN the app starts
 - THEN `hub.restoreActive()` spawns both models and they appear in `/v1/models`
 
-### Requirement: Integration with the provider adapter
-
-The capability MUST integrate with the existing provider adapter, which SHALL use the managed process and know which models are registered, replacing any external-host assumption.
-
-#### Scenario: Provider uses managed process
-
-- GIVEN a configured provider targeting the gateway's managed backend
-- WHEN a step routes to that provider
-- THEN it forwards to the managed llama-server address, not an assumed external host
-
-#### Scenario: Existing capabilities unaffected
-
-- GIVEN the other five capabilities are applied
-- WHEN backend-management is active
-- THEN gateway-api, pipeline-orchestration, virtual-model-routing, gateway-security, and proxy-pipeline behavior is preserved
 ### Requirement: Single-model spawn per active model
 
 The system SHALL launch one `llama-server` process per active model, passing per-model flags derived from the SQLite model config: GGUF path, `--ctx-size`, KV quant, YaRN. `LocalBackendHub` SHALL maintain exactly one manager per model at any time (no duplicate spawn). Idle-stop SHALL default to 10 minutes (configurable), resetting on every request.
@@ -140,74 +181,3 @@ The system SHALL launch one `llama-server` process per active model, passing per
 - GIVEN an active model with in-flight requests that do not complete within 30s
 - WHEN deactivation is requested
 - THEN `stop()` is called anyway after the 30s timeout; in-flight requests fail with connection reset
-### Requirement: YaRN and KV cache flags at spawn
-
-The system SHALL pass context-scaling and KV flags at spawn: `--rope-scaling yarn` with the target `--ctx-size` when YaRN is configured, `--cache-type-k`/`--cache-type-v`, and `--n-cache-gpu` when offload is set. `--cache-ram` SHALL cap only the HOST prompt cache and MUST NOT cap the KV cache.
-
-#### Scenario: YaRN flags at spawn
-
-- GIVEN a model with automatic YaRN 32K→128K
-- WHEN it spawns
-- THEN args include `--ctx-size 131072 --rope-scaling yarn`
-
-#### Scenario: cache-ram semantics
-
-- GIVEN a configured `--cache-ram` cap
-- WHEN it spawns
-- THEN the cap applies to the host prompt cache only; KV sizing is unchanged
-
-### Requirement: llama.cpp version floor
-
-Managed llama-server SHALL be llama.cpp b9908+ (2026-07-08); the system MUST fail fast at startup when the binary is older.
-
-#### Scenario: Old binary rejected
-
-- GIVEN a llama-server below b9908
-- WHEN the app checks versions
-- THEN startup fails with an actionable upgrade message
-
-### Requirement: Activate and deactivate endpoints
-
-`POST /api/models/:id/activate` SHALL create a `LlamaProcessManager`, spawn the process, persist `active=1` in SQLite, and return `{state: "active", pid, port}`. `POST /api/models/:id/deactivate` SHALL drain in-flight requests, stop the process, persist `active=0` in SQLite, and return `{state: "disabled"}`. All management endpoints SHALL be behind the existing auth gate.
-
-#### Scenario: Activate a model
-
-- GIVEN a registered model with a valid GGUF file and `active=0`
-- WHEN `POST /api/models/:id/activate` is called
-- THEN the process starts, the response is `{state: "active", pid: <number>, port: <number>}`, and `active=1` is persisted in SQLite
-
-#### Scenario: Activate an already-active model
-
-- GIVEN a model already in active state
-- WHEN `POST /api/models/:id/activate` is called
-- THEN the response returns the current `{state: "active", pid, port}` without re-spawning
-
-#### Scenario: Deactivate a model
-
-- GIVEN an active model with no in-flight requests
-- WHEN `POST /api/models/:id/deactivate` is called
-- THEN the process stops, the response is `{state: "disabled"}`, and `active=0` is persisted in SQLite
-
-#### Scenario: Activate with missing GGUF returns error
-
-- GIVEN a model whose GGUF file does not exist
-- WHEN `POST /api/models/:id/activate` is called
-- THEN the response is an error with a clear message naming the missing file
-
-### Requirement: Version-floor ENOENT handling
-
-The version-floor preflight SHALL distinguish between ENOENT (binary not found) and version-too-old:
-
-- ENOENT → per-model error state with actionable message; boot continues.
-- Parseable but below b9908 → `process.exit(1)` (global fail-fast).
-- Parseable and current → proceed.
-
-#### Scenario: ENOENT is per-model, not global
-
-- GIVEN a binary path that does not exist
-- WHEN the app runs preflight
-- THEN all models enter error state with "llama-server binary not found at '<path>'" and boot continues (the system remains operational for external providers and workflows)
-
----
-
-
