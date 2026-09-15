@@ -9,6 +9,10 @@ Delta over `openspec/specs/external-providers/spec.md`: the single OpenAI-compat
 (Reason: the adapter now covers four providers, not only OpenAI-compatible.)
 (Migration: tests/docs referencing the adapter should use the multi-provider name.)
 
+### Requirement: Static authentication → Keychain-backed authentication
+
+(Reason: archive repair — the delta MODIFIED "Keychain-backed authentication" without a preceding RENAMED declaration; recomposed natively so RENAMED applies before MODIFIED. Archive-time repair, recorded in archive-report.)
+
 ## MODIFIED Requirements
 
 ### Requirement: Multi-provider adapter
