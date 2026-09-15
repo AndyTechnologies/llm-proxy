@@ -97,7 +97,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /ciclo/i.test(e))).toBe(true);
+    expect(result.errors.some((e) => /cycle/i.test(e))).toBe(true);
   });
 
   test("allows a cycle when it is a loop boundary (loop node with body)", () => {
@@ -147,7 +147,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /inexistente/i.test(e))).toBe(true);
+    expect(result.errors.some((e) => /unknown node/i.test(e))).toBe(true);
   });
 
   test("rejects an llm_call whose model does not exist (RED: model existence)", () => {
@@ -190,7 +190,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /no es alcanzable|desconectado/.test(e))).toBe(true);
+    expect(result.errors.some((e) => /is not reachable from start/.test(e))).toBe(true);
   });
 
   test("rejects a reachable node with no path to an end (dead end)", () => {
@@ -209,7 +209,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /camino hacia un nodo end/.test(e))).toBe(true);
+    expect(result.errors.some((e) => /has no path to an end node/.test(e))).toBe(true);
   });
 
   test("accepts a loop whose members are chained only by body (auto-chain)", () => {
@@ -262,7 +262,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /on_429/.test(e) && /inexistente/.test(e))).toBe(true);
+    expect(result.errors.some((e) => /on_429/.test(e) && /unknown/.test(e))).toBe(true);
   });
 
   test("rejects a tool_calls_route target that does not exist", () => {
@@ -279,7 +279,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /tool_calls_route/.test(e) && /inexistente/.test(e))).toBe(true);
+    expect(result.errors.some((e) => /tool_calls_route/.test(e) && /unknown/.test(e))).toBe(true);
   });
 
   test("rejects a start with no outgoing edge (nothing reachable)", () => {
@@ -289,7 +289,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /no es alcanzable|camino/.test(e))).toBe(true);
+    expect(result.errors.some((e) => /is not reachable from start/.test(e))).toBe(true);
   });
 
   test("rejects a loop whose exit never reaches an end", () => {
@@ -308,7 +308,7 @@ describe("validateGraph — structural invariants", () => {
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => /camino hacia un nodo end/.test(e))).toBe(true);
+    expect(result.errors.some((e) => /has no path to an end node/.test(e))).toBe(true);
   });
 });
 
@@ -327,8 +327,8 @@ describe("validateGraph — readable node labels in errors", () => {
       ],
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
-    const hit = result.errors.find((e) => /no es alcanzable/.test(e)) ?? "";
-    expect(hit).toContain("LLM_CALL de modelo gemma (b)");
+    const hit = result.errors.find((e) => /is not reachable from start/.test(e)) ?? "";
+    expect(hit).toContain("LLM_CALL model gemma (b)");
   });
 
   test("names a dead-end llm_call with its model", () => {
@@ -346,8 +346,8 @@ describe("validateGraph — readable node labels in errors", () => {
       ],
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
-    const hit = result.errors.find((e) => /camino hacia un nodo end/.test(e)) ?? "";
-    expect(hit).toContain("LLM_CALL de modelo gemma (b)");
+    const hit = result.errors.find((e) => /has no path to an end node/.test(e)) ?? "";
+    expect(hit).toContain("LLM_CALL model gemma (b)");
   });
 
   test("uses the plain type label when an llm_call has no model", () => {
@@ -363,9 +363,9 @@ describe("validateGraph — readable node labels in errors", () => {
       ],
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
-    const hit = result.errors.find((e) => /campo obligatorio/.test(e)) ?? "";
+    const hit = result.errors.find((e) => /is missing its required/.test(e)) ?? "";
     expect(hit).toContain("LLM_CALL (a)");
-    expect(hit).not.toContain("de modelo");
+    expect(hit).not.toContain("LLM_CALL model");
   });
 
   test("does not duplicate the model in the unknown-model error", () => {
@@ -381,7 +381,7 @@ describe("validateGraph — readable node labels in errors", () => {
       ],
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
-    const hit = result.errors.find((e) => /modelo desconocido/.test(e)) ?? "";
+    const hit = result.errors.find((e) => /references an unknown model/.test(e)) ?? "";
     expect(hit).toContain("LLM_CALL (a)");
     expect(hit).toContain('"nope"');
   });
@@ -401,7 +401,7 @@ describe("validateGraph — readable node labels in errors", () => {
       ],
     );
     const result = validateGraph(graph, { knownModels: ["gemma"] });
-    const hit = result.errors.find((e) => /campo obligatorio/.test(e)) ?? "";
+    const hit = result.errors.find((e) => /is missing its required/.test(e)) ?? "";
     expect(hit).toContain("LOOP (loop)");
   });
 });
@@ -561,5 +561,123 @@ describe("safe AST — sanitizeAst rejects unsafe input (RED: unsafe-input-rejec
       ],
     };
     expect(sanitizeAst(ok)).toEqual(ok);
+  });
+});
+
+// ── Phase 6.1: extended taxonomy validation ───────────────────────────────
+
+describe("validateGraph — extended taxonomy (Phase 6)", () => {
+  test("accepts rag_local/memory/embeddings/router/output nodes as a DAG", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("rag", "rag_local", { k: 3 }),
+        node("mem", "memory"),
+        node("emb", "embeddings"),
+        node("out", "output"),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "rag" },
+        { from: "rag", to: "mem" },
+        { from: "mem", to: "emb" },
+        { from: "emb", to: "out" },
+        { from: "out", to: "end" },
+        { from: "start", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph, { knownModels: ["gemma"] });
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  test("data.code node requires a non-empty code field (RED)", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("code1", "data.code"),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "code1" },
+        { from: "code1", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /code/i.test(e) && /required/.test(e))).toBe(true);
+  });
+
+  test("data.code node with empty/whitespace code is rejected", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("code1", "data.code", { code: "   " }),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "code1" },
+        { from: "code1", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /code/i.test(e))).toBe(true);
+  });
+
+  test("data.code node with code passes validation", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("code1", "data.code", { code: "return 1 + 1" }),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "code1" },
+        { from: "code1", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph);
+    expect(result.ok).toBe(true);
+  });
+
+  test("router node requires a condition expression (RED)", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("r", "router"),
+        node("a", "output"),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "r" },
+        { from: "r", to: "a", guard: "true" },
+        { from: "r", to: "end", guard: "false" },
+        { from: "a", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => /condition/i.test(e) && /required/.test(e))).toBe(true);
+  });
+
+  test("router node with a condition passes validation", () => {
+    const graph = makeGraph(
+      [
+        node("start", "start"),
+        node("r", "router", {
+          condition: { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+        }),
+        node("a", "output"),
+        node("end", "end"),
+      ],
+      [
+        { from: "start", to: "r" },
+        { from: "r", to: "a", guard: "true" },
+        { from: "a", to: "end" },
+      ],
+    );
+    const result = validateGraph(graph);
+    expect(result.ok).toBe(true);
   });
 });

@@ -28,7 +28,31 @@ export type NodeType =
   | "loop"
   | "fan"
   | "join"
-  | "pipeline";
+  | "pipeline"
+  | "rag_local"
+  | "data.code"
+  | "memory"
+  | "embeddings"
+  | "router"
+  | "output";
+
+/** Every supported node type — the shared taxonomy registry (engine + YAML + editor). */
+export const NODE_TYPES: readonly NodeType[] = [
+  "start",
+  "end",
+  "llm_call",
+  "condition",
+  "loop",
+  "fan",
+  "join",
+  "pipeline",
+  "rag_local",
+  "data.code",
+  "memory",
+  "embeddings",
+  "router",
+  "output",
+];
 
 /** A node in a pipeline graph. */
 export interface GraphNode {
@@ -69,6 +93,16 @@ export interface GraphNode {
   on_429?: string;
   /** `llm_call` tool-calls route: target node id when the response has tool_calls. */
   tool_calls_route?: string;
+  /** Required for `data.code` — the sandboxed script body. */
+  code?: string;
+  /** Optional `rag_local` top-k (defaults to the runtime default). */
+  k?: number;
+  /** Optional `embeddings` text override (defaults to the last response). */
+  text?: string;
+  /** Optional `memory` conversation scope id (defaults to the request's). */
+  convId?: string;
+  /** Optional `loop` bound — body runs this many times (default 1). */
+  iterations?: number;
 }
 
 /** A directed edge between nodes, with an optional condition guard. */
@@ -95,12 +129,12 @@ export interface GraphValidation {
 
 /**
  * Human-readable label for a node in validation errors, e.g.
- * `LLM_CALL de modelo SmolLM3 (n3)` or `CONDITION (c2)`.
+ * `LLM_CALL model SmolLM3 (n3)` or `CONDITION (c2)`.
  */
 function nodeLabel(n: GraphNode, includeModel = true): string {
   const type = n.type.toUpperCase();
   if (includeModel && n.type === "llm_call" && n.model) {
-    return `LLM_CALL de modelo ${n.model} (${n.id})`;
+    return `LLM_CALL model ${n.model} (${n.id})`;
   }
   return `${type} (${n.id})`;
 }
@@ -161,38 +195,44 @@ export function validateGraph(
   // Exactly one start.
   const starts = graph.nodes.filter((n) => n.type === "start");
   if (starts.length !== 1) {
-    errors.push(`el grafo "${graph.id}" debe tener exactamente un nodo start (se encontraron ${starts.length})`);
+    errors.push(`graph "${graph.id}" must have exactly one start node (found ${starts.length})`);
   }
 
   // At least one end.
   const ends = graph.nodes.filter((n) => n.type === "end");
   if (ends.length < 1) {
-    errors.push(`el grafo "${graph.id}" debe tener al menos un nodo end`);
+    errors.push(`graph "${graph.id}" must have at least one end node`);
   }
 
   // Edges reference real nodes.
   for (const edge of graph.edges) {
     if (!byId.has(edge.from)) {
-      errors.push(`la arista desde "${edge.from}" referencia un nodo inexistente`);
+      errors.push(`edge from "${edge.from}" references an unknown node`);
     }
     if (!byId.has(edge.to)) {
-      errors.push(`la arista hacia "${edge.to}" referencia un nodo inexistente`);
+      errors.push(`edge to "${edge.to}" references an unknown node`);
     }
   }
 
   // Required per-type fields.
   for (const n of graph.nodes) {
     if (n.type === "llm_call" && !n.model) {
-      errors.push(`el nodo ${nodeLabel(n)} no tiene el campo obligatorio "model"`);
+      errors.push(`node ${nodeLabel(n)} is missing its required "model" field`);
     }
     if (n.type === "condition" && !n.condition) {
-      errors.push(`el nodo ${nodeLabel(n)} no tiene el campo obligatorio "condition"`);
+      errors.push(`node ${nodeLabel(n)} is missing its required "condition" field`);
     }
     if (n.type === "loop" && (!n.body || n.body.length === 0)) {
-      errors.push(`el nodo ${nodeLabel(n)} no tiene el campo obligatorio "body"`);
+      errors.push(`node ${nodeLabel(n)} is missing its required "body" field`);
     }
     if (n.type === "pipeline" && !n.pipeline) {
-      errors.push(`el nodo ${nodeLabel(n)} no tiene el campo obligatorio "pipeline"`);
+      errors.push(`node ${nodeLabel(n)} is missing its required "pipeline" field`);
+    }
+    if (n.type === "data.code" && (!n.code || n.code.trim() === "")) {
+      errors.push(`node ${nodeLabel(n)} is missing its required "code" field`);
+    }
+    if (n.type === "router" && !n.condition) {
+      errors.push(`node ${nodeLabel(n)} is missing its required "condition" field`);
     }
   }
 
@@ -200,7 +240,7 @@ export function validateGraph(
   if (opts.knownModels && opts.knownModels.length >= 0) {
     for (const n of graph.nodes) {
       if (n.type === "llm_call" && n.model && !known.has(n.model)) {
-        errors.push(`el nodo ${nodeLabel(n, false)} referencia un modelo desconocido "${n.model}"`);
+        errors.push(`node ${nodeLabel(n, false)} references an unknown model "${n.model}"`);
       }
     }
   }
@@ -253,7 +293,7 @@ function collectCycleErrors(
         const legal = isInsideSingleLoopBody(id, to, byId);
         if (!legal) {
           errors.push(
-            `el grafo "${graph.id}" contiene un ciclo (arista ${nodeLabel(n)} → ${nodeLabel(byId.get(to)!)}) fuera de un loop válido`,
+            `graph "${graph.id}" contains a cycle (edge ${nodeLabel(n)} → ${nodeLabel(byId.get(to)!)}) outside a valid loop`,
           );
         }
         continue;
@@ -356,11 +396,11 @@ function collectConnectivityErrors(
   // Broken routes: a fallback/tool-calls target that does not exist.
   for (const n of graph.nodes) {
     if (n.on_429 && !byId.has(n.on_429)) {
-      errors.push(`el nodo ${nodeLabel(n)} referencia un destino on_429 inexistente ("${n.on_429}")`);
+      errors.push(`node ${nodeLabel(n)} references an unknown on_429 target ("${n.on_429}")`);
     }
     if (n.tool_calls_route && !byId.has(n.tool_calls_route)) {
       errors.push(
-        `el nodo ${nodeLabel(n)} referencia un destino tool_calls_route inexistente ("${n.tool_calls_route}")`,
+        `node ${nodeLabel(n)} references an unknown tool_calls_route target ("${n.tool_calls_route}")`,
       );
     }
   }
@@ -383,7 +423,7 @@ function collectConnectivityErrors(
     }
     for (const n of graph.nodes) {
       if (!visited.has(n.id)) {
-        errors.push(`el nodo ${nodeLabel(n)} no es alcanzable desde start (quedó desconectado)`);
+        errors.push(`node ${nodeLabel(n)} is not reachable from start (left disconnected)`);
       }
     }
   }
@@ -405,7 +445,7 @@ function collectConnectivityErrors(
     for (const n of graph.nodes) {
       if (n.type === "end") continue;
       if (!visited.has(n.id)) {
-        errors.push(`el nodo ${nodeLabel(n)} no tiene un camino hacia un nodo end (queda colgado)`);
+        errors.push(`node ${nodeLabel(n)} has no path to an end node (left hanging)`);
       }
     }
   }
