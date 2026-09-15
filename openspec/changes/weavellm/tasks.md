@@ -67,13 +67,13 @@ TDD: every task: RED test → GREEN impl (`bun test`).
 
 ## Phase 5: Sandbox, Embeddings, RAG
 
-- [ ] 5.1 `src/sandbox/runner.ts`: unshare net-block, tmp, env whitelist, timeout
-- [ ] 5.2 RED: net/FS/secrets denied
-- [ ] 5.3 Output cap + timeout kill
-- [ ] 5.4 `/v1/embeddings` local, OpenAI shape
-- [ ] 5.5 `chunks` store: cosine top-k; empty ok
-- [ ] 5.6 `memory` node: `kv_memory` inject
-- [ ] 5.7 `rag_local`: embed→retrieve→prompt; no-context notice
+- [x] 5.1 `src/sandbox/runner.ts`: unshare net-block, tmp, env whitelist, timeout
+- [x] 5.2 RED: net/FS/secrets denied
+- [x] 5.3 Output cap + timeout kill
+- [x] 5.4 `/v1/embeddings` local, OpenAI shape
+- [x] 5.5 `chunks` store: cosine top-k; empty ok
+- [x] 5.6 `memory` node: `kv_memory` inject
+- [x] 5.7 `rag_local`: embed→retrieve→prompt; no-context notice
 
 ## Phase 6: Workflow Engine, Editor, /ws
 

@@ -20,6 +20,7 @@ import {
 } from "../providers/fallback.js";
 import { makeCompletionId } from "../utils/ids.js";
 import { sseResponse } from "./relay.js";
+import type { Embedder } from "../providers/embeddings.js";
 
 export interface V1HandlerDeps {
   /** External provider adapters (keychain-backed, with fallback links). */
@@ -30,6 +31,8 @@ export interface V1HandlerDeps {
   localModels: () => string[];
   /** Virtual chain model ids (gateway/<chain>) to advertise. */
   virtualModels?: () => string[];
+  /** Embedder over the local backend (/v1/embeddings), or null when absent. */
+  embeddings?: () => Embedder | null;
   /**
    * Optional request gate (gateway-security): returns true to admit the
    * request. When absent, auth is disabled (default) and all /v1 requests
@@ -201,6 +204,24 @@ export function makeV1Handler(deps: V1HandlerDeps): V1Dispatcher {
     }
   };
 
+  const handleEmbeddings = async (body: Record<string, unknown>): Promise<Response> => {
+    const embedder = deps.embeddings?.() ?? null;
+    const model = typeof body.model === "string" ? body.model : "local";
+    if (embedder === null) return unknownModelError(model);
+    const input = body.input;
+    if (typeof input !== "string" && !Array.isArray(input)) {
+      return badRequest("The 'input' field is required (string or array of strings)");
+    }
+    if (Array.isArray(input) && input.some((i) => typeof i !== "string")) {
+      return badRequest("The 'input' array must contain only strings");
+    }
+    try {
+      return Response.json(await embedder.embed(input as string | string[]));
+    } catch (err) {
+      return providerError(err);
+    }
+  };
+
   return async (req: Request): Promise<Response | null> => {
     const url = new URL(req.url);
 
@@ -237,7 +258,11 @@ export function makeV1Handler(deps: V1HandlerDeps): V1Dispatcher {
     }
 
     if (req.method !== "POST") return null;
-    if (url.pathname !== "/v1/chat/completions" && url.pathname !== "/v1/completions") {
+    if (
+      url.pathname !== "/v1/chat/completions" &&
+      url.pathname !== "/v1/completions" &&
+      url.pathname !== "/v1/embeddings"
+    ) {
       return null;
     }
 
@@ -247,6 +272,12 @@ export function makeV1Handler(deps: V1HandlerDeps): V1Dispatcher {
     } catch {
       return badRequest("Invalid JSON body");
     }
+
+    // /v1/embeddings needs no `model` requirement — route it first.
+    if (url.pathname === "/v1/embeddings") {
+      return handleEmbeddings(body);
+    }
+
     const model = typeof body.model === "string" ? body.model : null;
     if (model === null) return badRequest("The 'model' field is required");
 

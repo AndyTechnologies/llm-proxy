@@ -4,6 +4,7 @@ import { applySchema } from "../db/schema.js";
 import { SecretStore, type KeychainBackend } from "../secrets/keychain.js";
 import { buildProviderRegistry, type ProviderRegistry } from "../providers/registry.js";
 import type { Provider } from "../providers/types.js";
+import type { Embedder } from "../providers/embeddings.js";
 import { makeV1Handler } from "./v1.js";
 
 function memoryBackend(): KeychainBackend {
@@ -20,7 +21,7 @@ function memoryBackend(): KeychainBackend {
 
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
-async function makeHarness(fetchers: Record<string, Fetcher>) {
+async function makeHarness(fetchers: Record<string, Fetcher>, embeddings?: () => Embedder | null) {
   const db = new Database(":memory:");
   applySchema(db);
   db.query(
@@ -77,6 +78,7 @@ async function makeHarness(fetchers: Record<string, Fetcher>) {
     localProvider: () => localProvider,
     localModels: () => localModels,
     virtualModels: () => ["gateway/orchestrator"],
+    embeddings,
   });
   return { handler, registry };
 }
@@ -296,7 +298,7 @@ describe("makeV1Handler — OpenAI-compatible /v1 surface", () => {
   test("unknown /v1 paths are declined (null) so the server answers 404", async () => {
     const { handler } = await makeHarness({});
     const res = await handler(
-      new Request("http://127.0.0.1:4317/v1/embeddings", {
+      new Request("http://127.0.0.1:4317/v1/audio/transcriptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: "gpt-4o", input: "x" }),
@@ -327,5 +329,81 @@ describe("makeV1Handler — OpenAI-compatible /v1 surface", () => {
       }),
     );
     expect(admitted!.status).toBe(200);
+  });
+});
+
+describe("makeV1Handler — /v1/embeddings", () => {
+  const embedHarness = () =>
+    makeHarness({}, () => ({
+      model: "local-embed",
+      embed: async (_input: string | string[]) => ({
+        object: "list" as const,
+        data: [
+          { object: "embedding" as const, embedding: [1.0], index: 0 },
+          { object: "embedding" as const, embedding: [2.0], index: 1 },
+        ],
+        model: "local-embed",
+        usage: { prompt_tokens: 1, total_tokens: 1 },
+      }),
+    }));
+
+  test("embeds a string input into the OpenAI embeddings shape", async () => {
+    const { handler } = await embedHarness();
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/embeddings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "local-embed", input: "hi" }),
+      }),
+    );
+    expect(res!.status).toBe(200);
+    const body = (await res!.json()) as {
+      object: string;
+      data: Array<{ object: string; embedding: number[]; index: number }>;
+      model: string;
+    };
+    expect(body.object).toBe("list");
+    expect(body.data).toHaveLength(2);
+    expect(body.data[0]?.object).toBe("embedding");
+    expect(body.data[0]?.embedding).toEqual([1.0]);
+    expect(body.model).toBe("local-embed");
+  });
+
+  test("missing input is a 400 invalid_request_error", async () => {
+    const { handler } = await embedHarness();
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/embeddings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "local-embed" }),
+      }),
+    );
+    expect(res!.status).toBe(400);
+  });
+
+  test("no embedder configured → 404 model_not_found", async () => {
+    const { handler } = await makeHarness({});
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/embeddings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "nope", input: "x" }),
+      }),
+    );
+    expect(res!.status).toBe(404);
+    const body = (await res!.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("model_not_found");
+  });
+
+  test("non-string array entries are rejected with 400", async () => {
+    const { handler } = await embedHarness();
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/embeddings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "local-embed", input: [1, 2] }),
+      }),
+    );
+    expect(res!.status).toBe(400);
   });
 });
