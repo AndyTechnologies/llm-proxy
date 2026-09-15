@@ -2,19 +2,20 @@
 
 ## Purpose
 
-llm-proxy SHALL NOT assume an external `llamaServer`. Instead it SHALL own the lifecycle of the `llama-server` binary (`llama serve`) as an internal component — spawning, supervising, configuring in router mode, and shutting it down. All backend/model configuration SHALL come from the single `llm-proxy.config.yaml`; the end user only defines chains in YAML and never touches llama.cpp directly. This capability makes the tool self-hosting its backend, unblocking runtime verification.
+llm-proxy SHALL NOT assume an external `llamaServer`. Instead it SHALL own the lifecycle of the `llama-server` binary (`llama serve`) as an internal component — spawning one process per active model (no router mode), supervising it, and shutting it down. Per-model configuration SHALL come from the app's model configuration (model-advanced-config, SQLite-backed) driven through the UI; workflows are authored as YAML graphs in the workflow editor. This capability makes the tool self-hosting its backend, unblocking runtime verification.
 
 ## Requirements
 
 ### Requirement: Spawn and supervise the llama-server process
 
-The system MUST locate, spawn, supervise, and gracefully stop the `llama-server` process. The binary path SHALL be configurable in `llm-proxy.config.yaml`, defaulting to `llama` on PATH. On unexpected exit, the system MUST restart the process.
+The system MUST locate, spawn, supervise, and gracefully stop the `llama-server` process. The binary path SHALL be configurable, defaulting to `llama` on PATH. On unexpected exit, the system MUST restart the process. The system MUST support `--port 0`, detecting the bound port from process stdout via the regex `listening on ...:(\d+)`.
+(Previously: fixed configured port, no version floor.)
 
-#### Scenario: Spawn and wait-ready at boot
+#### Scenario: Spawn with ephemeral port and wait-ready on activation
 
-- GIVEN the config defines a valid `llama-server` binary path and host/port
-- WHEN the proxy starts
-- THEN the binary is spawned and the system waits for the backend health to become ready before accepting traffic
+- GIVEN the config defines a valid `llama-server` binary path
+- WHEN a model is activated
+- THEN the binary is spawned with `--port 0` and traffic is accepted only after the parsed stdout port passes the health check
 
 #### Scenario: Restart on crash
 
@@ -22,63 +23,22 @@ The system MUST locate, spawn, supervise, and gracefully stop the `llama-server`
 - WHEN the process exits abruptly
 - THEN the system restarts it and resumes the ready state
 
-### Requirement: Configure router mode from config
+### Requirement: Spawn-time readiness gate
 
-The system MUST launch `llama-server` in router mode (no `--model`; using `--models-dir` and/or `--models-preset`), passing global args (default `--ctx-size`/`-n`, GPU, host/port, flash-attn, batch) derived entirely from `llm-proxy.config.yaml`.
-
-#### Scenario: Router mode with global args
-
-- GIVEN config declares a models dir, default context, port, and GPU flags
-- WHEN the backend is spawned
-- THEN it is launched in router mode with those args and registers available GGUF models
-
-### Requirement: Per-model instances via generated preset
-
-The system SHOULD let each model declare its own GGUF file, context, temperature, and args. The tool MUST be able to generate/manipulate the `--models-preset` INI mechanism (or equivalent) to express per-model settings.
-
-#### Scenario: Per-model preset generated
-
-- GIVEN config defines two models with distinct ctx and temp
-- WHEN the backend initializes
-- THEN a preset is generated/loaded so each model inherits its own ctx and args
-
-#### Scenario: Model with per-instance overrides
-
-- GIVEN a model declared with `ctx` larger than the default
-- WHEN a request loads that model
-- THEN the model instance runs with its own ctx, not the global default
-
-### Requirement: Native on-demand model swap
-
-The system MUST use llama-server's native router-mode swap (autoload on-demand), NOT a process-per-model approach. The system MUST inject the correct `model` field into each request for every step of a chain.
-
-#### Scenario: Autoload on first request
-
-- GIVEN a model not yet loaded
-- WHEN a request targeting it arrives
-- THEN llama-server autoloads it on demand and serves the request
-
-#### Scenario: Model field injected per node
-
-- GIVEN a chain with `llm_call` nodes targeting different models
-- WHEN each node is issued
-- THEN the outbound request carries that node's target `model`
-
-### Requirement: Boot-time readiness gate
-
-The system MUST start the backend (spawn + wait-ready via health check) before accepting traffic. If the backend fails to start, the system MUST fail startup with a clear message.
+When a model is activated, the system MUST spawn its backend (spawn + wait-ready via health check) before any traffic routes to it. Readiness SHALL be determined from the port parsed from stdout (`listening on ...:(\d+)`) when `--port 0` is used. If the backend fails to become ready, activation SHALL fail with a clear actionable message. The gateway itself does NOT wait at boot for a managed backend: models are spawned on activation, and wiring the managed backend into the boot path is intentionally deferred (the local provider is not connected at boot).
+(Previously: readiness on a fixed configured port at boot.)
 
 #### Scenario: Backend becomes ready before traffic
 
-- GIVEN a healthy backend
-- WHEN the proxy boots
-- THEN traffic is accepted only after the backend health check passes
+- GIVEN a healthy backend spawned on `--port 0` for an active model
+- WHEN a request targets that model
+- THEN traffic is accepted only after the parsed stdout port passes the health check
 
-#### Scenario: Backend fails to boot
+#### Scenario: Backend fails to become ready
 
-- GIVEN a backend that never becomes ready (bad binary, wrong port)
-- WHEN the proxy attempts startup
-- THEN the proxy fails with a clear actionable message and refuses to serve
+- GIVEN a backend that never becomes ready
+- WHEN the model is activated
+- THEN activation fails with a clear actionable message and no traffic is routed to it
 
 ### Requirement: Graceful shutdown
 
@@ -116,22 +76,6 @@ The system MUST validate backend/model config at startup (missing GGUF, missing 
 - WHEN the proxy starts
 - THEN startup fails with an actionable message
 
-### Requirement: Configurable autoload
-
-The system SHOULD allow disabling global autoload (`--no-models-autoload`) or per-request autoload when the user needs it.
-
-#### Scenario: Global autoload disabled
-
-- GIVEN config sets autoload off
-- WHEN the backend is spawned
-- THEN llama-server is launched with `--no-models-autoload`
-
-#### Scenario: Per-request autoload override
-
-- GIVEN a request passing an autoload query param
-- WHEN routing to the backend
-- THEN the param is forwarded accordingly
-
 ### Requirement: Integration with the provider adapter
 
 The capability MUST integrate with the existing provider adapter, which SHALL use the managed process and know which models are registered, replacing any external-host assumption.
@@ -147,3 +91,45 @@ The capability MUST integrate with the existing provider adapter, which SHALL us
 - GIVEN the other five capabilities are applied
 - WHEN backend-management is active
 - THEN gateway-api, pipeline-orchestration, virtual-model-routing, gateway-security, and proxy-pipeline behavior is preserved
+### Requirement: Single-model spawn per active model
+
+The system MUST launch one `llama-server` process per active model (no router mode), passing per-model flags derived from the SQLite model config (model-advanced-config): GGUF path, `--ctx-size`, KV quant, YaRN. When a model becomes inactive, the system SHOULD stop it.
+
+#### Scenario: Spawn with per-model flags
+
+- GIVEN a model configured with ctx 8192 and q8_0 KV
+- WHEN the model is activated
+- THEN one llama-server spawns with `--model <gguf> --ctx-size 8192 --cache-type-k q8_0 --cache-type-v q8_0`
+
+#### Scenario: Inactive model stopped
+
+- GIVEN an activated model with no requests
+- WHEN the model is deactivated
+- THEN its process is stopped and it leaves the running registry
+
+### Requirement: YaRN and KV cache flags at spawn
+
+The system SHALL pass context-scaling and KV flags at spawn: `--rope-scaling yarn` with the target `--ctx-size` when YaRN is configured, `--cache-type-k`/`--cache-type-v`, and `--n-cache-gpu` when offload is set. `--cache-ram` SHALL cap only the HOST prompt cache and MUST NOT cap the KV cache.
+
+#### Scenario: YaRN flags at spawn
+
+- GIVEN a model with automatic YaRN 32K→128K
+- WHEN it spawns
+- THEN args include `--ctx-size 131072 --rope-scaling yarn`
+
+#### Scenario: cache-ram semantics
+
+- GIVEN a configured `--cache-ram` cap
+- WHEN it spawns
+- THEN the cap applies to the host prompt cache only; KV sizing is unchanged
+
+### Requirement: llama.cpp version floor
+
+Managed llama-server SHALL be llama.cpp b9908+ (2026-07-08); the system MUST fail fast at startup when the binary is older.
+
+#### Scenario: Old binary rejected
+
+- GIVEN a llama-server below b9908
+- WHEN the app checks versions
+- THEN startup fails with an actionable upgrade message
+
