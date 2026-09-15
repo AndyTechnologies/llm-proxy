@@ -91,4 +91,4 @@ TDD: every task: RED test → GREEN impl (`bun test`).
 ## Phase 7: Verification & Cleanup
 
 - [x] 7.1 Remove legacy router/preset code
-- [ ] 7.2 Suite green; build gate; docs; tag
+- [x] 7.2 Suite green; build gate; docs; tag
