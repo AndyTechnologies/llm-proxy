@@ -21,6 +21,7 @@ import { makeAuthGate } from "./routes/auth.js";
 import { WorkflowStore } from "./orchestrator/store.js";
 import { makeRuntimeServices, makeWorkflowRunner } from "./orchestrator/runner.js";
 import { runSandbox } from "./sandbox/runner.js";
+import { makeWsHub } from "./app/ws.js";
 
 export const APP_VERSION = "0.1.0";
 export const UPDATE_CHANNEL = "stable";
@@ -87,7 +88,13 @@ export async function boot(env: Record<string, string | undefined> = process.env
     chainRunner: workflowRunner,
     auth: makeAuthGate({ enabled: config.authEnabled, store: secretStore }),
   });
-  const server = await createWebServer({ config, logger, v1, api });
+  const server = await createWebServer({
+    config,
+    logger,
+    v1,
+    api,
+    ws: makeWsHub({ runner: workflowRunner }),
+  });
 
   // Background update check — never blocks boot; offline is silent.
   void checkForUpdate({

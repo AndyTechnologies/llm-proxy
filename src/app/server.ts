@@ -1,4 +1,5 @@
 import type { AppConfig, AppLogger } from "./types.js";
+import type { WsHub, WsSocketData } from "./ws.js";
 
 /**
  * Optional OpenAI-compatible /v1 dispatcher (external-proxy): returns a
@@ -20,6 +21,8 @@ export interface ServerDeps {
   v1?: V1Dispatcher;
   /** Wire the /api workflow surface when provided. */
   api?: ApiDispatcher;
+  /** Wire the /ws websocket streaming surface when provided. */
+  ws?: WsHub;
 }
 
 export interface WebServer {
@@ -84,14 +87,29 @@ export async function createWebServer(deps: ServerDeps): Promise<WebServer> {
     return p;
   };
 
-  const server = Bun.serve({
+  const server = Bun.serve<WsSocketData>({
     hostname: deps.config.host,
     port: deps.config.port,
-    fetch: (req: Request) => wrap(req),
+    fetch: (req: Request, srv) => {
+      if (deps.ws !== undefined && new URL(req.url).pathname === "/ws") {
+        if (deps.ws.upgrade(req, srv)) return undefined;
+        const res = new Response("WebSocket upgrade required", { status: 426 });
+        deps.logger("info", "request", { method: req.method, path: "/ws", status: 426 });
+        return res;
+      }
+      return wrap(req);
+    },
+    websocket: {
+      open: (ws) => deps.ws && deps.ws.open(ws),
+      message: (ws, raw) => deps.ws && deps.ws.message(ws, raw),
+      close: (ws) => deps.ws && deps.ws.close(ws),
+    },
   });
 
   const stop = async (): Promise<void> => {
     draining = true;
+    // Closing the socket tears down live websockets; their close handlers
+    // abort in-flight runs.
     server.stop();
     await Promise.allSettled([...inFlight]);
   };

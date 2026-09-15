@@ -8,7 +8,7 @@
  * defined first so the API layer and routes can depend on it without a
  * concrete engine backend.
  */
-import type { ChatMessage, EngineServices } from "./engine.js";
+import type { ChatMessage, EngineEvent, EngineServices } from "./engine.js";
 import { runGraphEngine } from "./engine.js";
 import { validateGraph } from "./graph.js";
 import type { GraphNode, GraphPipeline } from "./graph.js";
@@ -146,7 +146,7 @@ export function makeWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
       return deps.store.list().map((r) => r.name);
     },
 
-    async run(name, body, signal) {
+    async run(name, body, signal, onEvent) {
       const record = deps.store.get(name);
       if (record === null) return { ok: false, status: 404, error: "model_not_found" };
       const startedAt = new Date().toISOString();
@@ -176,6 +176,7 @@ export function makeWorkflowRunner(deps: WorkflowRunnerDeps): WorkflowRunner {
         services: deps.services,
         input: { messages: body.messages, convId: "default" },
         signal: signal ?? new AbortController().signal,
+        onEvent,
       });
       if (!result.ok) {
         const error = result.error ?? "workflow execution failed";
@@ -217,5 +218,14 @@ export interface WorkflowRunner {
    * `{ ok: false, status: 502 }`. Each accepted run is recorded in the
    * workflow's execution log before resolving.
    */
-  run(name: string, body: { messages: ChatMessage[] }, signal?: AbortSignal): Promise<RunResult>;
+  run(
+    name: string,
+    body: { messages: ChatMessage[] },
+    signal?: AbortSignal,
+    /**
+     * Engine telemetry sink (websocket-streaming). When provided, the runner
+     * forwards step/reroute/run lifecycle events as they happen.
+     */
+    onEvent?: (event: EngineEvent) => void,
+  ): Promise<RunResult>;
 }
