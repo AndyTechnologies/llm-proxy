@@ -3,6 +3,7 @@ import {
   applySchema,
   openAppDatabase,
   EXPECTED_TABLES,
+  MODELS_TABLE,
   type WeaveLlmDatabase,
 } from "./schema.js";
 
@@ -87,6 +88,16 @@ describe("models.active migration (wire-local-backend)", () => {
       active: number;
     };
     expect(row.active).toBe(0);
+  });
+
+  test("fresh DB: MODELS_TABLE CREATE statement pins active column provenance", () => {
+    // PRAGMA table_info cannot distinguish CREATE provenance from an
+    // ALTER-added column: migrateModelsActive self-heals any DB lacking
+    // `active` (including fresh DBs), and SQLite rewrites sqlite_master.sql
+    // on ALTER TABLE ADD COLUMN. Pin the DDL text so removing the column
+    // from the CREATE statement fails this test (spec: "Fresh databases
+    // SHALL have this column in the CREATE statement").
+    expect(MODELS_TABLE).toMatch(/active\s+INTEGER NOT NULL DEFAULT 0/);
   });
 
   test("pre-migration DB without active gains the column; existing rows read active=0", () => {
