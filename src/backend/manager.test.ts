@@ -249,6 +249,10 @@ describe("LlamaProcessManager — single-model lifecycle", () => {
   });
 });
 
+test("idle timeout default is 10 minutes (binding Decision 6)", () => {
+  expect(IDLE_TIMEOUT_MS).toBe(10 * 60 * 1000);
+});
+
 describe("idleElapsed — pure idle decision", () => {
   test("returns true only once the idle timeout has passed since the last request", () => {
     const now = 5 * 60 * 1000;

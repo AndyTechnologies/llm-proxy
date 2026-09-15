@@ -8,6 +8,8 @@ export interface AppEnv {
   WEAVELLM_HOST?: string;
   WEAVELLM_AUTH?: string;
   WEAVELLM_APP_DATA?: string;
+  /** Path to the llama-server binary (default "llama" on PATH). */
+  WEAVELLM_LLAMA_BIN?: string;
 }
 
 /** Parse a port string; non-numeric/invalid values fall back to the default. */
@@ -18,6 +20,11 @@ export function resolvePort(raw: string | undefined, fallback = DEFAULT_PORT): n
   return n;
 }
 
+/** Resolve the llama-server binary path; empty string falls back to "llama". */
+export function resolveLlamaBin(raw: string | undefined): string {
+  return raw === undefined || raw === "" ? "llama" : raw;
+}
+
 /** Resolve the app runtime config from the environment (loopback by default). */
 export function resolveAppConfig(env: AppEnv = {}): AppConfig {
   return {
@@ -25,5 +32,6 @@ export function resolveAppConfig(env: AppEnv = {}): AppConfig {
     port: resolvePort(env.WEAVELLM_PORT),
     authEnabled: env.WEAVELLM_AUTH === "1" || env.WEAVELLM_AUTH === "true",
     appData: env.WEAVELLM_APP_DATA ?? "",
+    llamaBin: resolveLlamaBin(env.WEAVELLM_LLAMA_BIN),
   };
 }

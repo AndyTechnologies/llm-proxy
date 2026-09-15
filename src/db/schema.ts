@@ -28,9 +28,20 @@ CREATE TABLE IF NOT EXISTS models (
   size_bytes    INTEGER,
   gguf_ctx      INTEGER,
   yarn_orig_ctx INTEGER,
+  active        INTEGER NOT NULL DEFAULT 0,
   state         TEXT NOT NULL DEFAULT 'registered',
   probe_status  TEXT
 )`;
+
+/** Idempotent migration: add the models.active column when absent. */
+function migrateModelsActive(db: WeaveLlmDatabase): void {
+  const cols = db
+    .query("PRAGMA table_info(models)")
+    .all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "active")) {
+    db.exec("ALTER TABLE models ADD COLUMN active INTEGER NOT NULL DEFAULT 0");
+  }
+}
 
 export const MODEL_CONFIG_TABLE = /* sql */ `
 CREATE TABLE IF NOT EXISTS model_config (
@@ -124,6 +135,7 @@ export function applySchema(db: WeaveLlmDatabase): void {
   db.exec(CHUNKS_TABLE);
   db.exec(DOWNLOADS_TABLE);
   db.exec(SETTINGS_TABLE);
+  migrateModelsActive(db);
 }
 
 /** Open the app database (":memory:" for tests) with WAL for file dbs. */

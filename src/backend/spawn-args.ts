@@ -40,6 +40,11 @@ export interface LlamaSpawnArgsInput {
   ngl?: number;
   /** Flash attention (`-fa on`). */
   flashAttn?: boolean;
+  /**
+   * Embeddings mode: pushes `--embeddings` (dedicated embedding model —
+   * the hub spawns the settings.embedding_model-designated model with this).
+   */
+  embeddings?: boolean;
   /** Port (default 0 = ephemeral, detected from stdout). */
   port?: number;
   /** Bind host (default loopback). */
@@ -75,6 +80,8 @@ export function buildLlamaSpawnArgs(input: LlamaSpawnArgsInput): string[] {
 
   assertSafeSpawnArg(input.modelPath);
   args.push("--model", input.modelPath);
+
+  if (input.embeddings === true) args.push("--embeddings");
 
   if (input.ctxSize !== undefined) {
     args.push("--ctx-size", num(input.ctxSize)!);

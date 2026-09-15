@@ -15,6 +15,7 @@ const baseConfig: AppConfig = {
   port: 4317,
   authEnabled: false,
   appData: "/tmp",
+  llamaBin: "llama",
 };
 
 describe("buildFetchHandler", () => {
@@ -107,5 +108,42 @@ describe("buildFetchHandler", () => {
     const handler = buildFetchHandler({ config: baseConfig, logger: log });
     const res = await handler(new Request("http://127.0.0.1:4317/v1/models"));
     expect(res.status).toBe(404);
+  });
+});
+
+describe("buildFetchHandler — /api/health localModels (wire-local-backend)", () => {
+  test("includes localModels ids when the hub is wired", async () => {
+    const { log } = makeLogger();
+    const handler = buildFetchHandler({
+      config: baseConfig,
+      logger: log,
+      localModels: () => ["m1"],
+    });
+    const res = await handler(new Request("http://127.0.0.1/api/health"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ok", localModels: ["m1"] });
+  });
+
+  test("omits localModels when the hub is not wired (legacy shape preserved)", async () => {
+    const { log } = makeLogger();
+    const handler = buildFetchHandler({ config: baseConfig, logger: log });
+    const body = (await (
+      await handler(new Request("http://127.0.0.1/api/health"))
+    ).json()) as Record<string, unknown>;
+    expect(body).toEqual({ status: "ok" });
+    expect("localModels" in body).toBe(false);
+  });
+
+  test("reports an explicit empty localModels list when wired with no healthy models", async () => {
+    const { log } = makeLogger();
+    const handler = buildFetchHandler({
+      config: baseConfig,
+      logger: log,
+      localModels: () => [],
+    });
+    const body = (await (
+      await handler(new Request("http://127.0.0.1/api/health"))
+    ).json()) as Record<string, unknown>;
+    expect(body).toEqual({ status: "ok", localModels: [] });
   });
 });

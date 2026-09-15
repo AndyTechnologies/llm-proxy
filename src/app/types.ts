@@ -9,6 +9,8 @@ export interface AppConfig {
   authEnabled: boolean;
   /** Data directory (SQLite, logs, models). */
   appData: string;
+  /** llama-server binary path (WEAVELLM_LLAMA_BIN, default "llama"). */
+  llamaBin: string;
 }
 
 export type LogLevel = "info" | "warn" | "error" | "fatal";

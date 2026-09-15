@@ -93,6 +93,51 @@ describe("buildLlamaSpawnArgs — single-model spawn flags", () => {
   });
 });
 
+describe("buildLlamaSpawnArgs — embeddings mode (embeddings-rag)", () => {
+  test("embeddings: true pushes --embeddings immediately after the --model pair", () => {
+    const args = buildLlamaSpawnArgs({ modelPath: "/m/models/q4.gguf", embeddings: true });
+    expect(args).toContain("--embeddings");
+    const modelIdx = args.indexOf("--model");
+    expect(args[modelIdx + 1]).toBe("/m/models/q4.gguf");
+    expect(args[modelIdx + 2]).toBe("--embeddings");
+  });
+
+  test("embeddings omitted → the flag is absent", () => {
+    const args = buildLlamaSpawnArgs({ modelPath: "/m/models/q4.gguf" });
+    expect(args).not.toContain("--embeddings");
+  });
+
+  test("embeddings: false → the flag is absent", () => {
+    const args = buildLlamaSpawnArgs({ modelPath: "/m/models/q4.gguf", embeddings: false });
+    expect(args).not.toContain("--embeddings");
+  });
+
+  test("existing flags stay in order with the embeddings field set (full argv pinned)", () => {
+    const args = buildLlamaSpawnArgs({
+      modelPath: "/m/models/q4.gguf",
+      ctxSize: 8192,
+      cacheTypeK: "q8_0",
+      cacheTypeV: "q8_0",
+      embeddings: true,
+    });
+    expect(args).toEqual([
+      "--model",
+      "/m/models/q4.gguf",
+      "--embeddings",
+      "--ctx-size",
+      "8192",
+      "--cache-type-k",
+      "q8_0",
+      "--cache-type-v",
+      "q8_0",
+      "--port",
+      "0",
+      "--host",
+      "127.0.0.1",
+    ]);
+  });
+});
+
 describe("assertSafeSpawnArg — shell metachar denial (threat matrix)", () => {
   test("every shell metacharacter in a value is rejected with a clear error", () => {
     for (const ch of SHELL_METACHARS) {
