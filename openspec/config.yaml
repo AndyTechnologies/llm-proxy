@@ -33,7 +33,9 @@ testing:
   note: >
     bun test is a single workspace-level command covering the single in-scope
     project (.); strict_tdd set to true. Downstream apply/verify must run tests
-    through `bun test` from the workspace root.
+    through `bun test` from the workspace root. bunfig.toml sets [test] root
+    to './src', so the default `bun test` covers src/ units; frontend (lib/)
+    and e2e/ suites run via their own paths (e.g. `bun run test:e2e`).
 
 rules:
   proposal:
@@ -55,7 +57,7 @@ rules:
     test_command: bun test
   verify:
     test_command: bun test
-    build_command: bun build src/index.ts --outdir dist
+    build_command: bun run build
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas
