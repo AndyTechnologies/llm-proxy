@@ -86,7 +86,7 @@ TDD: every task: RED test → GREEN impl (`bun test`).
 - [ ] 6.7 Editor canvas, palette, inline errors
 - [x] 6.8 YAML round-trip; bad import names node
 - [ ] 6.9 `/ws` events, order, scope, abort
-- [ ] 6.10 `/api/*` CRUD
+- [x] 6.10 `/api/*` CRUD
 
 ## Phase 7: Verification & Cleanup
 
