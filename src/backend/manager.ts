@@ -252,7 +252,7 @@ export class LlamaProcessManager {
   }
 
   private async tailStderr(
-    reader: ReadableStreamDefaultReader<Uint8Array>,
+    reader: { read(): Promise<{ done: boolean; value?: Uint8Array }> },
     tail: string[],
   ): Promise<void> {
     let bytes = 0;
