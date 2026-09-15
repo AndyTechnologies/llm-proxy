@@ -147,9 +147,18 @@ pre-experience ✓ · CHANGELOG ✓ · archive-report ✓
 ## Engram Persistence
 
 - `topic_key: sdd/weavellm/archive-report` (type `architecture`, scope `project`).
-- Observation IDs read this phase recorded in the retrieval ledger per Section B
-  (sdd/weavellm/specs/*, proposal, design, tasks, apply-progress, verification,
-  hard-verify, hard-gate, pre-experience topics).
+- Observation IDs read for final-state evidence (project `llm-proxy`):
+
+| Phase artifact | Engram observation |
+|----------------|--------------------|
+| proposal | #598 (sdd/weavellm/explore) |
+| design | #622 (sdd/weavellm/design) |
+| apply-progress | #624 |
+| architecture lint | #637 |
+| verification | #640 |
+| hard-verify | #641 |
+| hard-gate | #643 |
+| pre-experience | #646 |
 
 ## Cycle Complete
 
