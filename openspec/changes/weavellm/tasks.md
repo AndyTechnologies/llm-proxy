@@ -82,10 +82,10 @@ TDD: every task: RED test → GREEN impl (`bun test`).
 - [x] 6.3 10+ node taxonomy parity
 - [x] 6.4 MoA 3+1 parallel synthesis
 - [x] 6.5 `on_429` + `tool_calls_route`
-- [ ] 6.6 `gateway/<name>` + `X-Chain-ID`
-- [ ] 6.7 Editor canvas, palette, inline errors
+- [x] 6.6 `gateway/<name>` + `X-Chain-ID`
+- [x] 6.7 Editor canvas, palette, inline errors
 - [x] 6.8 YAML round-trip; bad import names node
-- [ ] 6.9 `/ws` events, order, scope, abort
+- [x] 6.9 `/ws` events, order, scope, abort
 - [x] 6.10 `/api/*` CRUD
 
 ## Phase 7: Verification & Cleanup

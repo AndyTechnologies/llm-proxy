@@ -1,6 +1,7 @@
 ---
 // WeaveLLM shell: static SPA hosting Svelte islands.
 import ModelBadge from "../svelte/ModelBadge.svelte";
+import WorkflowEditor from "../svelte/WorkflowEditor.svelte";
 import "../styles/global.css";
 ---
 
@@ -25,6 +26,10 @@ import "../styles/global.css";
           quant="Q4_K_M"
           ctx={32768}
         />
+      </section>
+      <section class="panel" aria-label="Workflow editor">
+        <h2>Workflow editor</h2>
+        <WorkflowEditor client:load />
       </section>
     </main>
   </body>
