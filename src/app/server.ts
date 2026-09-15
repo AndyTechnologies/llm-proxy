@@ -7,11 +7,19 @@ import type { AppConfig, AppLogger } from "./types.js";
  */
 export type V1Dispatcher = (req: Request) => Promise<Response | null>;
 
+/**
+ * Optional /api dispatcher (workflow CRUD + runs): returns a Response for
+ * /api paths it owns, or null to decline (the server then 404s).
+ */
+export type ApiDispatcher = (req: Request) => Promise<Response | null>;
+
 export interface ServerDeps {
   config: AppConfig;
   logger: AppLogger;
   /** Wire the /v1 OpenAI-compatible surface (port 4317) when provided. */
   v1?: V1Dispatcher;
+  /** Wire the /api workflow surface when provided. */
+  api?: ApiDispatcher;
 }
 
 export interface WebServer {
@@ -40,6 +48,9 @@ export function buildFetchHandler(deps: ServerDeps): (req: Request) => Promise<R
     let res: Response;
     if (req.method === "GET" && url.pathname === "/api/health") {
       res = Response.json({ status: "ok" });
+    } else if (deps.api !== undefined && url.pathname.startsWith("/api/")) {
+      const apires = await deps.api(req);
+      res = apires ?? notFound();
     } else if (deps.v1 !== undefined && url.pathname.startsWith("/v1/")) {
       const v1res = await deps.v1(req);
       res = v1res ?? notFound();

@@ -79,6 +79,29 @@ describe("buildFetchHandler", () => {
     expect(res.status).toBe(404);
   });
 
+  test("wired /api dispatcher handles the paths it owns", async () => {
+    const { log } = makeLogger();
+    const api = async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/api/workflows") {
+        return Response.json({ data: ["demo"] });
+      }
+      return null; // decline everything else
+    };
+    const handler = buildFetchHandler({ config: baseConfig, logger: log, api });
+    const res = await handler(new Request("http://127.0.0.1/api/workflows"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: ["demo"] });
+  });
+
+  test("a declined /api path falls through to the 404 envelope", async () => {
+    const { log } = makeLogger();
+    const api = async () => null;
+    const handler = buildFetchHandler({ config: baseConfig, logger: log, api });
+    const res = await handler(new Request("http://127.0.0.1/api/workflows/ghost"));
+    expect(res.status).toBe(404);
+  });
+
   test("without a v1 dispatcher, /v1 paths answer 404 (proxy not wired)", async () => {
     const { log } = makeLogger();
     const handler = buildFetchHandler({ config: baseConfig, logger: log });

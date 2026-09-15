@@ -16,7 +16,11 @@ import { measureColdStart, coldStartOk } from "./app/startup.js";
 import { SecretStore, platformKeychainBackend } from "./secrets/keychain.js";
 import { buildProviderRegistry } from "./providers/registry.js";
 import { makeV1Handler } from "./routes/v1.js";
+import { makeApiHandler } from "./routes/api.js";
 import { makeAuthGate } from "./routes/auth.js";
+import { WorkflowStore } from "./orchestrator/store.js";
+import { makeRuntimeServices, makeWorkflowRunner } from "./orchestrator/runner.js";
+import { runSandbox } from "./sandbox/runner.js";
 
 export const APP_VERSION = "0.1.0";
 export const UPDATE_CHANNEL = "stable";
@@ -57,16 +61,33 @@ export async function boot(env: Record<string, string | undefined> = process.env
   // /v1 proxy on port 4317. Auth (WEAVELLM_AUTH) is off by default.
   const secretStore = new SecretStore(db, platformKeychainBackend());
   const registry = await buildProviderRegistry({ db, store: secretStore });
-  const v1 = makeV1Handler({
+
+  // Workflow runtime: stored graphs → engine services → gateway/<name>
+  // virtual models + the /api workflow surface. The managed llama-server
+  // backend is spawned once a model is selected (catalog/manager); until
+  // then, local ids do not resolve and answer the 404 envelope.
+  const store = new WorkflowStore(db);
+  const services = makeRuntimeServices({
     registry,
-    // The managed llama-server backend is booted by the engine phase; until
-    // then, local model ids do not resolve and answer 404 (spec envelope).
     localProvider: () => null,
     localModels: () => [],
-    virtualModels: () => [],
+    store,
+    sandbox: (code, input, _opts) =>
+      runSandbox(code, { input: JSON.stringify(input ?? null) }),
+    embedder: () => null,
+    chunks: () => null,
+    memory: () => null,
+  });
+  const workflowRunner = makeWorkflowRunner({ store, services });
+  const api = makeApiHandler({ store, runner: workflowRunner });
+  const v1 = makeV1Handler({
+    registry,
+    localProvider: () => null,
+    localModels: () => [],
+    chainRunner: workflowRunner,
     auth: makeAuthGate({ enabled: config.authEnabled, store: secretStore }),
   });
-  const server = await createWebServer({ config, logger, v1 });
+  const server = await createWebServer({ config, logger, v1, api });
 
   // Background update check — never blocks boot; offline is silent.
   void checkForUpdate({

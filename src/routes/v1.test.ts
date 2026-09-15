@@ -6,6 +6,7 @@ import { buildProviderRegistry, type ProviderRegistry } from "../providers/regis
 import type { Provider } from "../providers/types.js";
 import type { Embedder } from "../providers/embeddings.js";
 import { makeV1Handler } from "./v1.js";
+import type { WorkflowRunner, ChainCompletion } from "../orchestrator/runner.js";
 
 function memoryBackend(): KeychainBackend {
   const map = new Map<string, string>();
@@ -405,5 +406,118 @@ describe("makeV1Handler — /v1/embeddings", () => {
       }),
     );
     expect(res!.status).toBe(400);
+  });
+});
+// ── Chain routing (6.6): gateway/<name> + X-Chain-ID ───────────────────────
+
+function fakeChainRunner(): WorkflowRunner {
+  const completion: ChainCompletion = {
+    id: "chatcmpl-chain",
+    object: "chat.completion",
+    created: 1,
+    model: "gateway/orchestrator",
+    choices: [
+      { index: 0, message: { role: "assistant", content: "chain says hi" }, finish_reason: "stop" },
+    ],
+    usage: null,
+  };
+  return {
+    ids: () => ["orchestrator"],
+    run: async (name) =>
+      name === "orchestrator"
+        ? { ok: true, output: completion }
+        : { ok: false, status: 404, error: "model_not_found" },
+  };
+}
+
+async function chainHarness(runner: WorkflowRunner = fakeChainRunner()) {
+  const base = await makeHarness({});
+  const handler = makeV1Handler({
+    registry: base.registry,
+    localProvider: () => null,
+    localModels: () => [],
+    chainRunner: runner,
+  });
+  return { handler };
+}
+
+describe("v1 chain routing (6.6)", () => {
+  test("gateway/<name> runs the workflow and returns the completion", async () => {
+    const { handler } = await chainHarness();
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gateway/orchestrator", messages: [{ role: "user", content: "hi" }] }),
+      }),
+    );
+    expect(res!.status).toBe(200);
+    const body = (await res!.json()) as { model: string; choices: Array<{ message: { content: string } }> };
+    expect(body.model).toBe("gateway/orchestrator");
+    expect(body.choices[0].message.content).toBe("chain says hi");
+  });
+
+  test("X-Chain-ID header wins over the model id", async () => {
+    const { handler } = await chainHarness();
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Chain-ID": "orchestrator" },
+        body: JSON.stringify({ model: "some-other-model", messages: [{ role: "user", content: "hi" }] }),
+      }),
+    );
+    expect(res!.status).toBe(200);
+    expect(((await res!.json()) as { model: string }).model).toBe("gateway/orchestrator");
+  });
+
+  test("a streamed chain emits one chunk then exactly one [DONE]", async () => {
+    const { handler } = await chainHarness();
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gateway/orchestrator", stream: true, messages: [] }),
+      }),
+    );
+    const text = await res!.text();
+    expect(text).toContain("chain says hi");
+    expect(text.match(/data: \[DONE\]/g)?.length).toBe(1);
+    expect(text).toContain("chat.completion.chunk");
+  });
+
+  test("an unknown gateway name is the unknown-model 404", async () => {
+    const { handler } = await chainHarness();
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gateway/ghost", messages: [] }),
+      }),
+    );
+    expect(res!.status).toBe(404);
+  });
+
+  test("gateway models without a runner configured are 404 too", async () => {
+    const base = await makeHarness({});
+    const handler = makeV1Handler({
+      registry: base.registry,
+      localProvider: () => null,
+      localModels: () => [],
+    });
+    const res = await handler(
+      new Request("http://127.0.0.1:4317/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "gateway/orchestrator", messages: [] }),
+      }),
+    );
+    expect(res!.status).toBe(404);
+  });
+
+  test("/v1/models advertises gateway workflow models from the runner", async () => {
+    const { handler } = await chainHarness();
+    const res = await handler(new Request("http://127.0.0.1:4317/v1/models"));
+    const body = (await res!.json()) as { data: Array<{ id: string }> };
+    expect(body.data.some((m) => m.id === "gateway/orchestrator")).toBe(true);
   });
 });

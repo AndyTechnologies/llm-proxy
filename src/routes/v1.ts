@@ -21,6 +21,8 @@ import {
 import { makeCompletionId } from "../utils/ids.js";
 import { sseResponse } from "./relay.js";
 import type { Embedder } from "../providers/embeddings.js";
+import type { ChatMessage } from "../orchestrator/engine.js";
+import type { WorkflowRunner, ChainCompletion } from "../orchestrator/runner.js";
 
 export interface V1HandlerDeps {
   /** External provider adapters (keychain-backed, with fallback links). */
@@ -31,6 +33,11 @@ export interface V1HandlerDeps {
   localModels: () => string[];
   /** Virtual chain model ids (gateway/<chain>) to advertise. */
   virtualModels?: () => string[];
+  /**
+   * Workflow runner behind `gateway/<name>` models and the `X-Chain-ID`
+   * header. Absent → gateway models resolve to the unknown-model 404.
+   */
+  chainRunner?: WorkflowRunner;
   /** Embedder over the local backend (/v1/embeddings), or null when absent. */
   embeddings?: () => Embedder | null;
   /**
@@ -83,6 +90,13 @@ function providerError(err: unknown): Response {
 type ModelTarget =
   | { kind: "external"; adapterKind: string }
   | { kind: "local"; provider: Provider };
+
+/** The chain a request addresses: `X-Chain-ID` header wins over `gateway/<name>`. */
+function chainOf(req: Request, model: string): string | null {
+  const header = req.headers.get("x-chain-id");
+  if (header !== null && header.trim() !== "") return header.trim();
+  return model.startsWith("gateway/") ? model.slice("gateway/".length) : null;
+}
 
 function resolveModel(deps: V1HandlerDeps, model: string): ModelTarget | null {
   for (const adapter of deps.registry.adapters.values()) {
@@ -155,6 +169,25 @@ async function* toTextChunks(
   }
 }
 
+/** OpenAI-wire SSE payload stream for a completed (non-streamed) chain run. */
+function chainStreamSource(completion: ChainCompletion): AsyncIterable<string> {
+  return (async function* () {
+    yield JSON.stringify({
+      id: completion.id,
+      object: "chat.completion.chunk",
+      created: completion.created,
+      model: completion.model,
+      choices: [
+        {
+          index: 0,
+          delta: { role: "assistant", content: completion.choices[0].message.content },
+          finish_reason: "stop",
+        },
+      ],
+    });
+  })();
+}
+
 /** Wire client-disconnect to an upstream AbortController and relay as SSE. */
 async function streamResponse(
   source: AsyncIterable<string>,
@@ -172,12 +205,50 @@ async function streamResponse(
 export function makeV1Handler(deps: V1HandlerDeps): V1Dispatcher {
   const { registry } = deps;
 
+  /** JSON completion for a gateway workflow, or the OpenAI error Response. */
+  const runChain = async (
+    req: Request,
+    model: string,
+    chainName: string,
+    body: Record<string, unknown>,
+  ): Promise<
+    { ok: true; completion: ChainCompletion } | { ok: false; response: Response }
+  > => {
+    const runner = deps.chainRunner;
+    if (runner === undefined) return { ok: false, response: unknownModelError(model) };
+    const messages = body.messages;
+    if (!Array.isArray(messages)) {
+      return { ok: false, response: badRequest("The 'messages' field is required") };
+    }
+    try {
+      const result = await runner.run(chainName, { messages: messages as ChatMessage[] }, req.signal);
+      if (result.ok) return { ok: true, completion: result.output };
+      if (result.status === 404) return { ok: false, response: unknownModelError(model) };
+      return {
+        ok: false,
+        response: providerError(Object.assign(new Error(result.error), { status: result.status })),
+      };
+    } catch (err) {
+      return { ok: false, response: providerError(err) };
+    }
+  };
+
+  /** One-shot SSE relay of a non-streamed chain completion. */
+  const chainStream = (req: Request, completion: ChainCompletion): Promise<Response> =>
+    streamResponse(chainStreamSource(completion), req);
+
   const handleChat = async (
     req: Request,
     model: string,
     body: Record<string, unknown>,
   ): Promise<Response> => {
     const stream = body.stream === true;
+    const chainName = chainOf(req, model);
+    if (chainName !== null) {
+      const chain = await runChain(req, model, chainName, body);
+      if (!chain.ok) return chain.response;
+      return stream ? chainStream(req, chain.completion) : Response.json(chain.completion);
+    }
     const target = resolveModel(deps, model);
     if (target === null) return unknownModelError(model);
 
@@ -254,6 +325,12 @@ export function makeV1Handler(deps: V1HandlerDeps): V1Dispatcher {
       for (const id of deps.virtualModels?.() ?? []) {
         data.push({ id, object: "model", created: 0, owned_by: "gateway" });
       }
+      for (const name of deps.chainRunner?.ids() ?? []) {
+        const id = `gateway/${name}`;
+        if (!data.some((m) => m.id === id)) {
+          data.push({ id, object: "model", created: 0, owned_by: "gateway" });
+        }
+      }
       return Response.json({ object: "list", data });
     }
 
@@ -302,6 +379,17 @@ export function makeV1Handler(deps: V1HandlerDeps): V1Dispatcher {
     }
 
     const stream = body.stream === true;
+    const chainName = chainOf(req, model);
+    if (chainName !== null) {
+      const chain = await runChain(req, model, chainName, chatBody);
+      if (!chain.ok) return chain.response;
+      return stream
+        ? streamResponse(
+            toTextChunks(chainStreamSource(chain.completion), model),
+            req,
+          )
+        : Response.json(toTextCompletion(chain.completion as unknown as Record<string, unknown>, model));
+    }
     const target = resolveModel(deps, model);
     if (target === null) return unknownModelError(model);
 
