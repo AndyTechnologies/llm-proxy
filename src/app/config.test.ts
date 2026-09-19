@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { resolveAppConfig } from "./config.js";
 
 describe("resolveAppConfig", () => {
@@ -7,6 +8,16 @@ describe("resolveAppConfig", () => {
     expect(cfg.host).toBe("127.0.0.1");
     expect(cfg.port).toBe(4317);
     expect(cfg.authEnabled).toBe(false);
+  });
+
+  test("defaults uiDir to the built frontend output", () => {
+    const cfg = resolveAppConfig({});
+    expect(cfg.uiDir).toBe(join(process.cwd(), "frontend", "dist"));
+  });
+
+  test("honours the WEAVELLM_UI_DIR override", () => {
+    const cfg = resolveAppConfig({ WEAVELLM_UI_DIR: "/opt/weavellm/ui" });
+    expect(cfg.uiDir).toBe("/opt/weavellm/ui");
   });
 
   test("honours explicit port and host overrides", () => {

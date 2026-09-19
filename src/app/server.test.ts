@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildFetchHandler } from "./server.js";
 import { type AppLogger, type AppConfig } from "./types.js";
 
@@ -107,5 +110,131 @@ describe("buildFetchHandler", () => {
     const handler = buildFetchHandler({ config: baseConfig, logger: log });
     const res = await handler(new Request("http://127.0.0.1:4317/v1/models"));
     expect(res.status).toBe(404);
+  });
+});
+
+describe("buildFetchHandler static UI", () => {
+  interface UiFixture {
+    uiDir: string;
+    secretPath: string;
+  }
+
+  function makeUiFixture(): UiFixture {
+    const root = mkdtempSync(join(tmpdir(), "weavellm-srv-ui-"));
+    const uiDir = join(root, "ui");
+    mkdirSync(join(uiDir, "_astro"), { recursive: true });
+    writeFileSync(join(uiDir, "index.html"), "<h1>WeaveLLM</h1>");
+    writeFileSync(join(uiDir, "_astro", "app.js"), "console.log('ui');");
+    const secretPath = join(root, "secret.txt");
+    writeFileSync(secretPath, "TOP-SECRET");
+    return { uiDir, secretPath };
+  }
+
+  function withUi(
+    fx: UiFixture,
+  ): { handler: (req: Request) => Promise<Response>; teardown: () => void } {
+    const config: AppConfig = {
+      ...baseConfig,
+      uiDir: fx.uiDir,
+    };
+    const { log } = makeLogger();
+    const handler = buildFetchHandler({ config, logger: log });
+    return {
+      handler,
+      teardown: () => {
+        rmSync(fx.uiDir, { recursive: true, force: true });
+        rmSync(fx.secretPath, { force: true });
+      },
+    };
+  }
+
+  test("serves index.html at the root and /ui alias", async () => {
+    const fx = makeUiFixture();
+    const { handler, teardown } = withUi(fx);
+    try {
+      for (const path of ["/", "/ui", "/ui/"]) {
+        const res = await handler(new Request(`http://127.0.0.1${path}`));
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toContain("text/html");
+      }
+    } finally {
+      teardown();
+    }
+  });
+
+  test("serves UI assets with a JS content type", async () => {
+    const fx = makeUiFixture();
+    const { handler, teardown } = withUi(fx);
+    try {
+      const res = await handler(new Request("http://127.0.0.1/ui/_astro/app.js"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("javascript");
+      expect(await res.text()).toBe("console.log('ui');");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("falls back to index.html for extensionless SPA routes", async () => {
+    const fx = makeUiFixture();
+    const { handler, teardown } = withUi(fx);
+    try {
+      const res = await handler(new Request("http://127.0.0.1/workflows/edit/42"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      expect(await res.text()).toBe("<h1>WeaveLLM</h1>");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("a missing asset answers 404", async () => {
+    const fx = makeUiFixture();
+    const { handler, teardown } = withUi(fx);
+    try {
+      const res = await handler(new Request("http://127.0.0.1/ui/missing.js"));
+      expect(res.status).toBe(404);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("traversal attempts answer 404 and never leak files", async () => {
+    const fx = makeUiFixture();
+    const { handler, teardown } = withUi(fx);
+    try {
+      const raw = await handler(new Request("http://127.0.0.1/../secret.txt"));
+      expect(raw.status).toBe(404);
+      expect(await raw.text()).not.toContain("TOP-SECRET");
+
+      const encoded = await handler(
+        new Request("http://127.0.0.1/ui/%2e%2e/secret.txt"),
+      );
+      expect(encoded.status).toBe(404);
+      expect(await encoded.text()).not.toContain("TOP-SECRET");
+    } finally {
+      teardown();
+    }
+  });
+
+  test("without uiDir the server stays API-only (404 for UI paths)", async () => {
+    const { log } = makeLogger();
+    const handler = buildFetchHandler({ config: baseConfig, logger: log });
+    const res = await handler(new Request("http://127.0.0.1/"));
+    expect(res.status).toBe(404);
+  });
+
+  test("API namespaces stay 404 when their dispatcher is not wired, even with uiDir", async () => {
+    const fx = makeUiFixture();
+    const { handler, teardown } = withUi(fx);
+    try {
+      const api = await handler(new Request("http://127.0.0.1/api/missing"));
+      expect(api.status).toBe(404);
+
+      const v1 = await handler(new Request("http://127.0.0.1/v1/models"));
+      expect(v1.status).toBe(404);
+    } finally {
+      teardown();
+    }
   });
 });

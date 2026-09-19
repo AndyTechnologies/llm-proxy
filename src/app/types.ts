@@ -9,6 +9,11 @@ export interface AppConfig {
   authEnabled: boolean;
   /** Data directory (SQLite, logs, models). */
   appData: string;
+  /**
+   * Directory with the compiled frontend (index.html + _astro assets). When
+   * set, the server also serves the UI; undefined keeps it API-only.
+   */
+  uiDir?: string;
 }
 
 export type LogLevel = "info" | "warn" | "error" | "fatal";

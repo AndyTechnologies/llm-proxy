@@ -16,5 +16,13 @@ export default defineConfig({
         "@core": new URL("../src/", import.meta.url).pathname,
       },
     },
+    server: {
+      // Dev-only: Astro dev talks to the local backend through these routes.
+      proxy: {
+        "/api": "http://127.0.0.1:4317",
+        "/v1": "http://127.0.0.1:4317",
+        "/ws": { target: "ws://127.0.0.1:4317", ws: true },
+      },
+    },
   },
 });

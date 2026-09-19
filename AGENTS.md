@@ -23,13 +23,13 @@ behind one `Provider` contract.
 
 ```bash
 bun install            # install dependencies
-bun run dev            # dev with watch (src/main.ts)
+bun run dev            # backend (watch) + astro dev in parallel (dev proxy)
 bun run dev:frontend   # astro dev --root frontend
 bun run build          # bundle to dist/
 bun run build:frontend # astro build --root frontend
 bun run build:binary   # compile to dist/weavellm
 bun run build:binaries # all platform binaries (scripts/build-binaries.ts)
-bun start              # run from source
+bun start              # build the UI, then run the server serving it
 bun test               # run tests (bun:test)
 bun run typecheck      # tsc --noEmit
 bun run lint           # eslint

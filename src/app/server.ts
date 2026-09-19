@@ -1,5 +1,6 @@
 import type { AppConfig, AppLogger } from "./types.js";
 import type { WsHub, WsSocketData } from "./ws.js";
+import { serveStaticUi } from "./static-ui.js";
 
 /**
  * Optional OpenAI-compatible /v1 dispatcher (external-proxy): returns a
@@ -57,6 +58,17 @@ export function buildFetchHandler(deps: ServerDeps): (req: Request) => Promise<R
     } else if (deps.v1 !== undefined && url.pathname.startsWith("/v1/")) {
       const v1res = await deps.v1(req);
       res = v1res ?? notFound();
+    } else if (
+      deps.config.uiDir !== undefined &&
+      !url.pathname.startsWith("/api/") &&
+      !url.pathname.startsWith("/v1/")
+    ) {
+      // Compiled UI (index.html + _astro assets). API namespaces stay
+      // API-only when their dispatcher is not wired (partial boots, tests):
+      // never mask an API 404 with SPA HTML. The helper declines unsafe
+      // paths, missing assets and non-GET/HEAD methods → 404 envelope.
+      const uiRes = await serveStaticUi(deps.config.uiDir, url.pathname, req.method);
+      res = uiRes ?? notFound();
     } else {
       res = notFound();
     }

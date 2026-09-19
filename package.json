@@ -8,13 +8,13 @@
     "weavellm": "./dist/main.js"
   },
   "scripts": {
-    "dev": "bun run --watch src/main.ts",
+    "dev": "bun run scripts/dev.ts",
     "dev:frontend": "astro dev --root frontend",
     "build": "bun build src/main.ts --target=bun --outdir dist",
     "build:frontend": "astro build --root frontend",
     "build:binary": "bun build src/main.ts --compile --outfile dist/weavellm",
     "build:binaries": "bun run scripts/build-binaries.ts",
-    "start": "bun run src/main.ts",
+    "start": "bun run build:frontend && bun run src/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

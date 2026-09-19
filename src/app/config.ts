@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { type AppConfig } from "./types.js";
 
 export const DEFAULT_PORT = 4317;
@@ -8,6 +9,7 @@ export interface AppEnv {
   WEAVELLM_HOST?: string;
   WEAVELLM_AUTH?: string;
   WEAVELLM_APP_DATA?: string;
+  WEAVELLM_UI_DIR?: string;
 }
 
 /** Parse a port string; non-numeric/invalid values fall back to the default. */
@@ -25,5 +27,7 @@ export function resolveAppConfig(env: AppEnv = {}): AppConfig {
     port: resolvePort(env.WEAVELLM_PORT),
     authEnabled: env.WEAVELLM_AUTH === "1" || env.WEAVELLM_AUTH === "true",
     appData: env.WEAVELLM_APP_DATA ?? "",
+    // Compiled frontend output; the env var allows pointing elsewhere.
+    uiDir: env.WEAVELLM_UI_DIR ?? join(process.cwd(), "frontend", "dist"),
   };
 }
