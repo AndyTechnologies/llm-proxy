@@ -24,6 +24,11 @@ export interface ServerDeps {
   api?: ApiDispatcher;
   /** Wire the /ws websocket streaming surface when provided. */
   ws?: WsHub;
+  /**
+   * Local model ids for /api/health (`localModels` field); omitted when the
+   * hub is not wired (legacy health shape preserved).
+   */
+  localModels?: () => string[];
 }
 
 export interface WebServer {
@@ -51,7 +56,9 @@ export function buildFetchHandler(deps: ServerDeps): (req: Request) => Promise<R
     const url = new URL(req.url);
     let res: Response;
     if (req.method === "GET" && url.pathname === "/api/health") {
-      res = Response.json({ status: "ok" });
+      const body: Record<string, unknown> = { status: "ok" };
+      if (deps.localModels !== undefined) body.localModels = deps.localModels();
+      res = Response.json(body);
     } else if (deps.api !== undefined && url.pathname.startsWith("/api/")) {
       const apires = await deps.api(req);
       res = apires ?? notFound();

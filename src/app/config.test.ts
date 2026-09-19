@@ -34,3 +34,18 @@ describe("resolveAppConfig", () => {
     expect(cfg.port).toBe(4317);
   });
 });
+
+describe("llamaBin (WEAVELLM_LLAMA_BIN)", () => {
+  test("defaults to 'llama' when unset", () => {
+    expect(resolveAppConfig({}).llamaBin).toBe("llama");
+  });
+
+  test("propagates an explicit binary path verbatim", () => {
+    const cfg = resolveAppConfig({ WEAVELLM_LLAMA_BIN: "/opt/llama/bin/llama-server" });
+    expect(cfg.llamaBin).toBe("/opt/llama/bin/llama-server");
+  });
+
+  test("empty string falls back to 'llama'", () => {
+    expect(resolveAppConfig({ WEAVELLM_LLAMA_BIN: "" }).llamaBin).toBe("llama");
+  });
+});

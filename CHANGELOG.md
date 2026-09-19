@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-09-15
+
+### Added
+
+- Local backend runtime: managed `llama-server` processes are wired into boot — previously-activated models restore automatically and local model IDs now resolve through `/v1/*` and workflow `llm_call` nodes.
+- Model lifecycle management: `POST /api/models/:id/activate` and `POST /api/models/:id/deactivate` with an idempotent activation flow, in-flight request drain on deactivation (30s timeout), and persisted active state in a new `models.active` column (auto-migrated idempotently on existing databases).
+- Model status API: `GET /api/models` and `GET /api/models/:id/status` behind the existing auth gate, reporting a three-state projection (active / disabled / error) with pid, port, and error detail.
+- `/api/health` now includes a `localModels` field listing active+healthy local model IDs when the local backend is wired.
+- Dedicated embedding models: designating a model via the `settings` table (`embedding_model` key) spawns it with `--embeddings`, and `/v1/embeddings` serves vectors through the managed backend (404 preserved when no embedder is configured).
+- `WEAVELLM_LLAMA_BIN` environment variable to configure the `llama-server` binary path (defaults to `llama`).
+
+### Changed
+
+- Local models are now callable end-to-end: requests gate on backend readiness (blocking up to 30s during spawn, returning 503 on error) and lazily re-spawn after idle-stop, replacing the un-wired boot path where local IDs answered the unknown-model 404 envelope.
+- Idle-stop timeout for managed backends increased from 5 to 10 minutes (configurable).
+- Startup version-floor preflight: a missing `llama-server` binary is now a per-model error that does not block boot (external providers and workflows unaffected), while a binary below b9908 fails fast with an actionable upgrade message.
+
 ## [0.1.0] - 2026-09-15
 
 WeaveLLM — a full rewrite of the llm-proxy gateway: local llama.cpp models behind an OpenAI-compatible API on port 4317, workflows composed in a visual editor and exposed as virtual models, a desktop shell, and sandboxed code execution.

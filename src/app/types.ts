@@ -14,6 +14,8 @@ export interface AppConfig {
    * set, the server also serves the UI; undefined keeps it API-only.
    */
   uiDir?: string;
+  /** llama-server binary path (WEAVELLM_LLAMA_BIN, default "llama"). */
+  llamaBin: string;
 }
 
 export type LogLevel = "info" | "warn" | "error" | "fatal";

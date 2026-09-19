@@ -6,10 +6,11 @@
  * runner execution over a real socket — the chain v1 → api → store → runner.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { boot } from "./main.js";
+import { openAppDataDatabase } from "./db/schema.js";
 
 const DEMO_YAML =
   "name: Demo\n" +
@@ -31,6 +32,8 @@ describe("boot wiring (6.6)", () => {
       ...process.env,
       WEAVELLM_PORT: "0",
       WEAVELLM_APP_DATA: appData,
+      // Hermetic: never depend on a real llama-server binary being on PATH.
+      WEAVELLM_LLAMA_BIN: "/definitely/not/here/llama-server",
     });
     try {
       const base = `http://127.0.0.1:${server.port}`;
@@ -100,5 +103,90 @@ describe("boot wiring (6.6)", () => {
     } finally {
       server.stop();
     }
+  });
+});
+
+describe("boot wiring — local backend hub (T8)", () => {
+  const missingBin = "/definitely/not/here/llama-server";
+
+  function tempAppData(prefix: string): string {
+    return mkdtempSync(join(tmpdir(), prefix));
+  }
+
+  test("missing binary + seeded active model → error state everywhere", async () => {
+    const appData = tempAppData("weavellm-boot-local-err-");
+    // Pre-seed an active catalog model BEFORE boot, exactly as a previous
+    // run would leave it: restoreActive() must surface it as an error since
+    // the configured binary does not exist.
+    const db = openAppDataDatabase(appData);
+    db.query(
+      "INSERT INTO models (id, source, path, active, state) VALUES ('m1', 'local', '/no/such/model.gguf', 1, 'registered')",
+    ).run();
+    db.close();
+
+    const result = await boot({
+      ...process.env,
+      WEAVELLM_PORT: "0",
+      WEAVELLM_APP_DATA: appData,
+      WEAVELLM_LLAMA_BIN: missingBin,
+    });
+    try {
+      const base = `http://127.0.0.1:${result.server.port}`;
+
+      const modelsApi = await fetch(`${base}/api/models`);
+      expect(modelsApi.status).toBe(200);
+      const states = (await modelsApi.json()) as Array<{ id: string; state: string }>;
+      expect(states.find((s) => s.id === "m1")?.state).toBe("error");
+
+      const v1Models = await fetch(`${base}/v1/models`);
+      expect(v1Models.status).toBe(200);
+      expect(await v1Models.text()).not.toContain('"m1"');
+
+      const health = await fetch(`${base}/api/health`);
+      const body = (await health.json()) as { status: string; localModels: string[] };
+      expect(body.status).toBe("ok");
+      expect(body.localModels).toEqual([]);
+    } finally {
+      await result.shutdown();
+      rmSync(appData, { recursive: true, force: true });
+    }
+  });
+
+  test("scriptable fake binary passes preflight; clean boot", async () => {
+    const appData = tempAppData("weavellm-boot-local-ok-");
+    const bin = join(appData, "llama-server");
+    writeFileSync(bin, "#!/bin/sh\necho 'llama.cpp version: b10000 (x)'\n", { mode: 0o755 });
+
+    const result = await boot({
+      ...process.env,
+      WEAVELLM_PORT: "0",
+      WEAVELLM_APP_DATA: appData,
+      WEAVELLM_LLAMA_BIN: bin,
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${result.server.port}/api/health`);
+      const body = (await res.json()) as { status: string; localModels: string[] };
+      expect(res.status).toBe(200);
+      expect(body.status).toBe("ok");
+      expect(body.localModels).toEqual([]);
+    } finally {
+      await result.shutdown();
+      rmSync(appData, { recursive: true, force: true });
+    }
+  });
+
+  test("shutdown() resolves and stops the server", async () => {
+    const appData = tempAppData("weavellm-boot-shutdown-");
+    const bin = join(appData, "llama-server");
+    writeFileSync(bin, "#!/bin/sh\necho 'llama.cpp version: b10000 (x)'\n", { mode: 0o755 });
+
+    const result = await boot({
+      ...process.env,
+      WEAVELLM_PORT: "0",
+      WEAVELLM_APP_DATA: appData,
+      WEAVELLM_LLAMA_BIN: bin,
+    });
+    await expect(result.shutdown()).resolves.toBeUndefined();
+    rmSync(appData, { recursive: true, force: true });
   });
 });

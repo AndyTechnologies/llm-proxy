@@ -19,8 +19,8 @@
  */
 import { buildLlamaSpawnArgs, checkLlamaVersionFloor, parseListeningPort, type LlamaSpawnArgsInput } from "./spawn-args.js";
 
-/** Default idle timeout: a backend with no requests for 5 minutes stops. */
-export const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/** Default idle timeout: a backend with no requests for 10 minutes stops. */
+export const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 /** Backoff window after an unexpected exit: 1s, then 2s, 4s, ... capped. */
 const BACKOFF_INITIAL_MS = 1000;
 const BACKOFF_MAX_MS = 30_000;

@@ -20,6 +20,7 @@ import { makeApiHandler } from "./routes/api.js";
 import { makeAuthGate } from "./routes/auth.js";
 import { WorkflowStore } from "./orchestrator/store.js";
 import { makeRuntimeServices, makeWorkflowRunner } from "./orchestrator/runner.js";
+import { LocalBackendHub } from "./backend/hub.js";
 import { runSandbox } from "./sandbox/runner.js";
 import { makeWsHub } from "./app/ws.js";
 
@@ -44,6 +45,8 @@ export interface BootResult {
   appData: string;
   coldStartMs: number;
   coldStartOk: boolean;
+  /** Graceful teardown: drain + stop the local backend hub, then the server. */
+  shutdown: () => Promise<void>;
 }
 
 /** Boot the full WeaveLLM main process; returns the live handles. */
@@ -63,36 +66,52 @@ export async function boot(env: Record<string, string | undefined> = process.env
   const secretStore = new SecretStore(db, platformKeychainBackend());
   const registry = await buildProviderRegistry({ db, store: secretStore });
 
+  // Managed local backend: catalog models → llama-server lifecycle. The hub
+  // gates /v1 local ids on readiness and its restoreActive() must complete
+  // BEFORE the HTTP server starts (arch-plan Decision 2): active models are
+  // back up before a single request can arrive.
+  const hub = new LocalBackendHub({ db, binary: config.llamaBin });
+  await hub.preflight();
+  await hub.restoreActive();
+
   // Workflow runtime: stored graphs → engine services → gateway/<name>
   // virtual models + the /api workflow surface. The managed llama-server
-  // backend is spawned once a model is selected (catalog/manager); until
-  // then, local ids do not resolve and answer the 404 envelope.
+  // backend answers `localProvider`; until a model is activated the local
+  // ids do not resolve and answer the 404 envelope.
   const store = new WorkflowStore(db);
   const services = makeRuntimeServices({
     registry,
-    localProvider: () => null,
-    localModels: () => [],
+    localProvider: () => hub.localProvider(),
+    localModels: () => hub.localModels(),
     store,
     sandbox: (code, input, _opts) =>
       runSandbox(code, { input: JSON.stringify(input ?? null) }),
-    embedder: () => null,
+    embedder: () => hub.embedder(),
     chunks: () => null,
     memory: () => null,
   });
   const workflowRunner = makeWorkflowRunner({ store, services });
-  const api = makeApiHandler({ store, runner: workflowRunner });
+  const authGate = makeAuthGate({ enabled: config.authEnabled, store: secretStore });
+  const api = makeApiHandler({
+    store,
+    runner: workflowRunner,
+    hub,
+    auth: authGate,
+  });
   const v1 = makeV1Handler({
     registry,
-    localProvider: () => null,
-    localModels: () => [],
+    localProvider: () => hub.localProvider(),
+    localModels: () => hub.localModels(),
+    embeddings: () => hub.embedder(),
     chainRunner: workflowRunner,
-    auth: makeAuthGate({ enabled: config.authEnabled, store: secretStore }),
+    auth: authGate,
   });
   const server = await createWebServer({
     config,
     logger,
     v1,
     api,
+    localModels: () => hub.localModels(),
     ws: makeWsHub({ runner: workflowRunner }),
   });
 
@@ -126,7 +145,18 @@ export async function boot(env: Record<string, string | undefined> = process.env
     coldStartBudgetOk: ok,
   });
 
-  return { server, db, logger, appData, coldStartMs, coldStartOk: ok };
+  return {
+    server,
+    db,
+    logger,
+    appData,
+    coldStartMs,
+    coldStartOk: ok,
+    shutdown: async () => {
+      await hub.stopAll();
+      await server.stop();
+    },
+  };
 }
 
 /** Renderer-visible update state (consent UI reads it via /api/update). */
@@ -142,6 +172,21 @@ if (import.meta.main) {
       if (!result.coldStartOk) {
         result.logger("warn", "cold-start-budget-exceeded", {
           coldStartMs: Math.round(result.coldStartMs),
+        });
+      }
+      // Graceful teardown: drain in-flight work + stop llama-server children
+      // before exiting on SIGINT/SIGTERM.
+      for (const signal of ["SIGINT", "SIGTERM"] as const) {
+        process.on(signal, () => {
+          void result
+            .shutdown()
+            .then(() => process.exit(0))
+            .catch((err: unknown) => {
+              process.stderr.write(
+                `shutdown error: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+              process.exit(1);
+            });
         });
       }
     })

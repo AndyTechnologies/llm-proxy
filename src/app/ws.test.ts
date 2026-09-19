@@ -49,7 +49,7 @@ describe("/ws streaming (6.9)", () => {
       },
     };
     server = await createWebServer({
-      config: { host: "127.0.0.1", port: 0, authEnabled: false, appData: "" },
+      config: { host: "127.0.0.1", port: 0, authEnabled: false, appData: "", llamaBin: "llama" },
       logger,
       ws: makeWsHub({ runner }),
     });
@@ -211,7 +211,7 @@ describe("/ws streaming (6.9)", () => {
       },
     };
     const abortServer = await createWebServer({
-      config: { host: "127.0.0.1", port: 0, authEnabled: false, appData: "" },
+      config: { host: "127.0.0.1", port: 0, authEnabled: false, appData: "", llamaBin: "llama" },
       logger,
       ws: makeWsHub({ runner: abortingRunner }),
     });
