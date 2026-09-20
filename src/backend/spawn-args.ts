@@ -129,12 +129,13 @@ export function parseListeningPort(line: string): number | null {
 }
 
 /**
- * b9908+ version floor (llama.cpp 2026-07-08). Parses the build tag (`bNNNN`)
- * from `--version` output; older or unparseable output fails the gate with an
- * actionable message (backend-management: fail fast at startup).
+ * b9908+ version floor (llama.cpp 2026-07-08). Parses the build tag from
+ * `--version` output in either real-world form — `(build 10679, ...)` — or
+ * the condensed `b10679` tag; older or unparseable output fails the gate with
+ * an actionable message (backend-management: fail fast at startup).
  */
 export function checkLlamaVersionFloor(versionOutput: string): string {
-  const match = /\bb(\d{4,})\b/.exec(versionOutput);
+  const match = /(?:\bbuild\s+|\bb)(\d{4,})\b/.exec(versionOutput);
   if (!match) {
     throw new Error(
       "unable to determine llama.cpp build from --version output; refusing to start. " +

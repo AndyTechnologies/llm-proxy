@@ -212,10 +212,13 @@ export class LocalBackendHub {
       this.preflightError = binaryUnavailableMessage(this.binary, err);
       return;
     }
-    const output = await collectAll(proc.stdout);
+    const [stdout, stderr] = await Promise.all([
+      collectAll(proc.stdout),
+      collectAll(proc.stderr),
+    ]);
     await settle(proc);
     try {
-      checkLlamaVersionFloor(output);
+      checkLlamaVersionFloor(`${stdout}${stderr}`);
     } catch (err) {
       this.log(`fatal: ${errorMessage(err)}`);
       this.exit(1); // never returns in production

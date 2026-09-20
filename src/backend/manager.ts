@@ -177,9 +177,12 @@ export class LlamaProcessManager {
   /** Run `--version` and enforce the b9908+ floor; returns the build tag. */
   async checkVersion(): Promise<string> {
     const proc = this.spawnFn(this.deps.binary, ["--version"]);
-    const output = await collectAll(proc.stdout);
+    const [stdout, stderr] = await Promise.all([
+      collectAll(proc.stdout),
+      collectAll(proc.stderr),
+    ]);
     await drain(proc);
-    return checkLlamaVersionFloor(output);
+    return checkLlamaVersionFloor(`${stdout}${stderr}`);
   }
 
   /** Touch the idle watchdog (call on every proxied request). */

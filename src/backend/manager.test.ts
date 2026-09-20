@@ -247,6 +247,23 @@ describe("LlamaProcessManager — single-model lifecycle", () => {
     });
     await expect(okManager.checkVersion()).resolves.toBe("b9908");
   });
+
+  test("checkVersion accepts the real llama.cpp --version layout on stderr", async () => {
+    const make = (stderrLines: string[]) =>
+      new LlamaProcessManager({
+        ...makeHarness().deps,
+        spawnFn: (() => makeProc({ stderrLines })) as unknown as ManagerDeps["spawnFn"],
+      });
+    await expect(
+      make([
+        "version: 0.3.0-dev (build 10679, commit 50f068fff)",
+        "built with GNU 12.3.0 for Linux x86_64",
+      ]).checkVersion(),
+    ).resolves.toBe("b10679");
+    await expect(make(["version: 0.1.0-dev (build 4140, commit abc)"]).checkVersion()).rejects.toThrow(
+      /b9908|upgrade|update/i,
+    );
+  });
 });
 
 test("idle timeout default is 10 minutes (binding Decision 6)", () => {

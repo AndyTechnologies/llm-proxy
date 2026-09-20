@@ -70,7 +70,12 @@ export async function boot(env: Record<string, string | undefined> = process.env
   // gates /v1 local ids on readiness and its restoreActive() must complete
   // BEFORE the HTTP server starts (arch-plan Decision 2): active models are
   // back up before a single request can arrive.
-  const hub = new LocalBackendHub({ db, binary: config.llamaBin });
+  const hub = new LocalBackendHub({
+    db,
+    binary: config.llamaBin,
+    // Preflight fail-fast (old/unparseable llama.cpp) must reach the boot log.
+    log: (msg) => logger("error", "local-backend", { message: msg }),
+  });
   await hub.preflight();
   await hub.restoreActive();
 

@@ -180,6 +180,21 @@ describe("checkLlamaVersionFloor — b9908+ gate", () => {
     expect(checkLlamaVersionFloor("build: b12345 (x)")).toBe("b12345");
   });
 
+  test("real llama.cpp --version output (build NNNN form) passes the floor", () => {
+    expect(
+      checkLlamaVersionFloor(
+        "version: 0.3.0-dev (build 10679, commit 50f068fff)\n" +
+          "built with GNU 12.3.0 for Linux x86_64",
+      ),
+    ).toBe("b10679");
+  });
+
+  test("real llama.cpp --version output below the floor fails fast", () => {
+    expect(() =>
+      checkLlamaVersionFloor("version: 0.1.0-dev (build 4140, commit abc123)"),
+    ).toThrow(/b9908|upgrade|update/i);
+  });
+
   test("unparseable version output fails the gate (cannot prove the floor)", () => {
     expect(() => checkLlamaVersionFloor("llama-server 1.2.3")).toThrow(
       /unable to determine|version/i,
