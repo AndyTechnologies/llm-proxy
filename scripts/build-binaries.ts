@@ -6,6 +6,13 @@
  * Default: shells out to `hutch build` for each supported target (the Electrobun
  * toolchain), then measures every artifact under the output dir and fails if
  * any bundle exceeds the 100 MB gate (desktop-app-shell / AC #1).
+ *
+ * This channel emits Cottontail INSTALLER/UPDATE artifacts (e.g.
+ * linux-x64-WeaveLLM-Setup.tar.gz, stable-linux-x64-update.json). It is the
+ * release-matrix/size-gate script and is NOT the portable distribution path:
+ * the user-selected desktop artifact is ONE self-contained executable built
+ * by `bun run build:binary` (scripts/build-binary.ts). Keep both paths
+ * distinct.
  */
 
 import { mkdirSync, readdirSync, statSync } from "node:fs";
