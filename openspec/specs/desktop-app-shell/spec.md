@@ -2,20 +2,20 @@
 
 ## Purpose
 
-Single-binary desktop distribution for macOS 14+ (arm64/x64) and Linux x64 (Ubuntu 24.04+). Built on Electrobun v2 with a Bun main process, renders the Astro/Svelte SPA in the webview, and self-updates via Hutch.
+Single-binary desktop distribution for macOS 14+ (arm64/x64) and Linux x64 (Ubuntu 24.04+). Built on Electrobun v2 with a Bun main process, renders the Astro/Svelte SPA in the webview, and ships as a portable self-contained single-file executable (no installer, no auto-updater).
 
 ## Requirements
 
 ### Requirement: Cross-platform single-binary packaging
 
-The system MUST package as a single distributable binary for macOS 14+ (arm64 and x64) and Linux x64 (Ubuntu 24.04+). Release builds SHALL use Electrobun v2 with Hutch. Each bundle MUST stay under 100 MB.
+The system MUST package as a single distributable binary for macOS 14+ (arm64 and x64) and Linux x64 (Ubuntu 24.04+). Release binaries SHALL be built from the Electrobun v2 dev bundle via Hutch and MUST stay under 100 MB. Electrobun v2 builds are host-only: each target MUST be built on its own platform.
 
-#### Scenario: All three targets build
+#### Scenario: Host target builds
 
-- GIVEN the release pipeline on a supported host
+- GIVEN the release pipeline on a supported target platform
 - WHEN a release is built
-- THEN binaries are produced for darwin-arm64, darwin-x64, and linux-x64
-- AND each bundle is under 100 MB
+- THEN a single-file binary is produced for the host target (darwin-arm64, darwin-x64, or linux-x64)
+- AND it is under 100 MB
 
 #### Scenario: Size gate fails the build
 
@@ -55,21 +55,28 @@ The UI SHALL be an Astro 7.3.2 static-output SPA using Svelte 5.57.0 via @astroj
 - WHEN the workflow editor mounts
 - THEN interactive Svelte islands hydrate and respond to input
 
-### Requirement: Auto-update check
+### Requirement: Portable single-file distribution (no installer, no updater)
 
-The system SHALL check for updates at startup via Hutch. Availability SHALL be surfaced in the UI; installation SHALL require explicit user consent.
+The system SHALL distribute as ONE self-contained executable that embeds the complete app (Electrobun shell, Bun main process, SPA UI). The binary MUST NOT install itself, integrate system-wide, or self-update: no installer, no update channel, no Cottontail setup artifacts.
 
-#### Scenario: Update available
+#### Scenario: One file runs the whole app
 
-- GIVEN a newer release on the update channel
-- WHEN the app starts
-- THEN the UI offers the update without auto-installing
+- GIVEN a portable binary on a supported host
+- WHEN the user executes it
+- THEN the Electrobun window opens with the SPA, with no installation step
 
-#### Scenario: Offline startup
+#### Scenario: Cached extraction is reused
 
-- GIVEN no network at startup
-- WHEN the app starts
-- THEN startup proceeds and the update check is skipped silently
+- GIVEN the binary was executed once before
+- WHEN the user executes it again with the same payload
+- THEN the bundle is reused from the extraction cache instead of being extracted again
+
+#### Scenario: Default webview render environment
+
+- GIVEN the app starts on Linux (WebKitGTK)
+- WHEN `WEBKIT_DISABLE_DMABUF_RENDERER` is not already set in the environment
+- THEN the launcher sets it to `1` so the webview does not render black
+- AND an explicit user value still wins
 
 ### Requirement: Cold start latency
 
