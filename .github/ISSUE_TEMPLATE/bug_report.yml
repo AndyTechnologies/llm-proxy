@@ -1,0 +1,130 @@
+name: Bug report
+description: File a bug or defect found in WeaveLLM. Before submitting, search open and closed issues for an existing report.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report.
+
+        Before submitting: search **open and closed** issues for an existing report and comment there instead of opening a duplicate.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the defect and why it matters.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: Impact classification used by this repo's audits.
+      multiple: false
+      options:
+        - CRITICAL — exploitable remotely / security boundary crossed / data loss
+        - HIGH — real bug in the normal flow
+        - MEDIUM — edge case, race, or hardening gap
+        - LOW — cosmetic / informational
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Repo-relative file paths with line numbers (or a commit) where the problem lives. Never paste secrets.
+      placeholder: "src/sandbox/runner.ts:~82-105 — unshare -n is network-only; the filesystem is fully shared"
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps or a minimal repro, including config and commands. Use _No response_ if not applicable (static-code finding).
+      placeholder: |
+        1. Start with WEAVELLM_AUTH=1
+        2. PUT /api/workflows/demo ...
+        3. Observe ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs actual behavior
+      description: What should happen, and what happens instead.
+      value: |
+        **Expected:**
+        **Actual:**
+    validations:
+      required: true
+
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      description: Which part of the runtime is affected.
+      multiple: true
+      options:
+        - API / auth (routes)
+        - Workflow engine / graph
+        - data.code sandbox
+        - Providers / proxy
+        - Backend llama-server management
+        - Downloads / catalog / RAG
+        - Desktop shell / build
+        - Frontend UI
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: related-spec
+    attributes:
+      label: Related OpenSpec capability
+      description: The spec this bug violates (openspec/specs/<capability>/spec.md). Choose None if not spec-related.
+      multiple: false
+      options:
+        - None / not spec-related
+        - backend-management
+        - config-load
+        - dashboard-api
+        - dashboard-ui
+        - data-code-sandbox
+        - desktop-app-shell
+        - embeddings-rag
+        - external-providers
+        - external-proxy
+        - gateway-api
+        - gateway-security
+        - gguf-metadata
+        - graph-engine
+        - health-endpoints
+        - keychain-secrets
+        - local-model-catalog
+        - model-advanced-config
+        - model-downloads
+        - pipeline-composition
+        - pipeline-orchestration
+        - proxy-pipeline
+        - virtual-model-routing
+        - websocket-streaming
+        - workflow-editor
+        - workflow-engine
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, runtime version (Bun), WeaveLLM version/branch.
+      placeholder: "Linux x64, Bun 1.2.x, WeaveLLM 0.1.0"
+    validations:
+      required: false
