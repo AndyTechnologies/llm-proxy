@@ -2,135 +2,101 @@
 
 ## Purpose
 
-llm-proxy SHALL NOT assume an external `llamaServer`. Instead it SHALL own the lifecycle of the `llama-server` binary (`llama serve`) as an internal component — spawning, supervising, configuring in router mode, and shutting it down. All backend/model configuration SHALL come from the single `llm-proxy.config.yaml`; the end user only defines chains in YAML and never touches llama.cpp directly. This capability makes the tool self-hosting its backend, unblocking runtime verification.
+llm-proxy SHALL NOT assume an external `llamaServer`. Instead it SHALL own the lifecycle of the `llama-server` binary (`llama serve`) as an internal component — spawning one process per active model (no router mode), supervising it, and shutting it down. Per-model configuration SHALL come from the app's model configuration (model-advanced-config, SQLite-backed) driven through the UI; workflows are authored as YAML graphs in the workflow editor. This capability makes the tool self-hosting its backend, unblocking runtime verification.
 
 ## Requirements
 
 ### Requirement: Spawn and supervise the llama-server process
 
-The system MUST locate, spawn, supervise, and gracefully stop the `llama-server` process. The binary path SHALL be configurable in `llm-proxy.config.yaml`, defaulting to `llama` on PATH. On unexpected exit, the system MUST restart the process.
+The system SHALL own the lifecycle of `llama-server` as an internal component via `LocalBackendHub`. One `LlamaProcessManager` instance SHALL exist per active model (no router mode). On unexpected exit, the manager SHALL restart the process with exponential backoff (max 5 attempts). The system SHALL support `--port 0`, detecting the bound port from process stdout via the regex `listening on ...:(\d+)`.
 
-#### Scenario: Spawn and wait-ready at boot
+#### Scenario: Spawn with ephemeral port and wait-ready on activation
 
-- GIVEN the config defines a valid `llama-server` binary path and host/port
-- WHEN the proxy starts
-- THEN the binary is spawned and the system waits for the backend health to become ready before accepting traffic
+- GIVEN the config defines a valid `llama-server` binary path
+- WHEN a model is activated via `POST /api/models/:id/activate`
+- THEN one `LlamaProcessManager` is created for that model, the binary is spawned with `--port 0`, and traffic is accepted only after the parsed stdout port passes the health check
 
 #### Scenario: Restart on crash
 
-- GIVEN a running managed backend
+- GIVEN a running managed backend for a model
 - WHEN the process exits abruptly
-- THEN the system restarts it and resumes the ready state
+- THEN the manager restarts it with exponential backoff (max 5 attempts) and resumes the ready state
 
-### Requirement: Configure router mode from config
+#### Scenario: Spawn failure enters error state
 
-The system MUST launch `llama-server` in router mode (no `--model`; using `--models-dir` and/or `--models-preset`), passing global args (default `--ctx-size`/`-n`, GPU, host/port, flash-attn, batch) derived entirely from `llm-proxy.config.yaml`.
+- GIVEN a model whose GGUF file exists but spawn fails (e.g., OOM, permissions)
+- WHEN activation is attempted
+- THEN the model enters `error` state and subsequent requests receive HTTP 503 (Service Unavailable)
 
-#### Scenario: Router mode with global args
+### Requirement: Spawn-time readiness gate
 
-- GIVEN config declares a models dir, default context, port, and GPU flags
-- WHEN the backend is spawned
-- THEN it is launched in router mode with those args and registers available GGUF models
-
-### Requirement: Per-model instances via generated preset
-
-The system SHOULD let each model declare its own GGUF file, context, temperature, and args. The tool MUST be able to generate/manipulate the `--models-preset` INI mechanism (or equivalent) to express per-model settings.
-
-#### Scenario: Per-model preset generated
-
-- GIVEN config defines two models with distinct ctx and temp
-- WHEN the backend initializes
-- THEN a preset is generated/loaded so each model inherits its own ctx and args
-
-#### Scenario: Model with per-instance overrides
-
-- GIVEN a model declared with `ctx` larger than the default
-- WHEN a request loads that model
-- THEN the model instance runs with its own ctx, not the global default
-
-### Requirement: Native on-demand model swap
-
-The system MUST use llama-server's native router-mode swap (autoload on-demand), NOT a process-per-model approach. The system MUST inject the correct `model` field into each request for every step of a chain.
-
-#### Scenario: Autoload on first request
-
-- GIVEN a model not yet loaded
-- WHEN a request targeting it arrives
-- THEN llama-server autoloads it on demand and serves the request
-
-#### Scenario: Model field injected per node
-
-- GIVEN a chain with `llm_call` nodes targeting different models
-- WHEN each node is issued
-- THEN the outbound request carries that node's target `model`
-
-### Requirement: Boot-time readiness gate
-
-The system MUST start the backend (spawn + wait-ready via health check) before accepting traffic. If the backend fails to start, the system MUST fail startup with a clear message.
+When a model is activated, the system SHALL spawn its backend and gate traffic on readiness. Readiness SHALL be determined from the port parsed from stdout when `--port 0` is used. `LocalBackendHub.localProvider()` SHALL return a provider wrapper whose `chat`/`chatStream` methods await the manager's health poll before forwarding. If the manager is not yet ready (still spawning), the request SHALL block until ready or time out (30s). If in error state, the wrapper SHALL throw immediately with `err.status = 503`. The gateway SHALL wait at boot only for models with `active=1` in SQLite (restored via `hub.restoreActive()`).
 
 #### Scenario: Backend becomes ready before traffic
 
-- GIVEN a healthy backend
-- WHEN the proxy boots
-- THEN traffic is accepted only after the backend health check passes
+- GIVEN a healthy backend spawned on `--port 0` for an active model
+- WHEN a request targets that model
+- THEN traffic is accepted only after the parsed stdout port passes the health check
 
-#### Scenario: Backend fails to boot
+#### Scenario: Backend fails to become ready
 
-- GIVEN a backend that never becomes ready (bad binary, wrong port)
-- WHEN the proxy attempts startup
-- THEN the proxy fails with a clear actionable message and refuses to serve
+- GIVEN a backend that never becomes ready within 30s
+- WHEN the model is activated
+- THEN the model enters error state, activation returns 503, and no traffic is routed to it
+
+#### Scenario: Request during spawn blocks on readiness
+
+- GIVEN a model being spawned (health check not yet passing)
+- WHEN a `/v1/chat/completions` request arrives for that model
+- THEN the request blocks until the health check passes or 30s timeout, then proceeds or fails with 503
 
 ### Requirement: Graceful shutdown
 
-The system MUST stop the managed backend process cleanly when the proxy stops.
+The system SHALL stop all managed backend processes cleanly when the proxy stops. `LocalBackendHub.stopAll()` SHALL iterate all managers, drain in-flight requests (up to 30s per model), and call `stop()` on each.
 
 #### Scenario: Clean stop on shutdown
 
-- GIVEN a running managed backend
+- GIVEN running managed backends for multiple models
 - WHEN the proxy receives a shutdown signal
-- THEN the backend process is terminated cleanly and no orphan persists
+- THEN all backend processes are drained and terminated cleanly, and no orphan persists
 
 ### Requirement: Health and status reporting
 
-The health endpoint MUST report managed-backend status (running/stopped, pid, available models).
+The health endpoint SHALL report managed-backend status per model (state, pid, port, error). `GET /api/health` SHALL include a `localModels` field listing IDs of active+healthy models.
 
 #### Scenario: Health reports managed backend state
 
-- GIVEN a running managed backend
+- GIVEN running managed backends
 - WHEN a client queries the health endpoint
-- THEN the response includes state `running`, the pid, and the registered models
+- THEN the response includes `localModels` with the IDs of active+healthy models
 
 ### Requirement: Fail-fast config validation at startup
 
-The system MUST validate backend/model config at startup (missing GGUF, missing binary, invalid preset) and fail with a clear actionable message — not mid-request.
+The system SHALL validate the llama-server binary at startup via a `--version` preflight check. The `active` column in SQLite SHALL be read to restore previously-activated models.
 
-#### Scenario: Missing GGUF fails fast
+#### Scenario: Version floor — old binary rejected
 
-- GIVEN a config referencing a non-existent GGUF file
-- WHEN the proxy starts
-- THEN startup fails with a message naming the missing file
+- GIVEN a llama-server below b9908
+- WHEN the app checks versions at boot
+- THEN the process exits immediately with `process.exit(1)` and an actionable upgrade message (global fail-fast)
 
-#### Scenario: Missing binary fails fast
+#### Scenario: Version floor — binary not found (ENOENT)
 
-- GIVEN a configured binary not found on PATH or at the given path
-- WHEN the proxy starts
-- THEN startup fails with an actionable message
+- GIVEN a configured binary path that does not exist
+- WHEN the app checks versions at boot
+- THEN all models enter error state with message "llama-server binary not found at '<path>'" and boot continues
 
-### Requirement: Configurable autoload
+#### Scenario: Missing GGUF does not block boot
 
-The system SHOULD allow disabling global autoload (`--no-models-autoload`) or per-request autoload when the user needs it.
+- GIVEN a model with `active=1` in SQLite but a missing GGUF file
+- WHEN the app restores active models at boot
+- THEN that model enters error state, boot continues, and `/v1/models` omits it
 
-#### Scenario: Global autoload disabled
+#### Scenario: Active models restored from SQLite on boot
 
-- GIVEN config sets autoload off
-- WHEN the backend is spawned
-- THEN llama-server is launched with `--no-models-autoload`
-
-#### Scenario: Per-request autoload override
-
-- GIVEN a request passing an autoload query param
-- WHEN routing to the backend
-- THEN the param is forwarded accordingly
+- GIVEN two models with `active=1` in SQLite
+- WHEN the app starts
+- THEN `hub.restoreActive()` spawns both models and they appear in `/v1/models`
 
 ### Requirement: Integration with the provider adapter
 
@@ -147,3 +113,101 @@ The capability MUST integrate with the existing provider adapter, which SHALL us
 - GIVEN the other five capabilities are applied
 - WHEN backend-management is active
 - THEN gateway-api, pipeline-orchestration, virtual-model-routing, gateway-security, and proxy-pipeline behavior is preserved
+### Requirement: Single-model spawn per active model
+
+The system SHALL launch one `llama-server` process per active model, passing per-model flags derived from the SQLite model config: GGUF path, `--ctx-size`, KV quant, YaRN. `LocalBackendHub` SHALL maintain exactly one manager per model at any time (no duplicate spawn). Idle-stop SHALL default to 10 minutes (configurable), resetting on every request.
+
+#### Scenario: Spawn with per-model flags
+
+- GIVEN a model configured with ctx 8192 and q8_0 KV
+- WHEN the model is activated
+- THEN one llama-server spawns with `--model <gguf> --ctx-size 8192 --cache-type-k q8_0 --cache-type-v q8_0`
+
+#### Scenario: Idle-stop after 10 minutes
+
+- GIVEN an active model with no requests for 10 minutes
+- WHEN the idle timer expires
+- THEN the process is stopped; the next request re-spawns and succeeds
+
+#### Scenario: In-flight drain on deactivation
+
+- GIVEN an active model with 3 in-flight requests
+- WHEN deactivation is requested
+- THEN the system polls every 1s for up to 30s until in-flight count reaches 0, then calls `stop()`
+
+#### Scenario: Deactivation timeout forces stop
+
+- GIVEN an active model with in-flight requests that do not complete within 30s
+- WHEN deactivation is requested
+- THEN `stop()` is called anyway after the 30s timeout; in-flight requests fail with connection reset
+### Requirement: YaRN and KV cache flags at spawn
+
+The system SHALL pass context-scaling and KV flags at spawn: `--rope-scaling yarn` with the target `--ctx-size` when YaRN is configured, `--cache-type-k`/`--cache-type-v`, and `--n-cache-gpu` when offload is set. `--cache-ram` SHALL cap only the HOST prompt cache and MUST NOT cap the KV cache.
+
+#### Scenario: YaRN flags at spawn
+
+- GIVEN a model with automatic YaRN 32K→128K
+- WHEN it spawns
+- THEN args include `--ctx-size 131072 --rope-scaling yarn`
+
+#### Scenario: cache-ram semantics
+
+- GIVEN a configured `--cache-ram` cap
+- WHEN it spawns
+- THEN the cap applies to the host prompt cache only; KV sizing is unchanged
+
+### Requirement: llama.cpp version floor
+
+Managed llama-server SHALL be llama.cpp b9908+ (2026-07-08); the system MUST fail fast at startup when the binary is older.
+
+#### Scenario: Old binary rejected
+
+- GIVEN a llama-server below b9908
+- WHEN the app checks versions
+- THEN startup fails with an actionable upgrade message
+
+### Requirement: Activate and deactivate endpoints
+
+`POST /api/models/:id/activate` SHALL create a `LlamaProcessManager`, spawn the process, persist `active=1` in SQLite, and return `{state: "active", pid, port}`. `POST /api/models/:id/deactivate` SHALL drain in-flight requests, stop the process, persist `active=0` in SQLite, and return `{state: "disabled"}`. All management endpoints SHALL be behind the existing auth gate.
+
+#### Scenario: Activate a model
+
+- GIVEN a registered model with a valid GGUF file and `active=0`
+- WHEN `POST /api/models/:id/activate` is called
+- THEN the process starts, the response is `{state: "active", pid: <number>, port: <number>}`, and `active=1` is persisted in SQLite
+
+#### Scenario: Activate an already-active model
+
+- GIVEN a model already in active state
+- WHEN `POST /api/models/:id/activate` is called
+- THEN the response returns the current `{state: "active", pid, port}` without re-spawning
+
+#### Scenario: Deactivate a model
+
+- GIVEN an active model with no in-flight requests
+- WHEN `POST /api/models/:id/deactivate` is called
+- THEN the process stops, the response is `{state: "disabled"}`, and `active=0` is persisted in SQLite
+
+#### Scenario: Activate with missing GGUF returns error
+
+- GIVEN a model whose GGUF file does not exist
+- WHEN `POST /api/models/:id/activate` is called
+- THEN the response is an error with a clear message naming the missing file
+
+### Requirement: Version-floor ENOENT handling
+
+The version-floor preflight SHALL distinguish between ENOENT (binary not found) and version-too-old:
+
+- ENOENT → per-model error state with actionable message; boot continues.
+- Parseable but below b9908 → `process.exit(1)` (global fail-fast).
+- Parseable and current → proceed.
+
+#### Scenario: ENOENT is per-model, not global
+
+- GIVEN a binary path that does not exist
+- WHEN the app runs preflight
+- THEN all models enter error state with "llama-server binary not found at '<path>'" and boot continues (the system remains operational for external providers and workflows)
+
+---
+
+

@@ -2,23 +2,24 @@
 
 ## Purpose
 
-Plug external OpenAI-compatible APIs into the gateway behind the existing `Provider` seam (`chat`/`chatStream`) through an adapter built on `ai@7` + `@ai-sdk/openai-compatible@3`. The adapter translates OpenAI payloads and responses across the seam, reconstructs the OpenAI wire shape (tool_calls, finish_reason, usage), forwards abort signals, and maps SDK errors to the gateway error contract. `Provider`, the graph engine, and the SSE output boundary (`buildStreamBody`) stay frozen; the managed local llama-server backend is NOT migrated by this change.
+Plug external OpenAI-compatible APIs into the gateway behind the existing `Provider` seam (`chat`/`chatStream`) through adapters built on the `ai@7` SDK families. The adapters translate OpenAI payloads and responses across the seam, reconstruct the OpenAI wire shape (tool_calls, finish_reason, usage), forward abort signals, map SDK errors to the gateway error contract, resolve credentials from the keychain, and support provider fallback. `Provider`, the graph engine, and the SSE output boundary (`buildStreamBody`) stay frozen; the managed local llama-server backend stays on its fetch path behind the `local` provider kind.
 
 ## Requirements
 
-### Requirement: OpenAI-compatible provider adapter
+### Requirement: Multi-provider adapter
 
-The system MUST provide an adapter implementing the `Provider` seam (`chat` and `chatStream`) for external OpenAI-compatible APIs, built on `@ai-sdk/openai-compatible@3.0.44` over `ai@7.0.93`. Non-streaming calls SHALL produce an OpenAI-shaped JSON response; streaming calls SHALL emit OpenAI wire-format SSE chunks (tool_calls, finish_reason, usage) that the existing `buildStreamBody` contract relays unchanged. The local llama-server backend SHALL remain on its current fetch path.
+The system MUST provide adapters implementing the `Provider` seam (`chat` and `chatStream`) for the four provider kinds — `local` (managed llama-server via its fetch path), `openai` (OpenAI-compatible), `anthropic`, and `openrouter` — on the ai@7 SDK families. Non-streaming calls SHALL produce an OpenAI-shaped JSON response; streaming calls SHALL emit OpenAI wire-format SSE chunks (tool_calls, finish_reason, usage) that the existing `buildStreamBody` contract relays unchanged. The local llama-server provider SHALL remain on its current fetch path.
+(Previously: single OpenAI-compatible adapter on `@ai-sdk/openai-compatible@3.0.44` over `ai@7.0.93`.)
 
-#### Scenario: Non-streaming external round-trip
+#### Scenario: Non-streaming round-trip across providers
 
-- GIVEN an external provider configured with baseURL and a model
+- GIVEN any of the four providers configured with credentials and a model
 - WHEN a non-streaming chat request targets that model
 - THEN the response is OpenAI-shaped JSON with choices, finish_reason, usage, and upstream tool_calls when present
 
-#### Scenario: Streaming external round-trip
+#### Scenario: Streaming round-trip
 
-- GIVEN an external provider and a `stream: true` chat request
+- GIVEN any provider and a `stream: true` chat request
 - WHEN the upstream streams tokens
 - THEN OpenAI-wire SSE chunks flow through `buildStreamBody` and the stream ends with exactly one `data: [DONE]`
 
@@ -76,21 +77,22 @@ The adapter MUST pass llama.cpp-specific samplers (`min_p`, `typical_p`, `top_k`
 - WHEN the adapter builds the request
 - THEN those fields are sent under their standard OpenAI names
 
-### Requirement: Static authentication
+### Requirement: Keychain-backed authentication
 
-The adapter MUST authenticate with a static `apiKey` sent as `Authorization: Bearer <apiKey>` and static custom `headers`, both resolved at config load with `${ENV}` interpolation. Dynamic per-call auth SHALL NOT be part of this change.
+The adapters MUST authenticate using provider credentials resolved from the keychain store (keychain-secrets), sent as `Authorization: Bearer <key>` where the provider expects it, plus static custom headers resolved at config load with `${ENV}` interpolation for non-secret values. A provider without a stored key SHALL be marked misconfigured rather than sending empty credentials.
+(Previously: static `apiKey` and `headers` resolved entirely from config with ENV interpolation.)
 
-#### Scenario: Bearer auth is sent with static headers
+#### Scenario: Bearer auth from keychain
 
-- GIVEN a provider with `apiKey` and `headers` configured
-- WHEN the adapter calls the upstream
-- THEN the request carries `Authorization: Bearer <apiKey>` plus the static headers
+- GIVEN a provider with a keychain-stored key
+- WHEN the adapter calls upstream
+- THEN the request carries `Authorization: Bearer <key>` plus the static headers
 
-#### Scenario: No apiKey means no Authorization header
+#### Scenario: Missing key marks provider misconfigured
 
-- GIVEN a provider without `apiKey`
-- WHEN the adapter calls the upstream
-- THEN no `Authorization` header is sent
+- GIVEN a provider with no stored key
+- WHEN a call targets it
+- THEN the adapter reports a misconfigured-provider error and sends no Authorization header
 
 ### Requirement: Abort forwarding
 
@@ -101,3 +103,18 @@ The adapter MUST forward the caller's `abortSignal` to the SDK call so a client 
 - GIVEN an in-flight external stream
 - WHEN the client disconnects
 - THEN the upstream request is aborted and resources are released
+### Requirement: Provider fallback
+
+When a provider call fails with 429, 5xx, or a network error and a fallback provider is configured, the system SHALL retry the request on the next provider. Streaming fallback MUST NOT duplicate already-emitted tokens.
+
+#### Scenario: 429 falls back
+
+- GIVEN a primary returning 429 and a fallback configured
+- WHEN the call fails
+- THEN the request retries on the fallback and its result is returned
+
+#### Scenario: Streaming fallback without duplication
+
+- GIVEN a stream failing mid-stream and a fallback configured
+- WHEN fallback restarts the request
+- THEN the client receives one complete stream with no duplicated prefix

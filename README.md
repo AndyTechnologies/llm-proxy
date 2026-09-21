@@ -1,44 +1,58 @@
-# llm-proxy
+# WeaveLLM
 
-An **intelligent LLM gateway** that runs local [llama.cpp](https://github.com/ggerganov/llama.cpp)
-models (via a managed `llama-server` backend) behind an **OpenAI-compatible
-API**, and lets you compose those models into **chains** — ordered
-orchestration pipelines exposed as virtual models.
+**WeaveLLM** is a local AI desktop runtime (0.1.0) that bundles a
+[llama.cpp](https://github.com/ggerganov/llama.cpp) backend manager, a visual
+workflow editor, model management, and an OpenAI-compatible proxy into one app.
 
-> **Status:** early development (`0.1.x`, pre-1.0). The API surface is stable
-> enough to use locally, but may evolve.
+> **Status:** early development (`0.1.x`, pre-1.0). The proxy API surface is
+> usable today; the local backend runtime is not yet wired end-to-end — see
+> [Current status](#current-status--known-limitations).
 
 ---
 
 ## Features
 
-- **OpenAI-compatible API** — `POST /v1/chat/completions`, `POST /v1/completions`,
-  `GET /v1/models`, with SSE streaming and normalized OpenAI-shaped errors.
-- **Managed backend lifecycle** — `llm-proxy` spawns and supervises
-  `llama-server`: health-checks, restart-on-exit, graceful shutdown, and
-  dynamic ephemeral port handling.
-- **Chain orchestration** — compose models into ordered pipelines
-  (`generate` → `refine` → `refine`…) with conditional routing:
-  - `on_429` — fall to another step when the upstream returns HTTP 429.
-  - `tool_calls_route` — jump to a step when the response carries `tool_calls`.
-- **Virtual models** — chains are invoked as `gateway/<chain-name>` or via the
-  `X-Chain-ID` header.
-- **Security layer** — optional Bearer auth, HTTP security headers, Zod request
-  validation, and SSRF prevention.
-- **Health endpoints** — liveness (`/health/live`) and backend-gated readiness
-  (`/health/ready`).
-- **Dashboard UI** — a static SPA at `/ui` for inspecting pipelines, models,
-  and executions and building/validating/hot-applying pipeline graphs, backed
-  by the `/api/ui/*` REST + SSE surface.
-- **Graceful shutdown** — drains in-flight requests before exiting.
+- **OpenAI-compatible API** — `POST /v1/chat/completions`, `POST
+  /v1/completions`, `POST /v1/embeddings`, `GET /v1/models` with SSE streaming,
+  client-disconnect abort, and normalized OpenAI-shaped errors.
+- **DAG workflow engine** — saved workflows are directed node/edge graphs
+  (`start`, `llm_call`, `condition`, …) executed by a graph engine and exposed
+  as virtual models `gateway/<workflow-name>` (or selected via the
+  `X-Chain-ID` header).
+- **External provider adapters** — OpenAI, Anthropic, and OpenRouter plug in
+  behind one `Provider` contract, with keychain-backed credentials and
+  configurable fallback links (`chatWithFallback` / `chatStreamWithFallback`).
+- **Managed backend lifecycle** — `LlamaProcessManager` spawns one
+  `llama-server` per active model on an ephemeral port, gates readiness on a
+  health poll, supervises restarts with exponential backoff, and stops the
+  process after an idle timeout (5 minutes).
+- **Model catalog + downloads** — GGUF catalog with curated metadata and a
+  checksum-verified download engine (gosh).
+- **Keychain secrets** — provider API keys and the gateway auth key live in
+  the OS keychain-backed `SecretStore`, never in plaintext config.
+- **Sandboxed code execution** — `data.code` nodes run in a restricted
+  sandbox (`unshare -n`; no network).
+- **Embeddings / RAG** — embedding, chunking, and memory modules ready behind
+  the provider seam (local embedding wiring pending, see
+  [Current status](#current-status--known-limitations)).
+- **Custom WebSocket surface** — `/ws` runs workflows live with typed
+  `status` / `step_started` / `step_completed` / `token` events.
+- **Desktop shell** — an Astro 7 + Svelte 5 renderer with an @xyflow/svelte
+  workflow editor, single-page app in `frontend/`; single-binary builds via
+  `bun run build:binary` / `build:binaries` (Electrobun main-process entry is
+  `src/main.ts`).
+- **Security** — loopback bind by default, optional keychain-backed Bearer
+  auth (off by default), JSON-lines logging, constant-time token comparison.
+- **Health** — `GET /api/health`.
 
 ---
 
 ## Requirements
 
-- [Bun](https://bun.sh) ≥ 1.4
+- [Bun](https://bun.sh) ≥ 1.4 (Node ≥ 22.12.0 only as a fallback engine; the
+  runtime targets Bun)
 - [llama.cpp](https://github.com/ggerganov/llama.cpp) — the `llama-server`
-  binary (or `llama` on PATH, see [Configuration](#configuration))
+  binary, build **b9908 or newer** (enforced via `--version`)
 - GGUF model files you want to serve
 
 ---
@@ -51,224 +65,245 @@ cd llm-proxy
 bun install
 ```
 
+---
+
 ## Quick start
 
+The runtime is environment-configured; there is no required config file.
+
 ```bash
-# 1. Point the config at your llama-server binary and models.
-cp config.example.yaml llm-proxy.config.yaml
-# 2. Edit llm-proxy.config.yaml (model paths, ports, chains).
-# 3. Start the gateway.
 bun run dev
 ```
 
-The gateway will spawn the managed `llama-server` backend and listen on
-`http://127.0.0.1:8090` by default. On boot it logs the URL and the list of
-virtual models (e.g. `gateway/orchestrator`).
+The app listens on `http://127.0.0.1:4317` by default (loopback only). On boot
+it logs the app-data directory and the bound URL.
 
 ### Try it
 
 ```bash
-# List available (real + virtual) models
-curl http://127.0.0.1:8090/v1/models
+# List registered models (external provider ids + gateway/<workflow> virtuals)
+curl http://127.0.0.1:4317/v1/models
 
-# Chat via a chain (non-streaming)
-curl http://127.0.0.1:8090/v1/chat/completions \
+# Chat via a saved workflow (non-streaming)
+curl http://127.0.0.1:4317/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gateway/orchestrator",
-    "messages": [{"role": "user", "content": "Explain what a gateway is"}]
+    "model": "gateway/my-workflow",
+    "messages": [{"role": "user", "content": "Explain what a workflow is"}]
   }'
 
 # Stream
-curl -N http://127.0.0.1:8090/v1/chat/completions \
+curl -N http://127.0.0.1:4317/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"gateway/orchestrator","stream":true,"messages":[{"role":"user","content":"Hi"}]}'
+  -d '{"model":"gateway/my-workflow","stream":true,"messages":[{"role":"user","content":"Hi"}]}'
 
-# Use a chain via header instead of model name
-curl http://127.0.0.1:8090/v1/chat/completions \
-  -H "Content-Type: application/json" -H "X-Chain-ID: coder" \
+# Use a workflow via header instead of model name
+curl http://127.0.0.1:4317/v1/chat/completions \
+  -H "Content-Type: application/json" -H "X-Chain-ID: my-workflow" \
   -d '{"model":"ignored","messages":[{"role":"user","content":"Write a function"}]}'
 ```
+
+`gateway/<name>` models exist for every workflow saved in the app database;
+external provider models (e.g. `gpt-4o`) are served for the ids registered to
+that provider. Local `llama-server` models are not reachable yet — see
+[Current status](#current-status--known-limitations).
 
 ---
 
 ## Configuration
 
-Configuration is loaded from `llm-proxy.config.yaml` or
-`llm-proxy.config.json` (or the `CONFIG_FILE` env var). Start from
-[`config.example.yaml`](config.example.yaml) — it is the reference.
-
-Top-level shape:
-
-```yaml
-server:
-  host: 127.0.0.1
-  port: 8090
-  corsOrigins: "*"
-  jsonLimit: 10mb
-
-llama:          # managed llama-server backend
-  binary: llama
-  port: 8080    # 0 = dynamic ephemeral port read from process output
-  autoStart: true
-  modelsDir: /path/to/gguf/models
-  router: { ctx: 8192, n: 2048, nGpuLayers: -1, ... }
-  models: { SmolLM3-3B: { file: model.gguf, ctx: 65536, temp: 0.1 }, ... }
-
-defaultChain: orchestrator
-
-chains:
-  orchestrator:
-    displayName: "Orchestrator"
-    provider: llama-server
-    steps:
-      - name: generate
-        type: generate
-        model: SmolLM3-3B
-      - name: refine-coder
-        type: refine
-        model: Qwen2.5-Coder-3B-Instruct
-```
-
-### Chain steps
-
-| Step          | Behavior                                                              |
-| ------------- | --------------------------------------------------------------------- |
-| `generate`    | Seed with the incoming user messages (optionally `system`/`assistant`). |
-| `refine`      | Refeed the previous step's output for verification / improvement.     |
-| `passthrough` | Forward the request to the provider without transformation.           |
-
-### Conditional routing
-
-- `on_429: <step>` — run `<step>` when this step returns HTTP 429.
-- `tool_calls_route: <step>` — run `<step>` when the response carries
-  `tool_calls`.
+The runtime configuration is resolved from the environment at boot
+(`src/app/config.ts`, `resolveAppConfig`); there is no YAML config file loaded
+by the app.
 
 ### Environment variables
 
-| Variable       | Purpose                                        |
-| -------------- | ---------------------------------------------- |
-| `CONFIG_FILE`  | Override the config file path.                 |
-| `BEARER_TOKEN` | When set, require `Authorization: Bearer <token>` on every request. |
-| `UI_DIR`       | Override the dashboard SPA directory served at `/ui` (default `./src/ui`). |
+| Variable           | Default       | Purpose                                                        |
+| ------------------ | ------------- | -------------------------------------------------------------- |
+| `WEAVELLM_HOST`    | `127.0.0.1`   | Bind host (loopback by default).                               |
+| `WEAVELLM_PORT`    | `4317`        | Proxy port (`0` selects an ephemeral port).                    |
+| `WEAVELLM_AUTH`    | *(unset)*     | `1`/`true` enables the Bearer auth gate (off by default).      |
+| `WEAVELLM_APP_DATA`| platform app-data dir | Override the data directory (SQLite, logs, models).     |
+
+Provider and workflow state is **database-backed** (SQLite, see
+[Architecture](#architecture)):
+
+- `providers` rows define external provider kinds, base URLs, and fallback
+  links; credentials resolve from the keychain store (scope `provider:<kind>`).
+- `workflows` rows hold named workflows as YAML node/edge graphs.
+- The gateway auth key, when `WEAVELLM_AUTH` is enabled, is the keychain
+  entry scoped `auth`.
+
+### Workflow YAML shape
+
+Workflows are DAGs of `nodes` + `edges`: a `start` node, one `llm_call` node
+per orchestration step, and an `end` node.
+
+```yaml
+name: orchestrator
+nodes:
+  - id: start
+    type: start
+  - id: generate
+    type: llm_call
+    mode: generate
+    model: SmolLM3-3B
+  - id: refine-coder
+    type: llm_call
+    mode: refine
+    model: Qwen2.5-Coder-3B-Instruct
+  - id: end
+    type: end
+edges:
+  - from: start
+    to: generate
+  - from: generate
+    to: refine-coder
+  - from: refine-coder
+    to: end
+```
+
+`llm_call` modes:
+
+| Mode          | Behavior                                                              |
+| ------------- | --------------------------------------------------------------------- |
+| `generate`    | Seed with the incoming user messages (optionally prefix `system`/`assistant`). |
+| `refine`      | Refeed the previous node's output for verification / improvement.     |
+| `passthrough` | Forward the request to the provider without transformation.           |
+
+Conditional routing (fields on an `llm_call` node):
+
+- `on_429: <node-id>` — run `<node-id>` when this node returns HTTP 429.
+- `tool_calls_route: <node-id>` — run `<node-id>` when the response carries
+  `tool_calls`.
+
+The full node taxonomy (14 types) is `start`, `end`, `llm_call`, `condition`,
+`loop`, `fan`, `join`, `pipeline`, `rag_local`, `data.code`, `memory`,
+`embeddings`, `router`, `output`.
+
+> **Note:** `config.example.yaml` at the repo root predates the rewrite and is
+> **stale** — it documents a config-file-based gateway (port 8090, `CONFIG_FILE`,
+> `BEARER_TOKEN`, a dashboard SPA at `/ui`) that the current runtime does not
+> load. Treat the workflow YAML section as a shape reference only.
 
 ---
 
 ## Scripts
 
-| Command            | Description                            |
-| ------------------ | -------------------------------------- |
-| `bun run dev`      | Run with watch / hot reload.           |
-| `bun run build`    | Bundle to `dist/`.                     |
-| `bun run build:binary` | Compile a standalone binary `dist/llm-proxy`. |
-| `bun start`        | Run from source.                       |
-| `bun test`         | Run tests (`bun:test`).                |
-| `bun run typecheck`| Type-check with `tsc --noEmit`.        |
-| `bun run lint`     | Lint with ESLint.                      |
-| `bun run format`   | Autofix lint issues.                   |
+| Command              | Description                                       |
+| -------------------- | ------------------------------------------------- |
+| `bun run dev`        | Dev with watch (`bun run --watch src/main.ts`).   |
+| `bun run dev:frontend` | Astro dev server for the renderer shell.        |
+| `bun run build`      | Bundle to `dist/`.                                |
+| `bun run build:frontend` | Build the Astro renderer shell.               |
+| `bun run build:binary`  | Compile a standalone binary `dist/weavellm`.  |
+| `bun run build:binaries`| Build all platform binaries (`scripts/build-binaries.ts`). |
+| `bun start`          | Run from source.                                  |
+| `bun test`           | Run tests (`bun:test`).                           |
+| `bun run typecheck`  | Type-check with `tsc --noEmit`.                   |
+| `bun run lint`       | Lint with ESLint.                                 |
+| `bun run format`     | Autofix lint issues.                              |
 
 ---
 
 ## Endpoints
 
-| Method | Path                   | Description                                       |
-| ------ | ---------------------- | ------------------------------------------------- |
-| POST   | `/v1/chat/completions` | OpenAI-compatible chat (SSE when `stream:true`).  |
-| POST   | `/v1/completions`      | Legacy text completions.                          |
-| GET    | `/v1/models`           | List real + virtual models.                       |
-| GET    | `/health`              | Aggregate health (legacy).                        |
-| GET    | `/health/live`         | Liveness.                                         |
-| GET    | `/health/ready`        | Readiness (gated on backend running).             |
-| GET    | `/ui`                  | Dashboard SPA (static, always open).              |
-| GET    | `/api/ui/pipelines`    | Registered pipeline summaries.                    |
-| GET    | `/api/ui/models`       | Merged registered + detected models.              |
-| GET    | `/api/ui/executions`   | Recent execution history (bounded).               |
-| POST   | `/api/ui/pipelines/:id/validate` | Validate a graph draft.                 |
-| POST   | `/api/ui/apply`        | Zod-validate + atomically apply a config.         |
-| POST   | `/api/ui/executions/:id/steps/:node/retry` | Retry a failed `llm_call` step. |
-| GET    | `/api/ui/events`       | SSE event stream (live updates).                  |
+The app server (`src/app/server.ts`) is a single `Bun.serve` fetch handler.
+Default port: **4317**.
 
----
+| Method | Path                        | Description                                             |
+| ------ | --------------------------- | ------------------------------------------------------- |
+| GET    | `/api/health`               | Liveness probe → `{"status":"ok"}`.                     |
+| GET    | `/v1/models`                | List external + `gateway/<workflow>` virtual models.    |
+| POST   | `/v1/chat/completions`      | OpenAI-compatible chat (SSE when `stream:true`).        |
+| POST   | `/v1/completions`           | Legacy text completions (prompt→chat wrapper).          |
+| POST   | `/v1/embeddings`            | Embeddings (unknown-model 404 until the local embedding wiring lands). |
+| WS     | `/ws`                       | WebSocket workflow runs (`bind` / `run` protocol).      |
+| GET    | `/api/workflows`            | List saved workflows (`[{name, version, updatedAt}]`).  |
+| GET    | `/api/workflows/:name`      | Fetch a workflow incl. its YAML.                        |
+| PUT    | `/api/workflows/:name`      | Upsert a workflow from YAML (validates the graph).      |
+| DELETE | `/api/workflows/:name`      | Delete a workflow (204 \| 404).                         |
+| POST   | `/api/workflows/:name/run`  | Run the workflow with an OpenAI chat body.              |
+| GET    | `/api/workflows/:name/logs` | Execution history.                                      |
 
-## Dashboard
-
-The gateway ships a **dashboard SPA** at [`/ui`](http://127.0.0.1:8090/ui) —
-a vanilla HTML/CSS/JS editor (no framework, no D3) for inspecting and managing
-pipelines:
-
-- Browse **pipelines**, **models**, and **executions**.
-- Build a pipeline graph via drag-and-drop (or keyboard: press 1–6 with the
-  canvas focused) from `start`, `llm_call`, `condition`, `loop`, `pipeline`,
-  and `end` nodes, and connect them.
-- Configure `condition` nodes with a **closed-set AST builder** — only
-  `compare`, `logical`, `not`, and `exists` over `lastResponse.status`,
-  `lastResponse.content`, `error`, and variables. There is **no free-form code
-  entry**.
-- **Validate** the graph against the `/api/ui/pipelines/:id/validate` endpoint,
-  which checks cyclicity (except loop boundaries), model existence, exactly one
-  `start` and ≥1 `end`, and required fields per node type.
-- **Apply** the composed config via `/api/ui/apply`, which zod-validates and
-  writes atomically (a failed apply writes nothing and the editor retains its
-  previous state).
-
-The SPA subscribes to `/api/ui/events` (SSE) for live updates: execution
-progress, `pipeline:reloaded`, and `models:changed`.
-
-The dashboard REST + SSE surface (`/api/ui/*`) is protected by the same Bearer
-auth as the rest of the API when `BEARER_TOKEN` is set; the static `/ui` SPA
-remains open (see [Security](#security)).
-
-### Model list semantics (`/api/ui/models`)
-
-`GET /api/ui/models` returns `{ models, modelsDir, autoRefresh }`, where each
-model is `{ id, file, loaded }`. The list **merges** two sources:
-
-- **Registered** models from `config.llama.models` — reported with `loaded: true`.
-- **Detected** `.gguf` files on disk in `modelsDir` that are **not** in config —
-  reported with `loaded: false` as **candidates only**. Detection never
-  auto-registers a model; to serve a detected file you must add it to
-  `config.llama.models` and **apply** the config (e.g. through the Dashboard).
+Unmatched paths answer a JSON 404 (or 426 for non-upgrade requests to `/ws`).
+All `/v1` responses are normalized OpenAI-shaped envelopes.
 
 ---
 
 ## Architecture
 
 ```
-src/index.ts       boot: config → backend → chains → providers → Bun.serve
-src/server.ts      createApp: single fetch handler (security, auth, routes)
-src/shutdown.ts    graceful shutdown / in-flight drain
-src/config/        config loading + zod schema
-src/backend/       managed llama-server lifecycle (manager, preset, validation)
-src/providers/     Provider contract (+ llama-server implementation)
-src/orchestrator/  chain parsing (parser) + execution (engine)
-src/routes/        HTTP handlers: chat, completions, health, models
-src/middleware/    auth guard, error handling, passthrough proxy
-src/dashboard/     /api/ui/* REST+SSE, apply, tracker, metrics, retry
-src/ui/            dashboard SPA (static HTML/CSS/JS served at /ui)
+src/main.ts        boot: appData → SQLite → config → secrets → providers →
+                   workflows → server → background update check
+src/app/           server.ts (Bun.serve createWebServer, graceful drain),
+                   config.ts, ws.ts (WsHub), update.ts, startup.ts, types.ts
+src/backend/       managed llama-server lifecycle: manager.ts
+                   (LlamaProcessManager), spawn-args.ts
+src/catalog/       GGUF model catalog + curated metadata
+src/db/            app-data SQLite schema (10 tables) + model config
+src/downloads/     gosh CLI model downloads (checksum-verified)
+src/orchestrator/  workflow store, graph validation, engine, runner, YAML parse
+src/providers/     Provider contract, registry, llama-server provider,
+                   adapters (openai/anthropic/openrouter), fallback
+src/rag/           embeddings, chunking, memory
+src/routes/        v1.ts (/v1 dispatcher), api.ts (/api dispatcher),
+                   auth.ts (gate), relay.ts (SSE)
+src/sandbox/       code execution (unshare -n)
+src/secrets/       keychain.ts SecretStore + redaction
 src/types/         shared + OpenAI types
-src/utils/         logging, ids, content extraction, sanitization
+src/ui-svelte/     Svelte components shared with the renderer
+src/utils/         logging, ids, content extraction, GGUF, sanitization
+frontend/          Astro 7 renderer shell (Svelte 5, @xyflow workflow editor)
+scripts/           build binaries
 ```
 
 Notes:
 
+- **Boot order** (`src/main.ts`): resolve app-data dir → mkdir
+  logs/models/sandbox → open the SQLite DB → resolve config → `SecretStore`
+  → `buildProviderRegistry` (external adapters) → `WorkflowStore` →
+  `makeRuntimeServices` → `makeWorkflowRunner` → `makeApiHandler` →
+  `makeV1Handler` (optional auth gate) → `createWebServer` → update check →
+  `server.start()`.
 - **Provider abstraction** (`src/providers/types.ts`) isolates all backend
-  network interaction, so future providers (OpenAI, Anthropic, …) can plug in
-  behind one contract.
+  network interaction behind `chat` / `chatStream`; external adapters plug in
+  without touching the orchestrator or routes.
 - **Managed backend** (`src/backend/manager.ts`) is the source of truth for
-  readiness, base URL, and the model registry. The provider derives the
-  upstream URL from it.
+  local backend readiness, base URL, and spawn flags (`buildLlamaSpawnArgs`).
 - **Bun.serve** replaces Express; all handler code is plain fetch functions
-  returning `Response`.
+  returning `Response`, and `/ws` upgrades ride the same server.
+- **Persisted state**: SQLite at `<appData>/weavellm.db` — `models`,
+  `model_config`, `workflows`, `execution_log`, `providers`, `secrets`,
+  `kv_memory`, `chunks`, `downloads`, `settings`.
 
-The behavior of each capability is specified in
-`openspec/specs/<capability>/spec.md`.
+The behavior of each capability is specified under
+`openspec/specs/<capability>/spec.md` (25 capability specs).
+
+---
+
+## Current status / known limitations
+
+- The managed `llama-server` backend is **not wired into the runtime yet**:
+  `src/main.ts` boots with `localProvider: () => null`,
+  `localModels: () => []`, and null embedder/chunks/memory services. Until the
+  local backend wiring lands, local model ids answer the unknown-model 404
+  envelope, and `/v1/embeddings` is unavailable.
+- **External providers** (openai/anthropic/openrouter) and **workflow/gateway
+  virtual models** work today; saved workflows run through `/v1`, `/api`, and
+  `/ws`.
 
 ---
 
 ## Security
 
-- By default the gateway binds to `127.0.0.1` and (without `BEARER_TOKEN`) is
-  **unsecured** — keep it on loopback unless you harden it.
+- By default the app binds to `127.0.0.1` and, without `WEAVELLM_AUTH`, the
+  API is **unsecured** — keep it on loopback unless you harden it.
+- Auth, when enabled, requires `Authorization: Bearer <key>` on `/v1`
+  requests; the key is stored in the keychain store (scope `auth`) and
+  compared in constant time (SHA-256 + `timingSafeEqual`).
+- Provider secrets are keychain-backed; `data.code` nodes run sandboxed
+  (`unshare -n`, no network).
 - See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and a
   deployment hardening checklist.
 

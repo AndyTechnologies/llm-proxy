@@ -100,7 +100,6 @@ export class LlamaServerProvider implements Provider {
       const timeoutMs = this.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
 
       const url = this.buildUrl(request);
-      console.log(`[provider] POST ${url}`);
 
       const res = await fetch(url, {
         method: "POST",
@@ -150,7 +149,6 @@ export class LlamaServerProvider implements Provider {
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
       const url = this.buildUrl(request);
-      console.log(`[provider] POST ${url} [STREAM]`);
 
       let res: Response;
       try {

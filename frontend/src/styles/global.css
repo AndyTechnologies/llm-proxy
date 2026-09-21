@@ -1,0 +1,75 @@
+:root {
+  --bg: #09090b;
+  --bg-card: #111113;
+  --bg-code: #18181c;
+  --border: #ffffff12;
+  --border-hover: #F095C859;
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --text-tertiary: #52525b;
+  --accent: #F095C8;
+  --accent-hover: #FFB1DD;
+  --accent-soft: rgba(240, 149, 200, 0.15);
+  --success: #B4E7C7;
+  --danger: #FF718F;
+  --surface: var(--bg-card);        /* legacy alias for card surfaces */
+  --muted: var(--text-tertiary);    /* legacy alias for tertiary text */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.app-header h1 {
+  font-size: 1.25rem;
+  margin: 0;
+  color: var(--text);
+}
+
+.tagline {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.app-main {
+  padding: 24px;
+  display: grid;
+  gap: 24px;
+}
+
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px 20px;
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}

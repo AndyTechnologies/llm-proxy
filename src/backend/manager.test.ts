@@ -1,710 +1,280 @@
 /**
- * LlamaServeManager tests (strict TDD, S1 — Bun.spawn migration).
- *
- * These are adapter-level tests over the manager's DI seam (ADR-3): the
- * spawnFn/now/sleep dependencies are injected fakes, so no real llama-server
- * is spawned here (that boundary is the S1.6 supervisor smoke). The
- * health-poll readiness gate IS exercised against a real in-process Bun.serve
- * fixture: the fetch path is production code, not a mock.
- *
- * Fake-proc contract (runtime-verified 2026-09-02, Bun 1.4.0):
- *  - supervision MUST use the `exited` Promise — Subprocess has no onExit;
- *  - `exitCode`/`signalCode` go live BEFORE `exited` resolves (verified);
- *  - stdout/stderr chunks are Uint8Array and MUST be decoded before matching.
- *
- * The manager rewrite never uses onExit. Every fake resolves `exited` and sets
- * exitCode/signalCode exactly like a real Subprocess does.
+ * Phase 2 — LlamaProcessManager (single-model llama-server lifecycle).
+ * DI seams inject the spawn primitive, clock, sleep, health check, and log
+ * so the whole lifecycle is testable with fakes (no real llama-server).
+ * Specs: backend-management (single spawn, --port 0 + stdout regex,
+ * wait-ready before traffic, restart on crash, fail-fast boot, idle stop).
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import type { LlamaConfig } from "../config/schema.js";
+import { describe, expect, test, beforeEach } from "bun:test";
 import {
-  createLlamaServeManager,
+  LlamaProcessManager,
+  idleElapsed,
+  IDLE_TIMEOUT_MS,
   type ManagerDeps,
-  type SpawnFn,
   type SpawnedProc,
 } from "./manager.js";
 
-const enc = new TextEncoder();
+// ── Fake process harness ──────────────────────────────────────────────
 
-// ── Fixtures ──────────────────────────────────────────────────────────────
-
-let tmpDir: string;
-
-beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-proxy-manager-"));
-  fs.mkdirSync(path.join(tmpDir, "models"));
-  fs.mkdirSync(path.join(tmpDir, "bin"));
-  // Executable fake binary + a GGUF file: real fs so start()'s fail-fast
-  // config validation (unchanged in S1) passes hermetically.
-  const binPath = path.join(tmpDir, "bin", "llama");
-  fs.writeFileSync(binPath, "#!/bin/sh\necho fake\n", "utf8");
-  fs.chmodSync(binPath, 0o755);
-  fs.writeFileSync(path.join(tmpDir, "models", "m1.gguf"), "dummy", "utf8");
-});
-
-afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-  // Generated preset INI (gitignored) — written by the real writePresetIni.
-  fs.rmSync(path.resolve(".llm-proxy"), { recursive: true, force: true });
-});
-
-/** Minimal LlamaConfig with schema-default router values. */
-function baseConfig(over: Partial<LlamaConfig> = {}): LlamaConfig {
-  return {
-    binary: path.join(tmpDir, "bin", "llama"),
-    host: "127.0.0.1",
-    port: 0,
-    autoStart: true,
-    startupTimeoutMs: 30000,
-    stopTimeoutMs: 5000,
-    requestTimeoutMs: 300000,
-    healthPollIntervalMs: 1000,
-    portParseTimeoutMs: 5000,
-    backoffCapMs: 30000,
-    maxRestartAttempts: 5,
-    modelsDir: path.join(tmpDir, "models"),
-    autoload: true,
-    lifecycle: { ttl: 600, vram: { mode: "dynamic", freeGb: 1, capGb: 5 } },
-    router: {
-      ctx: 8192,
-      n: 2048,
-      nGpuLayers: -1,
-      flashAttn: true,
-      cacheTypeK: "q8_0",
-      cacheTypeV: "q8_0",
-      batch: 2048,
-      ubatch: 512,
-      tools: "all",
-      parallel: 1,
-    },
-    models: { m1: { file: "m1.gguf" } },
-    ...over,
-  };
-}
-
-/** A spawnable ReadableStream pre-filled with Uint8Array chunks. */
-function streamFromChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+function textStream(lines: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
-      for (const chunk of chunks) controller.enqueue(chunk);
+      const enc = new TextEncoder();
+      for (const line of lines) controller.enqueue(enc.encode(`${line}\n`));
+      // Simulate process exit: a closed stream completes read() with `done`.
       controller.close();
     },
   });
 }
 
-interface FakeProcState {
-  proc: SpawnedProc;
-  killCalls: string[];
-  /** Recorded stdout chunks (post-decode expectations can inspect these). */
-  resolveExited: (code: number) => void;
+interface FakeProcOpts {
+  stdoutLines?: string[];
+  stderrLines?: string[];
 }
 
-/**
- * Fake spawned proc shaped EXACTLY like Bun's Subprocess surface the manager
- * uses: `exited` Promise + live exitCode/signalCode + Uint8Array streams.
- * No onExit anywhere — mirroring the real Bun 1.4.0 Subprocess.
- */
-function fakeProc(
-  over: {
-    stdoutChunks?: Uint8Array[];
-    stderrChunks?: Uint8Array[];
-    pid?: number | null;
-    exitCode?: number | null;
-    signalCode?: string | null;
-  } = {},
-): FakeProcState {
-  const killCalls: string[] = [];
-  let resolveExitedValue: (code: number) => void = () => {};
+function makeProc(opts: FakeProcOpts = {}): SpawnedProc & {
+  killed: boolean;
+  resolveExit: (code: number) => void;
+} {
+  let resolveExit!: (code: number) => void;
   const exited = new Promise<number>((resolve) => {
-    resolveExitedValue = resolve;
+    resolveExit = resolve;
   });
-  const proc: SpawnedProc = {
-    pid: over.pid ?? 12345,
-    exitCode: over.exitCode ?? null,
-    signalCode: over.signalCode ?? null,
-    stdout: streamFromChunks(over.stdoutChunks ?? []),
-    stderr: streamFromChunks(over.stderrChunks ?? []),
-    exited,
-    kill: (signal) => {
-      killCalls.push(signal ?? "SIGTERM");
-    },
-  };
   return {
-    proc,
-    killCalls,
-    resolveExited: (code) => {
-      proc.exitCode = code; // live before `exited` resolves (Bun-verified)
-      resolveExitedValue(code);
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    stdout: textStream(opts.stdoutLines ?? []),
+    stderr: textStream(opts.stderrLines ?? []),
+    exited,
+    killed: false,
+    kill: function () {
+      this.killed = true;
+      resolveExit(0);
     },
+    resolveExit,
   };
 }
 
 interface Harness {
   deps: ManagerDeps;
-  logs: string[];
-  clock: () => number;
-  sleepCalls: number[];
-  spawnCalls: Array<{
-    cmd: string;
-    args: string[];
-    env: Record<string, string | undefined>;
-  }>;
-  procs: FakeProcState[];
+  spawns: Array<{ cmd: string; args: string[] }>;
 }
 
-/**
- * DI harness: spawnFn records argv and hands out fakes; `now` is a mutable
- * clock; `sleep` records delays, advances the clock, and resolves immediately.
- */
-function buildHarness(
-  cfg: LlamaConfig,
-  makeProc: (index: number) => FakeProcState = () => fakeProc(),
-): Harness {
-  const logs: string[] = [];
-  let clock = 0;
-  const sleepCalls: number[] = [];
-  const spawnCalls: Harness["spawnCalls"] = [];
-  const procs: FakeProcState[] = [];
-  const spawnFn: SpawnFn = (cmd, args, opts) => {
-    spawnCalls.push({ cmd, args, env: opts.env });
-    const p = makeProc(procs.length);
-    procs.push(p);
-    return p.proc;
+function makeHarness(over: Partial<ManagerDeps> = {}): Harness {
+  const spawns: Array<{ cmd: string; args: string[] }> = [];
+  const spawnFn = (cmd: string, args: string[]): SpawnedProc => {
+    spawns.push({ cmd, args });
+    return makeProc();
   };
   const deps: ManagerDeps = {
-    config: cfg,
-    logger: (msg) => logs.push(msg),
-    spawnFn,
-    now: () => clock,
-    sleep: async (ms) => {
-      sleepCalls.push(ms);
-      clock += ms;
-    },
+    binary: "/usr/local/bin/llama-server",
+    run: { modelPath: "/m/models/q4.gguf", ctxSize: 131072, rope: { scale: 4, origCtx: 32768 } },
+    spawnFn: spawnFn as unknown as ManagerDeps["spawnFn"],
+    now: () => performance.now(),
+    // Real (capped) timers — an instant-sleep fake starves the event loop:
+    // the idle watchdog's microtask loop would prevent setTimeout from firing.
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5))),
+    healthCheck: async () => true,
+    log: () => {},
+    startTimeoutMs: 200,
+    healthPollMs: 10,
+    idlePollMs: 20,
+    maxRestartAttempts: 3,
+    ...over,
   };
-  return { deps, logs, clock: () => clock, sleepCalls, spawnCalls, procs };
+  return { deps, spawns };
 }
 
-/** Real in-process health endpoint the manager's readiness gate polls. */
-function healthServer(
-  opts: { onRequest?: () => void; status?: () => number } = {},
-): ReturnType<typeof Bun.serve> {
-  return Bun.serve({
-    port: 0,
-    fetch: () => {
-      opts.onRequest?.();
-      const status = opts.status?.() ?? 200;
-      return new Response(status === 200 ? "ok" : "not-ready", { status });
-    },
+const PORT_LINE = "llama-server: listening on 127.0.0.1:54321";
+
+beforeEach(() => {});
+
+describe("LlamaProcessManager — single-model lifecycle", () => {
+  test("start spawns one llama-server with --port 0 and waits for the stdout port", async () => {
+    const h = makeHarness();
+    const seeded = makeProc({ stdoutLines: [PORT_LINE] });
+    const manager = new LlamaProcessManager(h.deps);
+    (manager as unknown as { spawnOnce: () => SpawnedProc }).spawnOnce = () => seeded;
+    await manager.start();
+    const st = manager.status();
+    expect(st.state).toBe("running");
+    expect(st.port).toBe(54321);
+    expect(st.baseUrl).toBe("http://127.0.0.1:54321");
+    await manager.stop();
+    expect(seeded.killed).toBe(true);
   });
-}
 
-async function waitUntil(cond: () => boolean, timeoutMs = 3000): Promise<void> {
-  const t0 = Date.now();
-  while (!cond()) {
-    if (Date.now() - t0 > timeoutMs) throw new Error("waitUntil timed out");
-    await new Promise((r) => setTimeout(r, 5));
-  }
-}
+  test("spawn args include --port 0, model path, ctx and YaRN flags", async () => {
+    const seeded = makeProc({ stdoutLines: [PORT_LINE] });
+    const recorded: Array<{ cmd: string; args: string[] }> = [];
+    const manager = new LlamaProcessManager({
+      ...makeHarness().deps,
+      spawnFn: (cmd: string, args: string[]) => {
+        recorded.push({ cmd, args });
+        return seeded;
+      },
+    });
+    await manager.start();
+    expect(recorded.length).toBe(1);
+    const { cmd, args } = recorded[0];
+    expect(cmd).toBe("/usr/local/bin/llama-server");
+    expect(args).toContain("--port");
+    expect(args[args.indexOf("--port") + 1]).toBe("0");
+    expect(args[args.indexOf("--model") + 1]).toBe("/m/models/q4.gguf");
+    expect(args[args.indexOf("--rope-scaling") + 1]).toBe("yarn");
+    await manager.stop();
+  });
 
-function expectRejection(
-  promise: Promise<unknown>,
-): Promise<Error> {
-  return promise.then(
-    () => {
-      throw new Error("expected the promise to reject");
-    },
-    (err: Error) => err,
-  );
-}
+  test("wait-ready gate: traffic only after health passes; port from stdout regex", async () => {
+    let healthy = false;
+    const h = makeHarness({ healthCheck: async () => healthy });
+    const seeded = makeProc({ stdoutLines: [PORT_LINE] });
+    const manager = new LlamaProcessManager(h.deps);
+    (manager as unknown as { spawnOnce: () => SpawnedProc }).spawnOnce = () => seeded;
+    const startP = manager.start();
+    // give the poll loop a beat, then flip health to true
+    await new Promise((r) => setTimeout(r, 30));
+    healthy = true;
+    await startP;
+    expect(manager.status().state).toBe("running");
+    await manager.stop();
+  });
 
-// ── Tests ─────────────────────────────────────────────────────────────────
+  test("fail-fast: never-ready backend rejects with actionable stderr tail", async () => {
+    const h = makeHarness({
+      healthCheck: async () => false,
+      startTimeoutMs: 50,
+      healthPollMs: 10,
+    });
+    const seeded = makeProc({
+      stdoutLines: ["itllama: loading model..."],
+      stderrLines: ["error: out of memory allocating KV cache"],
+    });
+    const manager = new LlamaProcessManager(h.deps);
+    (manager as unknown as { spawnOnce: () => SpawnedProc }).spawnOnce = () => seeded;
+    await expect(manager.start()).rejects.toThrow(/out of memory|never became ready|failed/i);
+    expect(seeded.killed).toBe(true);
+  });
 
-describe("startup and readiness (S1.1)", () => {
-  test("dynamic port: decodes Uint8Array stdout, parses 'listening on', polls health, reaches running", async () => {
-    const server = healthServer();
-    try {
-      const cfg = baseConfig({ port: 0 });
-      const chunk = enc.encode(`llama-server: listening on 127.0.0.1:${server.port}\n`);
-      const h = buildHarness(cfg, () => fakeProc({ stdoutChunks: [chunk] }));
-      const manager = createLlamaServeManager(h.deps);
+  test("EADDRINUSE in stderr yields an actionable address-in-use error", async () => {
+    const h = makeHarness({ startTimeoutMs: 50, healthPollMs: 10 });
+    const seeded = makeProc({
+      stderrLines: ["llama-server: error: bind() failed: Address already in use (EADDRINUSE)"],
+    });
+    const manager = new LlamaProcessManager(h.deps);
+    (manager as unknown as { spawnOnce: () => SpawnedProc }).spawnOnce = () => seeded;
+    await expect(manager.start()).rejects.toThrow(/address already in use|EADDRINUSE/i);
+  });
 
-      await manager.start();
+  test("restart on crash: unexpected exit respawns with backoff until healthy", async () => {
+    const h = makeHarness();
+    const first = makeProc({ stdoutLines: [PORT_LINE] });
+    const second = makeProc({ stdoutLines: [PORT_LINE] });
+    let useFirst = true;
+    const spawnFn = (_cmd: string, _args: string[]) => {
+      const p = useFirst ? first : second;
+      useFirst = false;
+      return p;
+    };
+    const manager = new LlamaProcessManager({
+      ...h.deps,
+      spawnFn: spawnFn as unknown as ManagerDeps["spawnFn"],
+    });
+    await manager.start();
+    expect(manager.status().state).toBe("running");
+    // simulator: the backend crashes
+    first.resolveExit(1);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(manager.status().state).toBe("running");
+    expect(second.killed).toBe(false);
+    await manager.stop();
+  });
 
-      const st = manager.status();
-      expect(st.state).toBe("running");
-      expect(st.baseUrl).toBe(`http://127.0.0.1:${server.port}`);
-      expect(st.pid).toBe(12345);
-      // Spawn argv was built BEFORE port detection (dynamic port stays 0).
-      expect(h.spawnCalls[0].args).toContain("--port");
-      const allLogs = h.logs.join("\n");
-      expect(allLogs).toContain(`detected dynamic port: ${server.port}`);
-      expect(allLogs).toContain(`backend ready: pid=12345, baseUrl=http://127.0.0.1:${server.port}`);
-    } finally {
-      server.stop();
+  test("idle kill: an unused backend stops after the idle timeout", async () => {
+    const h = makeHarness({
+      idleTimeoutMs: 40,
+      idlePollMs: 10,
+      healthCheck: async () => true,
+    });
+    const seeded = makeProc({ stdoutLines: [PORT_LINE] });
+    const manager = new LlamaProcessManager(h.deps);
+    (manager as unknown as { spawnOnce: () => SpawnedProc }).spawnOnce = () => seeded;
+    await manager.start();
+    expect(manager.status().state).toBe("running");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(manager.status().state).toBe("stopped");
+    expect(seeded.killed).toBe(true);
+  });
+
+  test("noteRequest keeps an active backend alive past the idle timeout", async () => {
+    const h = makeHarness({ idleTimeoutMs: 60, idlePollMs: 10, healthCheck: async () => true });
+    const seeded = makeProc({ stdoutLines: [PORT_LINE] });
+    const manager = new LlamaProcessManager(h.deps);
+    (manager as unknown as { spawnOnce: () => SpawnedProc }).spawnOnce = () => seeded;
+    await manager.start();
+    // touch every 30ms across a 60ms idle budget → never idle
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((r) => setTimeout(r, 30));
+      manager.noteRequest();
     }
+    expect(manager.status().state).toBe("running");
+    await manager.stop();
   });
 
-  test("dynamic port: URL-form banner on stderr is detected (llama.cpp logs the listening line to stderr)", async () => {
-    const server = healthServer();
-    try {
-      const cfg = baseConfig({ port: 0 });
-      const chunk = enc.encode(
-        `0.00.066.347 I srv  llama_server: listening on http://127.0.0.1:${server.port}\n`,
-      );
-      const h = buildHarness(cfg, () => fakeProc({ stderrChunks: [chunk] }));
-      const manager = createLlamaServeManager(h.deps);
-
-      await manager.start();
-
-      const st = manager.status();
-      expect(st.state).toBe("running");
-      expect(st.baseUrl).toBe(`http://127.0.0.1:${server.port}`);
-      expect(h.logs.join("\n")).toContain(`detected dynamic port: ${server.port}`);
-    } finally {
-      server.stop();
-    }
+  test("stop is graceful (SIGTERM-style kill) and terminal", async () => {
+    const h = makeHarness();
+    const seeded = makeProc({ stdoutLines: [PORT_LINE] });
+    const manager = new LlamaProcessManager(h.deps);
+    (manager as unknown as { spawnOnce: () => SpawnedProc }).spawnOnce = () => seeded;
+    await manager.start();
+    await manager.stop();
+    expect(manager.status().state).toBe("stopped");
   });
 
-  test("fixed port: spawn argv is exact (router mode, no shell), CUDA env injected", async () => {
-    const server = healthServer();
-    try {
-      const cfg = baseConfig({
-        port: server.port,
-        autoload: false,
-        models: { m1: { file: "m1.gguf" } },
+  test("checkVersion enforces the b9908+ floor via --version output", async () => {
+    const old = makeProc({ stdoutLines: ["llama.cpp version: b4140 (abc)"] });
+    const oldManager = new LlamaProcessManager({
+      ...makeHarness().deps,
+      spawnFn: (() => old) as unknown as ManagerDeps["spawnFn"],
+    });
+    await expect(oldManager.checkVersion()).rejects.toThrow(/b9908|upgrade|update/i);
+
+    const ok = makeProc({ stdoutLines: ["llama.cpp version: b9908 (x)"] });
+    const okManager = new LlamaProcessManager({
+      ...makeHarness().deps,
+      spawnFn: (() => ok) as unknown as ManagerDeps["spawnFn"],
+    });
+    await expect(okManager.checkVersion()).resolves.toBe("b9908");
+  });
+
+  test("checkVersion accepts the real llama.cpp --version layout on stderr", async () => {
+    const make = (stderrLines: string[]) =>
+      new LlamaProcessManager({
+        ...makeHarness().deps,
+        spawnFn: (() => makeProc({ stderrLines })) as unknown as ManagerDeps["spawnFn"],
       });
-      const h = buildHarness(cfg);
-      const manager = createLlamaServeManager(h.deps);
-
-      await manager.start();
-
-      expect(h.spawnCalls).toHaveLength(1);
-      expect(h.spawnCalls[0].cmd).toBe(cfg.binary);
-      expect(h.spawnCalls[0].args).toEqual([
-        "serve",
-        "--host", "127.0.0.1",
-        "--port", String(server.port),
-        "--models-dir", cfg.modelsDir,
-        "--models-preset", path.resolve(".llm-proxy", "models.ini"),
-        "--n-predict", "2048",
-        "--n-gpu-layers", "-1",
-        "--cache-type-k", "q8_0",
-        "--cache-type-v", "q8_0",
-        "-b", "2048",
-        "-ub", "512",
-        "--parallel", "1",
-        "--flash-attn", "on",
-        "--tools", "all",
-        "--no-models-autoload",
-      ]);
-      expect(h.spawnCalls[0].env.CUDA_VISIBLE_DEVICES).toBe(
-        process.env.CUDA_VISIBLE_DEVICES ?? "0",
-      );
-      expect(manager.status().state).toBe("running");
-    } finally {
-      server.stop();
-    }
-  });
-
-  test("dynamic port never detected → actionable error within portParseTimeoutMs", async () => {
-    const cfg = baseConfig({ port: 0, portParseTimeoutMs: 5000 });
-    const h = buildHarness(cfg, () =>
-      fakeProc({ stdoutChunks: [enc.encode("llama-server: loading model...\n")] }),
+    await expect(
+      make([
+        "version: 0.3.0-dev (build 10679, commit 50f068fff)",
+        "built with GNU 12.3.0 for Linux x86_64",
+      ]).checkVersion(),
+    ).resolves.toBe("b10679");
+    await expect(make(["version: 0.1.0-dev (build 4140, commit abc)"]).checkVersion()).rejects.toThrow(
+      /b9908|upgrade|update/i,
     );
-    const manager = createLlamaServeManager(h.deps);
-
-    const err = await expectRejection(manager.start());
-    expect(err.message).toContain(
-      "could not detect dynamic port from llama-server stdout within 5000ms",
-    );
-    expect(h.sleepCalls[0]).toBe(5000); // port-parse wait used the configured timeout
-  });
-
-  test("early exit before readiness fails fast with code/signal details (no restart during startup)", async () => {
-    const cfg = baseConfig({ port: 18080 });
-    const p = fakeProc({ exitCode: 3 });
-    p.resolveExited(3);
-    const h = buildHarness(cfg, () => p);
-    const manager = createLlamaServeManager(h.deps);
-
-    const err = await expectRejection(manager.start());
-    expect(err.message).toContain(
-      "exited before becoming ready (code=3, signal=n/a)",
-    );
-    expect(err.message).toContain("(no stderr captured)");
-    expect(h.logs.join("\n")).not.toContain("restarting in");
-  });
-
-  test("port-collision guard: health 200 while our child died → fail-fast, not false-ready", async () => {
-    let h: Harness;
-    const server = healthServer({
-      onRequest: () => {
-        // The FIRST health poll succeeds while OUR child is still alive; the
-        // foreign process keeps answering 200 AFTER our child dies mid-poll.
-        // The re-check after the 200 must catch the dead child.
-        h.procs[0]?.resolveExited(3);
-      },
-    });
-    try {
-      const cfg = baseConfig({ port: server.port, host: "127.0.0.1" });
-      h = buildHarness(cfg, () => fakeProc());
-      const manager = createLlamaServeManager(h.deps);
-
-      const err = await expectRejection(manager.start());
-      expect(err.message).toContain(
-        "exited after health check succeeded (possible port conflict)",
-      );
-      expect(manager.status().state).not.toBe("running");
-    } finally {
-      server.stop();
-    }
-  });
-
-  test("backend never healthy → SIGKILL + actionable timeout message with stderr tail", async () => {
-    const server = healthServer({ status: () => 503 });
-    try {
-      const cfg = baseConfig({
-        port: server.port,
-        startupTimeoutMs: 3000,
-        healthPollIntervalMs: 1000,
-      });
-      const p = fakeProc({ stderrChunks: [enc.encode("CUDA error: out of memory\n")] });
-      const h = buildHarness(cfg, () => p);
-      const manager = createLlamaServeManager(h.deps);
-
-      const err = await expectRejection(manager.start());
-      expect(err.message).toContain("did not become ready within 3000ms");
-      expect(err.message).toContain("CUDA error: out of memory");
-      expect(p.killCalls).toContain("SIGKILL");
-    } finally {
-      server.stop();
-    }
-  });
-
-  test("stderr diagnostics tail is bounded to 4KB", async () => {
-    const cfg = baseConfig({ port: 18081 });
-    const big = "E".repeat(10000);
-    const p = fakeProc({ stderrChunks: [enc.encode(big)], exitCode: 3 });
-    p.resolveExited(3);
-    const h = buildHarness(cfg, () => p);
-    const manager = createLlamaServeManager(h.deps);
-
-    const err = await expectRejection(manager.start());
-    expect(err.message).toContain("last stderr:");
-    expect(err.message).toContain("E".repeat(4096)); // tail kept
-    expect(err.message).not.toContain("E".repeat(5000)); // head dropped
-  });
-
-  test("spawn failure (Bun.spawn sync ENOENT) → start() rejects, state error", async () => {
-    const cfg = baseConfig({ port: 18082 });
-    const h = buildHarness(cfg, () => {
-      throw new Error("ENOENT: no such file or directory, posix_spawn '/nope'");
-    });
-    const manager = createLlamaServeManager(h.deps);
-
-    const err = await expectRejection(manager.start());
-    expect(err.message).toContain("ENOENT");
-    expect(manager.status().state).toBe("error");
-    expect(h.logs.join("\n")).toContain("spawn error:");
   });
 });
 
-describe("supervision and restart (S1.2)", () => {
-  test("unexpected exit → restart with backoff delay → ready again; backoff resets on success", async () => {
-    const server = healthServer();
-    try {
-      const cfg = baseConfig({ port: server.port, maxRestartAttempts: 5, backoffCapMs: 8000 });
-      const h = buildHarness(cfg, () => fakeProc());
-      const manager = createLlamaServeManager(h.deps);
-
-      await manager.start();
-      expect(manager.status().state).toBe("running");
-      expect(h.spawnCalls).toHaveLength(1);
-
-      // Crash the running child: supervision must restart it (exited-based).
-      h.procs[0].resolveExited(3);
-      await waitUntil(() => h.spawnCalls.length === 2);
-      await waitUntil(() => manager.status().state === "running");
-
-      expect(h.logs.join("\n")).toContain(
-        "backend exited unexpectedly (code=3, signal=n/a)",
-      );
-      expect(h.logs.join("\n")).toContain("restarting in 1000ms (backoff)");
-      expect(h.logs.join("\n")).toContain("attempting restart...");
-      // The stderr flush (50ms grace) may precede the backoff sleep in the
-      // sleep log — what matters is the backoff delay value itself.
-      expect(h.sleepCalls).toContain(1000); // BACKOFF_INITIAL_MS
-
-      // After a successful restart the backoff resets: next crash schedules 1000 again.
-      h.procs[1].resolveExited(1);
-      await waitUntil(() => h.spawnCalls.length === 3);
-      expect(h.sleepCalls).toContain(1000);
-      expect(h.logs.join("\n")).toContain("restarting in 1000ms (backoff)");
-    } finally {
-      server.stop();
-    }
-  });
-
-  test("restart cap: after maxRestartAttempts the manager stops retrying, dumps stderr, state error", async () => {
-    const server = healthServer();
-    try {
-      const cfg = baseConfig({ port: server.port, maxRestartAttempts: 2 });
-      const h = buildHarness(cfg, () => fakeProc());
-      const manager = createLlamaServeManager(h.deps);
-
-      await manager.start(); // spawn #1
-
-      h.procs[0].resolveExited(3);
-      await waitUntil(() => h.spawnCalls.length === 2); // spawn #2 (restart 1)
-      await waitUntil(() => manager.status().state === "running");
-
-      h.procs[1].resolveExited(3);
-      await waitUntil(() => h.spawnCalls.length === 3); // spawn #3 (restart 2)
-      await waitUntil(() => manager.status().state === "running");
-
-      // Third crash exceeds the cap: no fourth spawn, error state, no orphan.
-      h.procs[2].resolveExited(3);
-      await waitUntil(() => h.logs.join("\n").includes("failed to stay up after 2 attempts"));
-
-      const logs = h.logs.join("\n");
-      expect(h.spawnCalls).toHaveLength(3);
-      expect(manager.status().state).toBe("error");
-      expect(logs).toContain("backend failed to stay up after 2 attempts — check port/config conflicts");
-      expect(logs).toContain("last stderr:");
-      expect(logs).toContain("(no stderr captured)");
-    } finally {
-      server.stop();
-    }
-  });
-
-  test("stop(): SIGTERM first, no restart after stop, state stopped", async () => {
-    const server = healthServer();
-    try {
-      const cfg = baseConfig({ port: server.port });
-      const h = buildHarness(cfg, () => fakeProc());
-      const manager = createLlamaServeManager(h.deps);
-
-      await manager.start();
-      const stopPromise = manager.stop();
-      expect(h.procs[0].killCalls).toEqual(["SIGTERM"]);
-
-      h.procs[0].resolveExited(143); // graceful SIGTERM exit
-      await stopPromise;
-
-      const st = manager.status();
-      expect(st.state).toBe("stopped");
-      expect(st.pid).toBeNull();
-      expect(h.logs.join("\n")).toContain("backend stopped");
-      expect(h.logs.join("\n")).not.toContain("restarting in");
-      expect(h.spawnCalls).toHaveLength(1); // never restarted
-    } finally {
-      server.stop();
-    }
-  });
-
-  test("stop(): SIGKILL fallback after stopTimeoutMs when child ignores SIGTERM", async () => {
-    const server = healthServer();
-    try {
-      const cfg = baseConfig({ port: server.port, stopTimeoutMs: 5000 });
-      const h = buildHarness(cfg, () => fakeProc());
-      const manager = createLlamaServeManager(h.deps);
-
-      await manager.start();
-      // exited stays pending forever → the stop timeout must force SIGKILL.
-      await manager.stop();
-
-      expect(h.procs[0].killCalls).toEqual(["SIGTERM", "SIGKILL"]);
-      expect(h.logs.join("\n")).toContain("SIGKILL sent to pid=12345");
-      expect(manager.status().state).toBe("stopped");
-    } finally {
-      server.stop();
-    }
-  });
+test("idle timeout default is 10 minutes (binding Decision 6)", () => {
+  expect(IDLE_TIMEOUT_MS).toBe(10 * 60 * 1000);
 });
 
-// ── F2: unloadWorker (kill a model worker by pid) ────────────────────────────
-
-/** Liveness probe matching the manager's implementation (signal 0). */
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-describe("unloadWorker (F2 worker unload)", () => {
-  test("kills a real child process: SIGTERM → wait → exit", async () => {
-    const logs: string[] = [];
-    const manager = createLlamaServeManager({
-      config: baseConfig(),
-      logger: (m) => logs.push(m),
-    });
-    const child = Bun.spawn({
-      cmd: ["sleep", "30"],
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    try {
-      expect(child.pid).toBeGreaterThan(0);
-      const ok = await manager.unloadWorker(child.pid);
-      expect(ok).toBe(true);
-      await Bun.sleep(50); // let the OS reap/settle the exit
-      expect(processAlive(child.pid)).toBe(false);
-      expect(logs.join("\n")).toContain("SIGTERM sent to worker");
-    } finally {
-      if (processAlive(child.pid)) child.kill("SIGKILL");
-      await child.exited.catch(() => {});
-    }
-  });
-
-  test("already-gone pid resolves true (goal state reached, nothing to kill)", async () => {
-    const logs: string[] = [];
-    const manager = createLlamaServeManager({
-      config: baseConfig(),
-      logger: (m) => logs.push(m),
-    });
-    // 2^22 == the max default pid_t — kill(pid, 0) must ESRCH on Linux.
-    expect(await manager.unloadWorker(2 ** 22)).toBe(true);
-    expect(logs.join("\n")).not.toContain("SIGTERM");
-  });
-
-  test("SIGKILL fallback when the child ignores SIGTERM", async () => {
-    const logs: string[] = [];
-    const manager = createLlamaServeManager({
-      config: baseConfig(),
-      logger: (m) => logs.push(m),
-      // Fast sleep so the 2s grace is not spent in real time.
-      sleep: async (ms) => Bun.sleep(ms / 100),
-    });
-    const child = Bun.spawn({
-      cmd: ["sh", "-c", "trap '' TERM; sleep 30"],
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    try {
-      expect(child.pid).toBeGreaterThan(0);
-      // Race guard: the trap must be installed BEFORE the manager's SIGTERM —
-      // otherwise sh dies on the default disposition and the fallback never
-      // fires. 150ms >> shell startup; the test then polls under 100x fast sleep.
-      await Bun.sleep(150);
-      const ok = await manager.unloadWorker(child.pid);
-      expect(ok).toBe(true);
-      await Bun.sleep(50);
-      expect(processAlive(child.pid)).toBe(false);
-      expect(logs.join("\n")).toContain("SIGKILL sent to worker");
-    } finally {
-      if (processAlive(child.pid)) child.kill("SIGKILL");
-      await child.exited.catch(() => {});
-    }
-  });
-});
-
-// ── F2: unloadModel (router-API-first unload) ─────────────────────────────────
-
-describe("unloadModel (F2 router-API-first unload)", () => {
-  test("router API 200 → waits for the worker, escalates to SIGKILL when it lingers", async () => {
-    const logs: string[] = [];
-    const routerApi = Bun.serve({
-      port: 0,
-      fetch: (req) => {
-        if (
-          req.method === "POST" &&
-          new URL(req.url).pathname === "/models/unload"
-        ) {
-          return new Response(JSON.stringify({ success: true }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        return new Response("not found", { status: 404 });
-      },
-    });
-    const manager = createLlamaServeManager({
-      config: baseConfig({ port: routerApi.port }),
-      logger: (m) => logs.push(m),
-      // Fast sleep so the 3s exit grace is not spent in real time.
-      sleep: async (ms) => Bun.sleep(ms / 100),
-    });
-    const child = Bun.spawn({
-      cmd: ["sleep", "30"],
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    try {
-      // The router accepted the unload but the child outlives the API grace
-      // (router-side unload is async) → the manager escalates to SIGKILL.
-      const ok = await manager.unloadModel("m1", child.pid);
-      expect(ok).toBe(true);
-      await Bun.sleep(50); // let the OS reap/settle the exit
-      expect(processAlive(child.pid)).toBe(false);
-      expect(logs.join("\n")).toContain("router API unload: model=m1");
-      expect(logs.join("\n")).toContain("SIGKILL after API unload timeout");
-    } finally {
-      if (processAlive(child.pid)) child.kill("SIGKILL");
-      await child.exited.catch(() => {});
-      routerApi.stop();
-    }
-  });
-
-  test("router API non-2xx (e.g. 'model is not found') → SIGTERM kill fallback", async () => {
-    const logs: string[] = [];
-    const routerApi = Bun.serve({
-      port: 0,
-      fetch: () =>
-        new Response(JSON.stringify({ error: "model is not found" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }),
-    });
-    const manager = createLlamaServeManager({
-      config: baseConfig({ port: routerApi.port }),
-      logger: (m) => logs.push(m),
-      sleep: async (ms) => Bun.sleep(ms / 100),
-    });
-    const child = Bun.spawn({
-      cmd: ["sleep", "30"],
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    try {
-      const ok = await manager.unloadModel("m1", child.pid);
-      expect(ok).toBe(true);
-      await Bun.sleep(50);
-      expect(processAlive(child.pid)).toBe(false);
-      expect(logs.join("\n")).toContain("SIGTERM sent to worker");
-      expect(logs.join("\n")).not.toContain("router API unload");
-    } finally {
-      if (processAlive(child.pid)) child.kill("SIGKILL");
-      await child.exited.catch(() => {});
-      routerApi.stop();
-    }
-  });
-
-  test("already-gone pid resolves true without touching the router", async () => {
-    const logs: string[] = [];
-    let apiHits = 0;
-    const routerApi = Bun.serve({
-      port: 0,
-      fetch: () => {
-        apiHits++;
-        return new Response(JSON.stringify({ success: true }), { status: 200 });
-      },
-    });
-    const manager = createLlamaServeManager({
-      config: baseConfig({ port: routerApi.port }),
-      logger: (m) => logs.push(m),
-    });
-    try {
-      expect(await manager.unloadModel("m1", 2 ** 22)).toBe(true);
-      expect(apiHits).toBe(0);
-      expect(logs.join("\n")).not.toContain("SIGTERM");
-    } finally {
-      routerApi.stop();
-    }
+describe("idleElapsed — pure idle decision", () => {
+  test("returns true only once the idle timeout has passed since the last request", () => {
+    const now = 5 * 60 * 1000;
+    expect(idleElapsed(now - 1000, now, IDLE_TIMEOUT_MS)).toBe(false);
+    expect(idleElapsed(now - IDLE_TIMEOUT_MS, now, IDLE_TIMEOUT_MS)).toBe(true);
+    expect(idleElapsed(now - IDLE_TIMEOUT_MS - 1, now, IDLE_TIMEOUT_MS)).toBe(true);
   });
 });

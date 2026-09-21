@@ -14,10 +14,15 @@
 
 name: release
 
-on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+# DISABLED during the WeaveLLM rewrite: the tag-trigger is commented below;
+# the jobs still compile the legacy src/index.ts entrypoint and must be
+# re-pointed at the new build pipeline (phase 7) before re-enabling the
+# trigger. A workflow without `on:` is ignored by GitHub Actions.
+
+# on:
+#   push:
+#     tags:
+#       - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   # Creating the release requires write on contents.

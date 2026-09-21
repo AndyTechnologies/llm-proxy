@@ -24,8 +24,23 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+
+    /* The `electrobun` npm package is a throw-on-import bootstrap stub; the
+       real SDK is projected by the Hutch devkit after `hutch electrobun
+       prepare`. Until then, resolve the verified v2 API from our ambient
+       declarations in types/electrobun.d.ts. */
+    "paths": {
+      "electrobun": ["./types/electrobun.d.ts"],
+      "electrobun/main": ["./types/electrobun.d.ts"]
+    }
   },
-  "include": ["src/**/*.ts", "e2e/**/*.ts", "scripts/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "e2e/**/*.ts",
+    "scripts/**/*.ts",
+    "*.config.ts",
+    "types/**/*.ts"
+  ],
   "exclude": ["node_modules", "dist", "test-results", "playwright-report"]
 }

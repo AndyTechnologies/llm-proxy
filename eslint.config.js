@@ -46,6 +46,10 @@ export default defineConfig([
 	{
 		ignores: [
 			"dist/**",
+			"frontend/dist/**",
+			"build/**",
+			"artifacts/**",
+			".hutch/**",
 			"test-results/**",
 			"playwright-report/**",
 			"blob-report/**",

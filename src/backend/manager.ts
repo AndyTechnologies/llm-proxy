@@ -1,45 +1,45 @@
 /**
- * LlamaServeManager — lifecycle manager for the managed llama-server process.
+ * LlamaProcessManager — single-model llama-server lifecycle (backend-management).
  *
- * Spawns `llama serve` in router mode via Bun.spawn, waits for readiness via
- * health-check polling, supervises with exponential-backoff restart on
- * unexpected exit (bounded by config.maxRestartAttempts, fail-fast when
- * exceeded), and performs graceful shutdown (SIGTERM → timeout → SIGKILL).
+ * Spawns ONE `llama-server` per active model with `--port 0`, detects the
+ * bound port from stdout (`listening on ...:(\d+)`), gates readiness on a
+ * health poll before state becomes `running`, supervises with exponential-
+ * backoff restart on unexpected exit (bounded by maxRestartAttempts), and
+ * stops gracefully after an idle timeout (SIGTERM semantics via `kill`).
  *
- * The manager is the single source of truth for:
- *  - Whether the backend is running (status().state)
- *  - The dynamic port the backend is listening on (status().baseUrl)
- *  - Which models are registered (status().models)
+ * Fail-fast boot: if the port is never announced / never healthy within
+ * startTimeoutMs, the child is killed and start() rejects with an actionable
+ * message including the stderr tail. EADDRINUSE in stderr gets a dedicated
+ * actionable error.
  *
- * DESIGN DECISION: the manager validates config, creates the preset INI,
- * spawns the process, and polls readiness. This keeps the boot sequence
- * simple: one `await manager.start()` call before `app.listen()`.
- *
- * MIGRATION (S1, Bun 1.4.0): `node:child_process` → `Bun.spawn`. Exit
- * supervision uses the `exited` Promise and its live `exitCode`/`signalCode`
- * (Bun's Subprocess has no onExit — runtime-verified). stdout/stderr chunks
- * are Uint8Array and are decoded before port-regex/log matching. The spawn
- * primitive and the clock are injected (spawnFn/now/sleep, ADR-3) because
- * `mock.module("bun")` cannot intercept the builtin bun module.
+ * The spawn primitive, clock, sleep, and health check are injected (DI) so
+ * the whole lifecycle is testable with fakes — no real llama-server needed.
+ * Preset/router mode is gone: per-model flags come from buildLlamaSpawnArgs
+ * (SQLite model config), and the b9908+ floor is enforced via `--version`.
  */
-import { spawn } from "bun";
-import path from "node:path";
-import { validateBackendConfig } from "./validation.js";
-import { writePresetIni } from "./preset.js";
-import type { LlamaConfig } from "../config/schema.js";
+import { buildLlamaSpawnArgs, checkLlamaVersionFloor, parseListeningPort, type LlamaSpawnArgsInput } from "./spawn-args.js";
 
-/** Backend operational status. */
+/** Default idle timeout: a backend with no requests for 10 minutes stops. */
+export const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/** Backoff window after an unexpected exit: 1s, then 2s, 4s, ... capped. */
+const BACKOFF_INITIAL_MS = 1000;
+const BACKOFF_MAX_MS = 30_000;
+/** How often the idle watchdog wakes. */
+const IDLE_POLL_MS = 1000;
+/** Bounded stderr tail (last 4KB) for fail-fast diagnostics. */
+const MAX_STDERR_BYTES = 4096;
+
+export type BackendState = "starting" | "running" | "stopped" | "error";
+
+/** Operational status consumers read (routes, dashboard, /api). */
 export interface BackendStatus {
-  state: "starting" | "running" | "stopped" | "error";
+  state: BackendState;
   pid: number | null;
-  models: string[];
-  baseUrl: string;
+  port: number | null;
+  baseUrl: string | null;
 }
 
-/**
- * Minimal process surface the manager supervises — a structural subset of
- * Bun's Subprocess (stdout/stderr piped, so the streams are non-null).
- */
+/** Minimal process surface the manager supervises (subset of Bun's Subprocess). */
 export interface SpawnedProc {
   pid: number | null;
   exitCode: number | null;
@@ -50,599 +50,339 @@ export interface SpawnedProc {
   kill(signal?: string): void;
 }
 
-/** Spawn primitive. Real default is Bun.spawn; tests inject fakes (ADR-3). */
-export type SpawnFn = (
-  cmd: string,
-  args: string[],
-  opts: { env: Record<string, string | undefined> },
-) => SpawnedProc;
+/** Spawn primitive; real default is Bun.spawn, tests inject fakes. */
+export type SpawnFn = (cmd: string, args: string[]) => SpawnedProc;
 
-/** Factory deps — injected by the entry point. */
+/** Injected deps + configuration for one managed backend. */
 export interface ManagerDeps {
-  config: LlamaConfig;
-  logger?: (msg: string) => void;
+  /** llama-server binary path (defaults resolved by the wiring site). */
+  binary: string;
+  /** Resolved spawn config for the active model (model_config + GGUF YaRN). */
+  run: LlamaSpawnArgsInput;
   spawnFn?: SpawnFn;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
-  /**
-   * Resolve the EFFECTIVE context (tokens) for a model id — the per-model
-   * value written into the preset INI section. When absent, the raw config
-   * `ctx` (or nothing) is used, preserving the legacy behavior.
-   */
-  modelContextFor?: (id: string) => number | undefined;
+  /** Readiness probe; defaults to real GET /health against the parsed port. */
+  healthCheck?: (baseUrl: string) => Promise<boolean>;
+  log?: (msg: string) => void;
+  idleTimeoutMs?: number;
+  idlePollMs?: number;
+  startTimeoutMs?: number;
+  healthPollMs?: number;
+  maxRestartAttempts?: number;
 }
-
-/** Initial restart backoff; growth and cap come from config (healthPoll/backoffCap). */
-const BACKOFF_INITIAL_MS = 1000;
-/** Bounded stderr tail (last 4KB) for fail-fast diagnostics. */
-const MAX_STDERR_BYTES = 4096;
-/** Health-poll fetch timeout — a hung socket must not stall readiness. */
-const HEALTH_FETCH_TIMEOUT_MS = 2000;
-/** Router-API unload fetch timeout (F2) — a hung router must not stall a tick. */
-const UNLOAD_API_TIMEOUT_MS = 3000;
-/** After a router-API unload (async on the router side) the child has up to
- *  `stop_timeout` (default 10s) to exit; we bound our own wait at 3s then
- *  SIGKILL so the lifecycle sees the worker gone within one tick. */
-const WORKER_EXIT_GRACE_MS = 3000;
-/** Liveness poll cadence while waiting for a worker process to exit. */
-const WORKER_EXIT_POLL_MS = 300;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Process liveness via signal 0 (no signal is delivered). Real PID only —
- * the worker processes are NOT children of this Bun process, so Bun's
- * Subprocess surface does not apply to them.
- */
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+/** Pure idle decision: true once `idleTimeoutMs` passes since lastRequestAt. */
+export function idleElapsed(lastRequestAt: number, now: number, idleTimeoutMs: number): boolean {
+  return now - lastRequestAt >= idleTimeoutMs;
 }
 
-function defaultSpawn(
-  cmd: string,
-  args: string[],
-  opts: { env: Record<string, string | undefined> },
-): SpawnedProc {
-  // stdout/stderr are piped (ReadableStream<Uint8Array>); stdin is unused.
-  // Cast: with "pipe" the streams are non-null, matching the SpawnedProc
-  // contract the manager supervises.
-  return spawn({
+function defaultSpawn(cmd: string, args: string[]): SpawnedProc {
+  // stdout/stderr piped (ReadableStream<Uint8Array>); stdin unused. The cast
+  // narrows the structural subset the manager supervises.
+  return Bun.spawn({
     cmd: [cmd, ...args],
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
-    env: opts.env,
-  }) as SpawnedProc;
+  }) as unknown as SpawnedProc;
 }
 
-export class LlamaServeManager {
-  private readonly config: LlamaConfig;
-  private readonly modelsDir: string;
-  private readonly log: (msg: string) => void;
+export class LlamaProcessManager {
   private readonly spawnFn: SpawnFn;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly modelContextFor?: (id: string) => number | undefined;
-  private child: SpawnedProc | null = null;
-  private intentionallyStopped = false;
-  private backoffMs = BACKOFF_INITIAL_MS;
-  private port: number;
-  private _status: BackendStatus;
-  /** Bounded stderr tail (last 4KB) for fail-fast diagnostics. */
-  private lastStderr = "";
-  /** Resolves when the current child's stderr stream has been fully consumed. */
-  private stderrComplete: Promise<void> = Promise.resolve();
-  /** Unexpected-exit restart cycles since boot; capped by maxRestartAttempts. */
-  private restartCount = 0;
+  private readonly healthCheck: (baseUrl: string) => Promise<boolean>;
+  private readonly log: (msg: string) => void;
+  private readonly idleTimeoutMs: number;
+  private readonly idlePollMs: number;
+  private readonly startTimeoutMs: number;
+  private readonly healthPollMs: number;
+  private readonly maxRestartAttempts: number;
 
-  constructor(deps: ManagerDeps) {
-    this.config = deps.config;
-    this.modelsDir = path.resolve(deps.config.modelsDir);
-    this.log = deps.logger ?? console.log;
+  private proc: SpawnedProc | null = null;
+  private state: BackendState = "stopped";
+  private port: number | null = null;
+  private _startedAt = 0;
+  private lastRequestAt: number;
+  private watching = false;
+  private restartAttempts = 0;
+  private stopRequested = false;
+
+  constructor(private readonly deps: ManagerDeps) {
     this.spawnFn = deps.spawnFn ?? defaultSpawn;
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? defaultSleep;
-    this.modelContextFor = deps.modelContextFor;
-    this.port = deps.config.port;
-    this._status = {
-      state: "stopped",
-      pid: null,
-      models: Object.keys(deps.config.models),
-      baseUrl: `http://${deps.config.host}:${this.port}`,
+    this.healthCheck = deps.healthCheck ?? defaultHealthCheck;
+    this.log = deps.log ?? (() => {});
+    this.idleTimeoutMs = deps.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
+    this.idlePollMs = deps.idlePollMs ?? IDLE_POLL_MS;
+    this.startTimeoutMs = deps.startTimeoutMs ?? 30_000;
+    this.healthPollMs = deps.healthPollMs ?? 300;
+    this.maxRestartAttempts = deps.maxRestartAttempts ?? 5;
+    this.lastRequestAt = this.now();
+  }
+
+  /** The last spawn attempt — separated so tests can inject a seeded proc. */
+  spawnOnce(): SpawnedProc {
+    const args = buildLlamaSpawnArgs(this.deps.run);
+    return this.spawnFn(this.deps.binary, args);
+  }
+
+  /**
+   * Boot the backend: spawn → parse port from stdout → health-poll until
+   * ready or startTimeoutMs. Rejects (and kills the child) on failure with
+   * an actionable message — the proxy never accepts traffic before this.
+   */
+  async start(): Promise<void> {
+    this.state = "starting";
+    this.stopRequested = false;
+    this._startedAt = this.now();
+    this.restartAttempts = 0;
+    const proc = this.spawnOnce();
+    this.proc = proc;
+
+    const [port, stderrTail] = await this.waitForPortAndTail(proc);
+    if (this.stopRequested) {
+      this.state = "stopped";
+      return;
+    }
+    if (port === null) {
+      this.state = "error";
+      await this.killProc(proc);
+      const eaddr = /EADDRINUSE|address already in use/i.test(stderrTail);
+      throw new Error(
+        eaddr
+          ? `backend failed to bind: port already in use (EADDRINUSE). Free the port or restart the app.`
+          : `llama-server never announced a listening port within ${this.startTimeoutMs} ms. ` +
+            `stderr tail: ${stderrTail || "(empty)"}`,
+      );
+    }
+    this.port = port;
+
+    const baseUrl = this.baseUrlFor(port);
+    await this.waitHealthy(baseUrl, proc, stderrTail);
+
+    this.state = "running";
+    this.lastRequestAt = this.now();
+    this.monitorExit(proc, baseUrl);
+    this.watchIdle();
+    this.log(`backend ready at ${baseUrl} (pid ${proc.pid ?? "?"})`);
+  }
+
+  /** Run `--version` and enforce the b9908+ floor; returns the build tag. */
+  async checkVersion(): Promise<string> {
+    const proc = this.spawnFn(this.deps.binary, ["--version"]);
+    const [stdout, stderr] = await Promise.all([
+      collectAll(proc.stdout),
+      collectAll(proc.stderr),
+    ]);
+    await drain(proc);
+    return checkLlamaVersionFloor(`${stdout}${stderr}`);
+  }
+
+  /** Touch the idle watchdog (call on every proxied request). */
+  noteRequest(): void {
+    this.lastRequestAt = this.now();
+  }
+
+  status(): BackendStatus {
+    return {
+      state: this.state,
+      pid: this.proc?.pid ?? null,
+      port: this.port,
+      baseUrl: this.port === null ? null : this.baseUrlFor(this.port),
     };
   }
 
-  /** Current backend status (call after start() for running state). */
-  status(): BackendStatus {
-    return { ...this._status };
-  }
-
-  /**
-   * Resolve the EFFECTIVE context (tokens) for a model id, when the entry
-   * point provided the mapping. `undefined` means "no effective value known" —
-   * callers fall back to the raw config ctx.
-   */
-  modelContext(id: string): number | undefined {
-    return this.modelContextFor?.(id);
-  }
-
-  /** Full startup sequence: validate → preset → spawn → wait-ready. */
-  async start(): Promise<void> {
-    this.intentionallyStopped = false;
-
-    // 1. Fail-fast validation (binary, modelsDir, GGUF files)
-    validateBackendConfig(this.config);
-
-    if (!this.config.autoStart) {
-      this.log("[manager] autoStart is false — skipping backend spawn");
-      this._status = {
-        state: "stopped",
-        pid: null,
-        models: Object.keys(this.config.models),
-        baseUrl: "",
-      };
-      return;
-    }
-
-    // 2. Generate preset INI (Bun.file write). Per-model `ctx-size` sections
-    //    are rendered from the effective context when a resolver is provided.
-    const presetPath = await writePresetIni(
-      this.config,
-      this.modelsDir,
-      this.modelContextFor,
-    );
-
-    // 3. Spawn llama serve
-    this._status = { ...this._status, state: "starting" };
-    await this.spawnAndWaitReady(presetPath);
-
-    this.log(
-      `[manager] backend ready: pid=${this._status.pid}, baseUrl=${this._status.baseUrl}`,
-    );
-  }
-
-  /** Graceful shutdown: SIGTERM → wait → SIGKILL. */
+  /** Graceful stop: SIGTERM-style kill; terminal state. */
   async stop(): Promise<void> {
-    this.intentionallyStopped = true;
-
-    if (!this.child || !this.child.pid) {
-      this._status = { ...this._status, state: "stopped", pid: null };
-      return;
+    this.stopRequested = true;
+    this.watching = false;
+    const proc = this.proc;
+    if (proc && this.state !== "stopped") {
+      await this.killProc(proc);
     }
-
-    const child = this.child;
-    const pid = child.pid;
-    this.log(`[manager] stopping backend (pid=${pid})`);
-
-    // SIGTERM
-    child.kill("SIGTERM");
-
-    // Wait for the exit (via the `exited` Promise — no onExit in Bun) or fall
-    // back to SIGKILL after stopTimeoutMs. Race semantics match the previous
-    // exit-event + timeout implementation.
-    await new Promise<void>((resolve) => {
-      let exited = false;
-      const finish = () => {
-        if (!exited) {
-          exited = true;
-          resolve();
-        }
-      };
-      void child.exited.then(finish, finish);
-      void this.sleep(this.config.stopTimeoutMs).then(() => {
-        if (exited) return; // clean exit observed — SIGKILL unnecessary
-        try {
-          child.kill("SIGKILL");
-          this.log(`[manager] SIGKILL sent to pid=${pid}`);
-        } catch {
-          // process already gone
-        }
-        finish();
-      });
-    });
-
-    this.child = null;
-    this._status = { ...this._status, state: "stopped", pid: null };
-    this.log("[manager] backend stopped");
+    this.proc = null;
+    this.state = "stopped";
   }
 
-  /**
-   * Unload a model worker process (F2 lifecycle): SIGTERM → wait ~2s → SIGKILL.
-   *
-   * The llama.cpp router runs each loaded model in its own isolated child;
-   * the lifecycle controller kills that child to unload the model and the
-   * router respawns it on the next request (autoload is the default).
-   *
-   * @returns true when the process is no longer alive after the attempt
-   *   (including "already gone" — the goal state) — false only when a signal
-   *   could not be delivered to a still-alive process.
-   */
-  async unloadWorker(pid: number): Promise<boolean> {
-    if (!isProcessAlive(pid)) return true; // already gone — nothing to do
+  // ── internals ────────────────────────────────────────────────────────
 
-    try {
-      process.kill(pid, "SIGTERM");
-      this.log(`[manager] SIGTERM sent to worker pid=${pid}`);
-    } catch (err) {
-      this.log(`[manager] worker kill failed (pid=${pid}): ${(err as Error).message}`);
-      return false;
-    }
-
-    if (await this.waitForWorkerExit(pid, 2000)) return true; // clean exit
-
-    try {
-      process.kill(pid, "SIGKILL");
-      this.log(`[manager] SIGKILL sent to worker pid=${pid}`);
-    } catch {
-      // already gone — fine
-    }
-    return true;
+  private baseUrlFor(port: number): string {
+    return `http://127.0.0.1:${port}`;
   }
 
-  /**
-   * F2: unload a model worker preferring the llama-server router's HTTP API
-   * (`POST /models/unload` with `{"model": <id>}` — verified against
-   * llama.cpp server.cpp router mode) so the router's model state map and SSE
-   * clients stay consistent. The router-side unload is async (the child exits
-   * on the monitor thread, force-killed after `stop_timeout`, default 10s);
-   * we bound our own wait, then SIGKILL a lingering child — the router marks
-   * it UNLOADED on exit either way.
-   *
-   * Falls back to the signal path (unloadWorker) when the router is
-   * unreachable, the endpoint is absent (older build), or the API errors.
-   *
-   * @returns true when the worker is no longer alive after the attempt
-   *   (including "already gone") — false only when the kill fallback could
-   *   not deliver a signal to a still-alive process.
-   */
-  async unloadModel(modelId: string, pid: number): Promise<boolean> {
-    if (!isProcessAlive(pid)) return true; // goal state already reached
-    const baseUrl = this._status.baseUrl;
-    if (!baseUrl) return this.unloadWorker(pid);
+  /** Read stdout until the listening line appears (or timeout), tailing stderr. */
+  private async waitForPortAndTail(proc: SpawnedProc): Promise<[number | null, string]> {
+    const stderrTail: string[] = [];
+    const stdoutReader = proc.stdout.getReader();
+    const stderrReader = proc.stderr.getReader();
+
+    // Read stderr concurrently, bounded to the last MAX_STDERR_BYTES.
+    void this.tailStderr(stderrReader, stderrTail);
 
     try {
-      const res = await fetch(`${baseUrl}/models/unload`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: modelId }),
-        signal: AbortSignal.timeout(UNLOAD_API_TIMEOUT_MS),
-      });
-      if (!res.ok) return this.unloadWorker(pid); // e.g. "model is not found"
-
-      this.log(`[manager] router API unload: model=${modelId}`);
-      if (await this.waitForWorkerExit(pid, WORKER_EXIT_GRACE_MS)) return true;
-
-      try {
-        process.kill(pid, "SIGKILL");
-        this.log(`[manager] SIGKILL after API unload timeout: model=${modelId}, pid=${pid}`);
-      } catch {
-        // already gone — fine
-      }
-      return true;
-    } catch {
-      // Router unreachable / endpoint absent (older build) → signal path.
-      return this.unloadWorker(pid);
-    }
-  }
-
-  // ── Private ──
-
-  /** Poll the process liveness until it exits or the grace budget is spent. */
-  private async waitForWorkerExit(pid: number, graceMs: number): Promise<boolean> {
-    let waited = 0;
-    while (waited < graceMs) {
-      await this.sleep(WORKER_EXIT_POLL_MS);
-      waited += WORKER_EXIT_POLL_MS;
-      if (!isProcessAlive(pid)) return true;
-    }
-    return false;
-  }
-
-  private async spawnAndWaitReady(presetPath: string): Promise<void> {
-    const args = this.buildSpawnArgs(presetPath);
-
-    this.log(
-      `[manager] spawning: ${this.config.binary} ${args.join(" ")}`,
-    );
-
-    try {
-      this.child = this.spawnFn(this.config.binary, args, {
-        env: {
-          ...process.env,
-          CUDA_VISIBLE_DEVICES: process.env.CUDA_VISIBLE_DEVICES ?? "0",
-        },
-      });
-    } catch (err) {
-      // Bun.spawn throws synchronously on posix_spawn failure (ENOENT).
-      this.log(`[manager] spawn error: ${(err as Error).message}`);
-      this._status = { ...this._status, state: "error" };
-      throw err;
-    }
-
-    this._status = { ...this._status, pid: this.child.pid ?? null };
-
-    // Pipe stdout/stderr to console (observability). Chunks are Uint8Array —
-    // decode before any text matching.
-    void this.consumeStdout(this.child, (text) => {
-      process.stdout.write(text);
-      this.detectPort(text);
-    });
-    this.stderrComplete = this.consumeStderr(this.child, (text) => {
-      process.stderr.write(text);
-      this.detectPort(text); // llama.cpp logs its banner to stderr
-      this.captureStderr(text);
-    });
-
-    // Supervised restart on unexpected exit (`exited` replaces onExit).
-    void this.supervise();
-
-    await this.waitForReady();
-  }
-
-  private async consumeStdout(
-    proc: SpawnedProc,
-    onChunk: (text: string) => void,
-  ): Promise<void> {
-    try {
-      const reader = proc.stdout.getReader();
-      const decoder = new TextDecoder();
       for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value && value.length > 0) onChunk(decoder.decode(value));
+        const remaining = this.startTimeoutMs - (this.now() - this._startedAt);
+        if (remaining <= 0) break; // deadline without a port line → fail fast
+        const result = await Promise.race([
+          stdoutReader.read().then((r) => ({ kind: "chunk" as const, ...r })),
+          this.sleep(remaining).then(() => ({ kind: "timeout" as const })),
+        ]);
+        if (result.kind === "timeout") break;
+        if (result.done) break;
+        const line = new TextDecoder().decode(result.value);
+        const port = parseListeningPort(line);
+        if (port !== null) {
+          await stdoutReader.cancel();
+          return [port, stderrTail.join("")];
+        }
       }
     } catch {
-      // Stream closed mid-read — nothing to supervise here.
+      // stream error → treat as no port
     }
+    try {
+      await stdoutReader.cancel();
+    } catch {
+      // already cancelled
+    }
+    return [null, stderrTail.join("")];
   }
 
-  private async consumeStderr(
-    proc: SpawnedProc,
-    onChunk: (text: string) => void,
+  private async tailStderr(
+    reader: { read(): Promise<{ done: boolean; value?: Uint8Array }> },
+    tail: string[],
   ): Promise<void> {
+    let bytes = 0;
     try {
-      const reader = proc.stderr.getReader();
-      const decoder = new TextDecoder();
       for (;;) {
-        const { done, value } = await reader.read();
+        const { value, done } = await reader.read();
         if (done) break;
-        if (value && value.length > 0) onChunk(decoder.decode(value));
+        if (value) {
+          bytes += value.byteLength;
+          if (bytes > MAX_STDERR_BYTES * 4) {
+            tail.length = 0; // keep the tail bounded
+            bytes = 0;
+          }
+          tail.push(new TextDecoder().decode(value));
+        }
       }
     } catch {
-      // Stream closed mid-read — nothing to supervise here.
+      // stream teardown during stop — ignore
     }
   }
 
-  /** Await `exited` and react to an unexpected process death. */
-  private async supervise(): Promise<void> {
-    const child = this.child;
-    if (!child) return;
-
-    let code: number;
-    try {
-      code = await child.exited;
-    } catch (err) {
-      this.log(`[manager] spawn error: ${(err as Error).message}`);
-      this._status = { ...this._status, state: "error" };
-      return;
-    }
-
-    if (this.intentionallyStopped) return;
-    if (this._status.state === "starting") return; // startup death handled by waitForReady
-
-    const signal = child.signalCode ?? "n/a";
-    this.log(
-      `[manager] backend exited unexpectedly (code=${code}, signal=${signal})`,
-    );
-    this._status = { ...this._status, state: "error" };
-
-    // Drain pending stderr before building diagnostics.
-    await this.flushStderr();
-
-    // Fail-fast restart cap: after maxRestartAttempts unexpected exits, stop
-    // retrying and surface a clear error instead of crash-looping forever.
-    const maxAttempts = this.config.maxRestartAttempts;
-    if (maxAttempts > 0 && this.restartCount >= maxAttempts) {
-      this.log(
-        `[manager] backend failed to stay up after ${this.restartCount} attempts — check port/config conflicts`,
-      );
-      this.log(
-        `[manager] last stderr:\n${this.lastStderr.trim() || "(no stderr captured)"}`,
-      );
-      return;
-    }
-
-    this.restartCount++;
-    this.scheduleRestart();
-  }
-
-  private buildSpawnArgs(presetPath: string): string[] {
-    const r = this.config.router;
-    const args = [
-      "serve",
-      "--host", this.config.host,
-      "--port", String(this.port),
-      "--models-dir", this.modelsDir,
-      "--models-preset", presetPath,
-      // NO global `--ctx-size` here: in router mode llama.cpp overlays the
-      // router's own CLI args on top of every model preset section, so a
-      // global `--ctx-size` would override each section's `ctx-size` with one
-      // value for all models (verified against server-models.cpp
-      // `preset.merge(base_preset)` + common/preset.cpp merge-overwrite).
-      // Per-model windows live in the preset sections rendered by preset.ts.
-      "--n-predict", String(r.n),
-      "--n-gpu-layers", String(r.nGpuLayers),
-      "--cache-type-k", r.cacheTypeK,
-      "--cache-type-v", r.cacheTypeV,
-      "-b", String(r.batch),
-      "-ub", String(r.ubatch),
-      "--parallel", String(r.parallel),
-    ];
-
-    if (r.flashAttn) {
-      args.push("--flash-attn", "on");
-    }
-
-    if (r.tools) {
-      args.push("--tools", r.tools);
-    }
-
-    if (!this.config.autoload) {
-      args.push("--no-models-autoload");
-    }
-
-    return args;
-  }
-
-  private detectPort(chunk: string): void {
-    if (this.port !== 0) return; // fixed port — no need to detect
-
-    // llama.cpp reports the bound endpoint in several shapes depending on the
-    // build: "listening on 127.0.0.1:8080" or "listening on http://127.0.0.1:39163"
-    const match = chunk.match(/listening\s+on\s+.*:(\d+)/i);
-    if (match) {
-      this.port = parseInt(match[1], 10);
-      this._status = {
-        ...this._status,
-        baseUrl: `http://${this.config.host}:${this.port}`,
-      };
-      this.log(`[manager] detected dynamic port: ${this.port}`);
-    }
-  }
-
-  private async waitForReady(): Promise<void> {
-    const deadline = this.now() + this.config.startupTimeoutMs;
-
-    // Wait briefly for port detection from stdout
-    if (this.port === 0) {
-      await this.sleep(this.config.portParseTimeoutMs);
-      if (this.port === 0) {
-        throw new Error(
-          `[backend] could not detect dynamic port from llama-server stdout within ${this.config.portParseTimeoutMs}ms\n` +
-            `  Fix: set llama.port to a fixed value (e.g. 8080) or check llama-server output`,
-        );
-      }
-    }
-
-    const pollUrl = `http://${this.config.host}:${this.port}`;
-
+  private async waitHealthy(baseUrl: string, proc: SpawnedProc, stderrTail: string): Promise<void> {
+    const deadline = this.now() + this.startTimeoutMs;
     while (this.now() < deadline) {
-      // Process died before readiness — fail fast (never wait for the deadline
-      // while the child is already dead).
-      if (this.childDead()) {
-        await this.flushStderr();
-        throw this.earlyExitError("before becoming ready");
-      }
-
-      let healthy = false;
+      if (this.stopRequested) return;
       try {
-        const res = await fetch(`${pollUrl}/health`, {
-          signal: AbortSignal.timeout(HEALTH_FETCH_TIMEOUT_MS),
-        });
-        healthy = res.ok;
+        if (await this.healthCheck(baseUrl)) return;
       } catch {
-        // Not ready yet — continue polling
+        // transient — keep polling
       }
+      await this.sleep(this.healthPollMs);
+    }
+    this.state = "error";
+    await this.killProc(proc);
+    throw new Error(
+      `llama-server at ${baseUrl} never became healthy within ${this.startTimeoutMs} ms. ` +
+        `stderr tail: ${stderrTail || "(empty)"}`,
+    );
+  }
 
-      if (healthy) {
-        // CRITICAL (port-collision guard): a 200 on the health poll may come
-        // from a FOREIGN process squatting on our port while our own child
-        // crash-loops on EADDRINUSE. Only declare ready when OUR child is
-        // demonstrably alive at this instant — otherwise we false-ready and
-        // the exit handler would restart a child that can never bind.
-        if (this.childDead()) {
-          await this.flushStderr();
-          throw this.earlyExitError(
-            "after health check succeeded (possible port conflict)",
-          );
-        }
-        this._status = {
-          ...this._status,
-          state: "running",
-          baseUrl: pollUrl,
-        };
-        this.backoffMs = BACKOFF_INITIAL_MS; // reset backoff on success
+  /** Supervise: unexpected exit → bounded exponential-backoff restart. */
+  private monitorExit(proc: SpawnedProc, baseUrl: string): void {
+    void proc.exited.then(async (code) => {
+      if (this.stopRequested || this.proc !== proc || this.state === "stopped") return;
+      this.log(`backend exited unexpectedly (code ${code}); restarting`);
+      if (this.restartAttempts >= this.maxRestartAttempts) {
+        this.state = "error";
+        this.log(`restart budget exhausted (${this.maxRestartAttempts}); backend stays down`);
         return;
       }
-
-      await this.sleep(this.config.healthPollIntervalMs);
-    }
-
-    // Timeout — kill the process
-    this.child?.kill("SIGKILL");
-    await this.flushStderr();
-    throw new Error(
-      `[backend] llama-server did not become ready within ${this.config.startupTimeoutMs}ms\n` +
-        `  last stderr:\n${this.lastStderr.trim() || "(no stderr captured)"}\n` +
-        `  Fix: increase llama.startupTimeoutMs, check CUDA, or verify model files exist`,
-    );
-  }
-
-  /** True when the spawned child is no longer a live process. */
-  private childDead(): boolean {
-    // Bun sets exitCode (normal exit) or signalCode (signal exit) once the
-    // process has actually died — both are live before `exited` resolves.
-    return (
-      !this.child ||
-      this.child.exitCode !== null ||
-      this.child.signalCode !== null
-    );
-  }
-
-  /** Fail-fast error for a child that died before/while becoming ready. */
-  private earlyExitError(where: string): Error {
-    const code = this.child?.exitCode ?? "n/a";
-    const signal = this.child?.signalCode ?? "n/a";
-    const stderr = this.lastStderr.trim() || "(no stderr captured)";
-    return new Error(
-      `[backend] llama-server exited ${where} (code=${code}, signal=${signal})\n` +
-        `  last stderr:\n${stderr}\n` +
-        `  Fix: check for a port conflict (another process on port ${this.port}), the binary path, CUDA availability, and model files`,
-    );
-  }
-
-  /** Bound the stderr tail so diagnostics never grow unbounded. */
-  private captureStderr(text: string): void {
-    this.lastStderr = (this.lastStderr + text).slice(-MAX_STDERR_BYTES);
-  }
-
-  /**
-   * Drain pending stderr chunks before composing diagnostics. The child may be
-   * dead while its stream reader still holds buffered output (streams close
-   * asynchronously after exit, no onExit in Bun) — without this the
-   * "last stderr" snippet would be missing exactly when it's most valuable.
-   */
-  private async flushStderr(): Promise<void> {
-    await Promise.race([
-      this.stderrComplete.catch(() => {}),
-      this.sleep(50),
-    ]);
-  }
-
-  private scheduleRestart(): void {
-    this.log(`[manager] restarting in ${this.backoffMs}ms (backoff)`);
-
-    void this.sleep(this.backoffMs).then(() => {
-      if (this.intentionallyStopped) return;
-      this.log("[manager] attempting restart...");
-      this.start().catch((err) => {
-        this.log(`[manager] restart failed: ${err.message}`);
-      });
+      this.restartAttempts += 1;
+      this.state = "starting";
+      const backoff = Math.min(BACKOFF_INITIAL_MS * 2 ** (this.restartAttempts - 1), BACKOFF_MAX_MS);
+      await this.sleep(backoff);
+      if (this.stopRequested) return;
+      try {
+        await this.start();
+        this.log(`backend restored at ${baseUrl}`);
+      } catch (err) {
+        this.log(`restart failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     });
+  }
 
-    // Exponential backoff: 1s → 2s → 4s → 8s → … → cap backoffCapMs
-    this.backoffMs = Math.min(this.backoffMs * 2, this.config.backoffCapMs);
+  /** Idle watchdog: stop the backend after `idleTimeoutMs` without requests. */
+  private watchIdle(): void {
+    if (this.watching) return;
+    this.watching = true;
+    const tick = async (): Promise<void> => {
+      while (this.watching && !this.stopRequested) {
+        await this.sleep(this.idlePollMs);
+        if (this.stopRequested) break;
+        if (this.state === "running" && idleElapsed(this.lastRequestAt, this.now(), this.idleTimeoutMs)) {
+          this.log("idle timeout reached; stopping backend");
+          await this.stop();
+          break;
+        }
+      }
+    };
+    void tick();
+  }
+
+  private async killProc(proc: SpawnedProc): Promise<void> {
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // already dead
+    }
+    await Promise.race([proc.exited, this.sleep(3000)]);
+    if (proc.exitCode === null) {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // already dead
+      }
+    }
   }
 }
 
-/** Factory to keep construction uniform with future backends. */
-export function createLlamaServeManager(deps: ManagerDeps): LlamaServeManager {
-  return new LlamaServeManager(deps);
+async function collectAll(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: string[] = [];
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(new TextDecoder().decode(value));
+    }
+  } catch {
+    // ignore
+  }
+  return chunks.join("");
+}
+
+async function drain(proc: SpawnedProc): Promise<void> {
+  try {
+    await Promise.race([proc.exited, defaultSleep(500)]);
+  } catch {
+    // ignore
+  }
+}
+
+async function defaultHealthCheck(baseUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }

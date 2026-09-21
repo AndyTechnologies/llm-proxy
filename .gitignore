@@ -18,6 +18,12 @@ file.log
 # Build output
 dist/
 
+# Electrobun / Hutch build outputs (host bundles, Cottontail artifacts)
+build/
+artifacts/
+.hutch/
+.cottontail-tmp/
+
 # Playwright E2E output
 test-results/
 playwright-report/
@@ -30,3 +36,6 @@ playwright/.cache/
 # Local runtime config (machine-specific paths). Template: config.example.yaml
 llm-proxy.config.yaml
 llama-swap.config.yaml
+
+# Astro generated types
+.astro/
