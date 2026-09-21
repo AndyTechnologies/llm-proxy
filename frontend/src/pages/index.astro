@@ -1,37 +1,85 @@
 ---
-// WeaveLLM shell: static SPA hosting Svelte islands.
-import ModelBadge from "../svelte/ModelBadge.svelte";
-import WorkflowEditor from "../svelte/WorkflowEditor.svelte";
-import "../styles/global.css";
+import AppLayout from "../layouts/AppLayout.astro";
+
+/**
+ * Overview — console landing page. Phase 1 renders the shell only: the
+ * metric cards show "—" until the API client (phase 3) wires real values.
+ */
+const METRIC_CARDS = [
+  { label: "Active models", hint: "Activated local models" },
+  { label: "Workflows", hint: "Stored workflow definitions" },
+  { label: "Executions", hint: "Recent workflow runs" },
+  { label: "Runtime", hint: "Backend health and version" },
+];
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WeaveLLM</title>
-  </head>
-  <body>
-    <header class="app-header">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <h1>WeaveLLM</h1>
-      <span class="tagline">Local model runtime</span>
-    </header>
-    <main class="app-main">
-      <section class="panel" aria-label="Local models">
-        <h2>Local models</h2>
-        <ModelBadge
-          client:load
-          name="qwen2.5-coder-3b-instruct"
-          quant="Q4_K_M"
-          ctx={32768}
-        />
-      </section>
-      <section class="panel" aria-label="Workflow editor">
-        <h2>Workflow editor</h2>
-        <WorkflowEditor client:load />
-      </section>
-    </main>
-  </body>
-</html>
+<AppLayout title="Overview">
+  <header class="page-head">
+    <h1>Overview</h1>
+    <p>
+      Runtime state summary. Metric values come from the backend API once the
+      typed client connects — until then each card reads "—".
+    </p>
+  </header>
+
+  <div class="metric-grid">
+    {
+      METRIC_CARDS.map((card) => (
+        <article class="metric-card">
+          <span class="metric-value" aria-label="Unavailable">—</span>
+          <span class="metric-label">{card.label}</span>
+          <span class="metric-hint">{card.hint}</span>
+        </article>
+      ))
+    }
+  </div>
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+
+  .metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--space-4);
+  }
+
+  .metric-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
+  }
+
+  .metric-value {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+
+  .metric-label {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .metric-hint {
+    font-size: 0.75rem;
+    color: var(--secondary);
+  }
+</style>

@@ -1,0 +1,13 @@
+---
+import AppLayout from "../layouts/AppLayout.astro";
+import EmptyState from "../svelte/common/EmptyState.svelte";
+import pkg from "../../../package.json";
+---
+
+<AppLayout title="About" breadcrumb={["About"]}>
+  <EmptyState
+    icon="about"
+    title={`WeaveLLM v${pkg.version}`}
+    description="Local AI desktop runtime — managed llama.cpp backend, visual workflow editor, model management and an OpenAI-compatible proxy. Workflows are DAGs exposed as virtual gateway models."
+  />
+</AppLayout>

@@ -1,0 +1,57 @@
+/**
+ * WeaveLLM design tokens — Gentle-AI palette (console spec v2).
+ * Single source of truth for surfaces, borders, text, accent, radii,
+ * spacing and fonts. Components consume these tokens only — no raw hex.
+ */
+:root {
+  /* Surfaces */
+  --bg: #09090b;
+  --card: #111113;
+  --code: #18181c;
+
+  /* Borders — subtle by design, never hard lines */
+  --border: #ffffff12;
+  --border-hover: #ea188959;
+
+  /* Text */
+  --text: #fafafa;
+  --secondary: #a1a1aa;
+  --muted: #52525b;
+
+  /* Accent — exactly one chromatic accent */
+  --accent: #ea1889;
+  --accent-hover: #ff6db0;
+  --accent-subtle: #ea188926;
+
+  /* Status colors (semantic, pre-existing) */
+  --success: #b4e7c7;
+  --danger: #ff718f;
+
+  /* Radii — 8px controls / 16px cards, nothing in between */
+  --radius-control: 8px;
+  --radius-card: 16px;
+  --radius-full: 999px;
+
+  /* Spacing scale — multiples of 4 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Fonts — Inter for UI, ui-monospace for code */
+  --font-sans: Inter, system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Legacy aliases kept so existing components keep working unchanged */
+  --bg-card: var(--card);
+  --bg-code: var(--code);
+  --text-muted: var(--secondary);
+  --text-tertiary: var(--muted);
+  --accent-soft: var(--accent-subtle);
+  --surface: var(--card);
+}

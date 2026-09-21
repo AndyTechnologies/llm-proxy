@@ -1,0 +1,24 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import EmptyState from "../../svelte/common/EmptyState.svelte";
+
+/**
+ * Provider kind details (one of openai | anthropic | openrouter). The static
+ * build emits no pages until kinds come from the backend providers API —
+ * getStaticPaths stays empty in this phase, dev mode serves any :kind.
+ */
+export function getStaticPaths() {
+  return [];
+}
+
+const { kind } = Astro.params;
+const providerKind = kind ?? "unknown";
+---
+
+<AppLayout title={providerKind} breadcrumb={["Providers", providerKind]}>
+  <EmptyState
+    icon="providers"
+    title={providerKind}
+    description="Provider configuration, key state and fallback links appear here. API keys are never exposed to the frontend. Data comes from the backend providers API — not available yet, the typed client connects in a later phase."
+  />
+</AppLayout>

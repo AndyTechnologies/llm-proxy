@@ -1,0 +1,12 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import EmptyState from "../../svelte/common/EmptyState.svelte";
+---
+
+<AppLayout title="Models" breadcrumb={["Models"]}>
+  <EmptyState
+    icon="models"
+    title="Model registry"
+    description="Local models and their activation state appear here. Data comes from the backend models API — not available yet, the typed client connects in a later phase."
+  />
+</AppLayout>

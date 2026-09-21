@@ -1,0 +1,83 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import Icon from "../../svelte/common/Icon.svelte";
+import WorkflowEditor from "../../svelte/WorkflowEditor.svelte";
+
+/**
+ * Workflow editor route. The editor component is mounted unchanged (same
+ * props and loading pattern as the old single-page shell: no props,
+ * client:load). "demo" is the editor's built-in default session name — the
+ * exact names served by the backend workflow store arrive in a later phase.
+ */
+export function getStaticPaths() {
+  return [{ params: { name: "demo" } }];
+}
+
+const { name } = Astro.params;
+const workflowName = name ?? "demo";
+---
+
+<AppLayout title={workflowName} breadcrumb={["Workflows", workflowName]}>
+  <div class="editor-page">
+    <div class="editor-head">
+      <a class="back-link" href="/workflows">
+        <Icon name="back" size={14} />
+        <span>Workflows</span>
+      </a>
+      <h1 class="editor-title">{workflowName}</h1>
+    </div>
+
+    <div class="editor-host" data-testid="workflow-editor-host">
+      <WorkflowEditor client:load />
+    </div>
+  </div>
+</AppLayout>
+
+<style>
+  .editor-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    height: calc(100vh - 220px);
+    min-height: 560px;
+  }
+
+  .editor-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--secondary);
+  }
+
+  .back-link:hover {
+    color: var(--text);
+  }
+
+  .editor-title {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .editor-host {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* Let the editor's own grid fill the host panel. */
+  .editor-host :global(.editor) {
+    height: 100%;
+  }
+</style>

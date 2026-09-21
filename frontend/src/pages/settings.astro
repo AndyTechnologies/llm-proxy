@@ -1,0 +1,12 @@
+---
+import AppLayout from "../layouts/AppLayout.astro";
+import EmptyState from "../svelte/common/EmptyState.svelte";
+---
+
+<AppLayout title="Settings" breadcrumb={["Settings"]}>
+  <EmptyState
+    icon="settings"
+    title="Application settings"
+    description="Runtime configuration (host, port, auth) is environment-driven and appears here read-only. Settings UI connects in a later phase."
+  />
+</AppLayout>
