@@ -157,88 +157,128 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
   .palette-item {
     width: 100%;
     text-align: left;
-    padding: 8px 10px;
+    padding: 8px 12px;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--surface);
     cursor: grab;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
+    transition: border-color 150ms ease, background-color 150ms ease;
   }
   .palette-item:hover {
-    border-color: var(--accent);
+    border-color: var(--border-hover);
+    background: var(--accent-soft);
   }
   .palette-desc {
     font-size: 0.78rem;
-    color: var(--muted);
+    color: var(--text-muted);
   }
   .editor-canvas {
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 16px;
+    background: var(--bg-card);
     min-height: 460px;
+    overflow: hidden;
   }
   .editor-panel h3,
   .editor-palette h3 {
-    margin: 0 0 10px;
+    margin: 0 0 12px;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
   }
   .field {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
   }
   .field span {
     font-size: 0.8rem;
-    color: var(--muted);
+    color: var(--text-muted);
   }
   input,
   textarea {
-    padding: 6px 8px;
+    padding: 8px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 8px;
     background: var(--surface);
     color: inherit;
     font: inherit;
+    transition: border-color 150ms ease, background-color 150ms ease;
+  }
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+    border-color: var(--border-hover);
   }
   textarea {
     resize: vertical;
-    font-family: ui-monospace, monospace;
+    background: var(--bg-code);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas;
     font-size: 0.78rem;
   }
   .errors {
-    border: 1px solid var(--danger, #c0392b);
+    border: 1px solid var(--danger);
     border-radius: 8px;
-    padding: 8px 10px;
-    margin-bottom: 10px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    color: var(--danger);
   }
   .errors ul {
     margin: 4px 0 0;
-    padding-left: 18px;
+    padding-left: 20px;
     font-size: 0.82rem;
   }
   .error {
-    color: var(--danger, #c0392b);
+    color: var(--danger);
     font-size: 0.82rem;
-    margin: 0 0 10px;
+    margin: 0 0 12px;
   }
   .actions {
     display: flex;
     gap: 8px;
   }
   .actions button {
-    padding: 6px 14px;
+    padding: 8px 12px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 8px;
     background: var(--surface);
+    color: inherit;
     cursor: pointer;
+    transition: border-color 150ms ease, background-color 150ms ease;
   }
   .actions button:hover {
-    border-color: var(--accent);
+    border-color: var(--border-hover);
+    background: var(--accent-soft);
+  }
+  /* SvelteFlow ships light-theme defaults; remap its --xy-* variables to the
+     dark Gentle-AI tokens so the canvas, nodes and controls blend with the
+     editor surface. */
+  .editor-canvas :global(.svelte-flow) {
+    --xy-background-pattern-dots-color: var(--border);
+    --xy-node-background-color: var(--bg-code);
+    --xy-node-border: 1px solid var(--border);
+    --xy-node-color: var(--text);
+    --xy-handle-background-color: var(--accent);
+    --xy-handle-border-color: var(--bg-card);
+    --xy-edge-stroke: var(--text-tertiary);
+    --xy-edge-stroke-selected: var(--accent);
+    --xy-connectionline-stroke: var(--accent);
+    --xy-selection-background-color: var(--accent-soft);
+    --xy-controls-button-background-color: var(--bg-code);
+    --xy-controls-button-background-color-hover: var(--bg-card);
+    --xy-controls-button-color: var(--text);
+    --xy-controls-button-color-hover: var(--text);
+    --xy-controls-button-border-color: var(--border);
+    --xy-controls-box-shadow: 0 0 0 1px var(--border);
   }
 </style>

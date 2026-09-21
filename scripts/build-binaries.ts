@@ -1,11 +1,16 @@
 /**
- * WeaveLLM release build: 3 targets via Electrobun/Hutch + < 100 MB gate.
+ * WeaveLLM release build: host target via Electrobun/Hutch + < 100 MB gate.
  *
  * Usage: `bun run scripts/build-binaries.ts [--skip-build] [--artifacts <dir>]`
  *
- * Default: shells out to `hutch build` for each supported target (the Electrobun
- * toolchain), then measures every artifact under the output dir and fails if
- * any bundle exceeds the 100 MB gate (desktop-app-shell / AC #1).
+ * Electrobun v2 builds are HOST-ONLY — there is no cross-compile. This script
+ * builds the bundle for the current host platform only via the real Hutch CLI
+ * (`hutch electrobun build --env=stable`; `bunx hutch` is the wrong npm
+ * package and `hutch` is not on PATH, so we spawn ~/.hutch/bin/hutch). The
+ * full release matrix (darwin-arm64 / darwin-x64 / linux-x64 — see
+ * build-binaries-args.ts) requires building on each target platform. After
+ * the build, every artifact under the output dir is measured and fails if any
+ * bundle exceeds the 100 MB gate (desktop-app-shell / AC #1).
  *
  * This channel emits Cottontail INSTALLER/UPDATE artifacts (e.g.
  * linux-x64-WeaveLLM-Setup.tar.gz, stable-linux-x64-update.json). It is the
@@ -15,6 +20,7 @@
  * distinct.
  */
 
+import { homedir } from "node:os";
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -22,10 +28,15 @@ import {
   BUNDLE_SIZE_LIMIT,
   targetLabel,
   targetTriples,
-  type TargetTriple,
 } from "./build-binaries-args.js";
 
 const ARTIFACTS_DIR = process.env.WEAVELLM_ARTIFACTS_DIR ?? "dist";
+
+/** Real Hutch CLI — never `bunx hutch` (wrong npm package). */
+const HUTCH_BIN = join(homedir(), ".hutch", "bin", "hutch");
+
+/** Release channel for the bundle: stable = optimized release build. */
+const RELEASE_ENV = "stable";
 
 function isBundleFile(name: string): boolean {
   const lower = name.toLowerCase();
@@ -75,16 +86,32 @@ export function enforceSizeGate(dir: string): Array<{ path: string; bytes: numbe
   return artifacts;
 }
 
-async function buildTarget(triple: TargetTriple): Promise<void> {
-  const label = targetLabel(triple);
-  const proc = Bun.spawn(["bunx", "hutch", "build", "--target", label], {
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const code = await proc.exited;
-  if (code !== 0) {
-    throw new Error(`hutch build failed for ${label} (exit ${code})`);
+/**
+ * Label of the host target in the release matrix (e.g. linux-x64).
+ * Host-only builds: fails when this machine is not one of the three
+ * supported release targets.
+ */
+export function hostTargetLabel(): string {
+  const platform =
+    process.platform === "darwin"
+      ? "darwin"
+      : process.platform === "linux"
+        ? "linux"
+        : null;
+  const arch =
+    process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : null;
+  if (platform === null || arch === null) {
+    throw new Error(
+      `unsupported host ${process.platform}-${process.arch} — ` +
+        "the release matrix (darwin-arm64, darwin-x64, linux-x64) must be built on each target platform",
+    );
   }
+  const label = targetLabel({ platform, arch });
+  const known = targetTriples().some((t) => t.platform === platform && t.arch === arch);
+  if (!known) {
+    throw new Error(`host ${label} is not in the supported release matrix`);
+  }
+  return label;
 }
 
 async function main(): Promise<void> {
@@ -92,9 +119,18 @@ async function main(): Promise<void> {
   mkdirSync(ARTIFACTS_DIR, { recursive: true });
 
   if (!skipBuild) {
-    for (const triple of targetTriples()) {
-      process.stdout.write(`building ${targetLabel(triple)}\n`);
-      await buildTarget(triple);
+    // hutch electrobun build is host-only: no --target flag.
+    const host = hostTargetLabel();
+    process.stdout.write(
+      `building host target ${host} (Electrobun v2: no cross-compile)\n`,
+    );
+    const proc = Bun.spawn([HUTCH_BIN, "electrobun", "build", `--env=${RELEASE_ENV}`], {
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const code = await proc.exited;
+    if (code !== 0) {
+      throw new Error(`hutch electrobun build --env=${RELEASE_ENV} failed (exit ${code})`);
     }
   }
 

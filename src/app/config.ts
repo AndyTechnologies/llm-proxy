@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { type AppConfig } from "./types.js";
 
@@ -27,6 +28,30 @@ export function resolveLlamaBin(raw: string | undefined): string {
   return raw === undefined || raw === "" ? "llama" : raw;
 }
 
+/** Candidate UI roots in probe order: env override, dev build, bundled app. */
+export function uiDirCandidates(env: AppEnv = {}): string[] {
+  const explicit = env.WEAVELLM_UI_DIR;
+  const candidates = [
+    join(process.cwd(), "frontend", "dist"),
+    join(import.meta.dir, "..", "ui"),
+  ];
+  return explicit !== undefined && explicit !== "" ? [explicit, ...candidates] : candidates;
+}
+
+/**
+ * Resolve the compiled frontend directory. An explicit WEAVELLM_UI_DIR wins
+ * unconditionally; otherwise the first candidate holding `index.html` wins,
+ * with the dev build path as the fallback when nothing exists.
+ */
+export function resolveUiDir(env: AppEnv = {}): string {
+  const explicit = env.WEAVELLM_UI_DIR;
+  if (explicit !== undefined && explicit !== "") return explicit;
+  for (const candidate of uiDirCandidates(env)) {
+    if (existsSync(join(candidate, "index.html"))) return candidate;
+  }
+  return join(process.cwd(), "frontend", "dist");
+}
+
 /** Resolve the app runtime config from the environment (loopback by default). */
 export function resolveAppConfig(env: AppEnv = {}): AppConfig {
   return {
@@ -34,8 +59,8 @@ export function resolveAppConfig(env: AppEnv = {}): AppConfig {
     port: resolvePort(env.WEAVELLM_PORT),
     authEnabled: env.WEAVELLM_AUTH === "1" || env.WEAVELLM_AUTH === "true",
     appData: env.WEAVELLM_APP_DATA ?? "",
-    // Compiled frontend output; the env var allows pointing elsewhere.
-    uiDir: env.WEAVELLM_UI_DIR ?? join(process.cwd(), "frontend", "dist"),
+    // Compiled frontend output: env override, else the first existing candidate.
+    uiDir: resolveUiDir(env),
     llamaBin: resolveLlamaBin(env.WEAVELLM_LLAMA_BIN),
   };
 }

@@ -18,6 +18,12 @@ file.log
 # Build output
 dist/
 
+# Electrobun / Hutch build outputs (host bundles, Cottontail artifacts)
+build/
+artifacts/
+.hutch/
+.cottontail-tmp/
+
 # Playwright E2E output
 test-results/
 playwright-report/

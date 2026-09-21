@@ -23,21 +23,23 @@
 <style>
   .model-card {
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 16px;
+    border-radius: 16px;
+    background: var(--bg-card);
+    padding: 16px;
     max-width: 320px;
   }
   .model-name {
     margin: 0 0 8px;
     font-size: 1rem;
+    color: var(--text);
   }
   .model-meta {
     display: flex;
     gap: 8px;
   }
   .chip {
-    border-radius: 999px;
-    padding: 2px 10px;
+    border-radius: 8px;
+    padding: 4px 12px;
     font-size: 0.75rem;
     font-weight: 600;
   }
@@ -46,7 +48,7 @@
     color: var(--accent);
   }
   .chip-ctx {
-    background: var(--muted);
+    background: var(--bg-code);
     color: var(--text-muted);
   }
   .model-size {

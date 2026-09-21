@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveAppConfig } from "./config.js";
+import { resolveAppConfig, resolveUiDir, uiDirCandidates } from "./config.js";
 
 describe("resolveAppConfig", () => {
   test("defaults to loopback bind on the proxy port", () => {
@@ -47,5 +49,41 @@ describe("llamaBin (WEAVELLM_LLAMA_BIN)", () => {
 
   test("empty string falls back to 'llama'", () => {
     expect(resolveAppConfig({ WEAVELLM_LLAMA_BIN: "" }).llamaBin).toBe("llama");
+  });
+});
+
+describe("uiDirCandidates", () => {
+  test("orders candidates override, dev build, then bundled app", () => {
+    const devBuild = join(process.cwd(), "frontend", "dist");
+    const bundledUi = join(import.meta.dir, "..", "ui");
+    expect(uiDirCandidates({ WEAVELLM_UI_DIR: "/opt/weavellm/ui" })).toEqual([
+      "/opt/weavellm/ui",
+      devBuild,
+      bundledUi,
+    ]);
+  });
+
+  test("omits the override when unset or empty", () => {
+    const devBuild = join(process.cwd(), "frontend", "dist");
+    const bundledUi = join(import.meta.dir, "..", "ui");
+    expect(uiDirCandidates({})).toEqual([devBuild, bundledUi]);
+    expect(uiDirCandidates({ WEAVELLM_UI_DIR: "" })).toEqual([devBuild, bundledUi]);
+  });
+});
+
+describe("resolveUiDir", () => {
+  test("env override wins even when a real candidate dir exists", () => {
+    const uiDir = mkdtempSync(join(tmpdir(), "weavellm-ui-"));
+    writeFileSync(join(uiDir, "index.html"), "<!doctype html><title>weavellm</title>");
+    try {
+      expect(resolveUiDir({ WEAVELLM_UI_DIR: uiDir })).toBe(uiDir);
+      expect(resolveAppConfig({ WEAVELLM_UI_DIR: uiDir }).uiDir).toBe(uiDir);
+    } finally {
+      rmSync(uiDir, { recursive: true, force: true });
+    }
+  });
+
+  test("defaults to the dev build output when nothing else matches", () => {
+    expect(resolveUiDir({})).toBe(join(process.cwd(), "frontend", "dist"));
   });
 });

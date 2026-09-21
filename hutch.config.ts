@@ -29,7 +29,10 @@ export interface HutchConfig {
 
 export const config: HutchConfig = {
   electrobun: {
-    version: "2.1.0",
+    // Latest published GitHub release with a signed electobun-artifacts.json.
+    // 2.1.0 (the original research pin) was never published — hutch 404'd on
+    // v2.1.0. Verified: v2.0.2-beta.27 serves the artifact (302).
+    version: "2.0.2-beta.27",
   },
   channel: "stable",
   release: {

@@ -194,6 +194,20 @@ if (import.meta.main) {
             });
         });
       }
+
+      // Desktop shell: open the webview window when the main process runs
+      // inside an Electrobun bundle (direct `bun run src/main.ts` stays
+      // server-only — the `electrobun` npm stub throws outside a bundle).
+      void import("electrobun/main")
+        .then(({ BrowserWindow }) => {
+          new BrowserWindow({
+            title: "WeaveLLM",
+            url: `http://127.0.0.1:${result.server.port}/`,
+          });
+        })
+        .catch(() => {
+          // Not running under Electrobun — no window.
+        });
     })
     .catch((err: unknown) => {
       process.stderr.write(
