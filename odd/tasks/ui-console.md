@@ -18,7 +18,7 @@
 
 **Checklist (PHASE 1–14 de la spec §302; verificación por fase):**
 
-- [ ] **U01 (PHASE 1)** Design tokens + App shell + Navegación + Routing. `styles/tokens.css` + refactor `global.css` (quitar #F095C8) + `layouts/AppLayout.astro` (Sidebar/Topbar/Main/StatusBar) + `svelte/navigation/*` (Sidebar, Topbar, StatusBar, CommandPalette Ctrl/Cmd+K) + rutas placeholder (Overview), `/workflows[/name]`, `/models[/id|catalog|downloads]`, `/providers[/kind]`, `/executions`, `/api`, `/runtime`, `/settings`, `/about`; `lib/api/config.ts` mínimo (`getApiOrigin`/`getWsOrigin`); mount temporal de WorkflowEditor existente en `/workflows/[name]` (sin romper su funcionalidad; index deja de hardcodear qwen2.5-coder-3b-instruct/Q4_K_M/32768).
+- [x] **U01 (PHASE 1)** Design tokens + App shell + Navegación + Routing. `styles/tokens.css` + refactor `global.css` (quitar #F095C8) + `layouts/AppLayout.astro` (Sidebar/Topbar/Main/StatusBar) + `svelte/navigation/*` (Sidebar, Topbar, StatusBar, CommandPalette Ctrl/Cmd+K) + rutas placeholder (Overview), `/workflows[/name]`, `/models[/id|catalog|downloads]`, `/providers[/kind]`, `/executions`, `/api`, `/runtime`, `/settings`, `/about`; `lib/api/config.ts` mínimo (`getApiOrigin`/`getWsOrigin`); mount temporal de WorkflowEditor existente en `/workflows/[name]` (sin romper su funcionalidad; index deja de hardcodear qwen2.5-coder-3b-instruct/Q4_K_M/32768). ✅ commit `16b0871` — gate verde (typecheck ✓, lint ✓, 462 tests ✓, build:frontend ✓ 12 páginas). Extras: `lib/navigation.ts` (registro de nav + isRouteActive), `lib/ui-state.ts`, `lib/api/config.test.ts`, helpers `svelte/common/*` (Button/Icon/IconButton/StatusDot/EmptyState). Fixes post-agente: imports relativos en `executions/index.astro`, path de `package.json` raíz en `AppLayout.astro` y `about.astro`.
 - [ ] **U02 (PHASE 2)** API layer tipado + básicos: clientes `health`, `models`, `workflows`, `providers`; `ApiError {status,code,message,details}`; estado runtime (auth WEAVELLM_AUTH, versión); no credenciales al frontend.
 - [ ] **U03 (PHASE 3)** Overview (capabilities, modelos activos, workflows recientes, estado runtime, quick actions; métricas reales, placeholders "—" sin inventar).
 - [ ] **U04 (PHASE 4)** Workflow library (lista CRUD + controles run/logs desde `/api/workflows`).
@@ -39,4 +39,4 @@
 
 **Resolved mode:** TDD no configurado explícito en proyecto; checks por tarea: `bun run typecheck`, `bun run lint`, `bun test`, `bun run build:frontend`.
 
-**Progress/next step:** U01 en curso (delegación a writer `general` con skills gentle-ui + typescript). Siguiente: U02.
+**Progress/next step:** U01 completado. Siguiente: U02 (API layer tipado, estado runtime/auth) → U03 Overview.
