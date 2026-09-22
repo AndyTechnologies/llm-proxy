@@ -31,9 +31,11 @@
   import { validateWorkflow } from "../../lib/workflow-validate.js";
   import Button from "../common/Button.svelte";
   import EmptyState from "../common/EmptyState.svelte";
+  import Icon from "../common/Icon.svelte";
   import CanvasCommands from "./CanvasCommands.svelte";
   import Inspector from "./Inspector.svelte";
   import NodePalette from "./NodePalette.svelte";
+  import RunPanel from "./RunPanel.svelte";
   import FlowNodeStartEnd from "./nodes/FlowNodeStartEnd.svelte";
   import FlowNodeLlm from "./nodes/FlowNodeLlm.svelte";
   import FlowNodeBranch from "./nodes/FlowNodeBranch.svelte";
@@ -94,6 +96,8 @@
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   let errorsPanel = $state<{ title: string; items: string[] } | null>(null);
   let knownModelIds = $state<string[]>([]);
+  /** The run drawer (U07) — mounted below the rail while open. */
+  let runOpen = $state(false);
 
   /** `initialGraph` is applied exactly once and never again (non-reactive). */
   let seeded = false;
@@ -348,9 +352,22 @@
           <span class="wf-flash" aria-live="polite">{saveFlash}</span>
         {/if}
       </div>
-      <Button variant="primary" disabled={!canSave} onclick={() => void save()}>
-        {saving ? "Saving…" : "Save"}
-      </Button>
+      <div class="wf-toolbar-actions">
+        <Button
+          variant="secondary"
+          disabled={workflowName === null}
+          ariaLabel="Run workflow"
+          onclick={() => {
+            runOpen = true;
+          }}
+        >
+          <Icon name="play" size={14} />
+          Run
+        </Button>
+        <Button variant="primary" disabled={!canSave} onclick={() => void save()}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      </div>
     </div>
 
     {#if errorsPanel !== null}
@@ -413,11 +430,20 @@
         knownModelIds={knownModelIds}
       />
     </aside>
+    {#if runOpen && workflowName !== null}
+      <RunPanel
+        name={workflowName}
+        onClose={() => {
+          runOpen = false;
+        }}
+      />
+    {/if}
   {/if}
 </div>
 
 <style>
   .wf-layout {
+    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 280px;
     grid-template-rows: auto auto minmax(0, 1fr);
@@ -440,6 +466,13 @@
     align-items: center;
     gap: var(--space-2);
     min-width: 0;
+  }
+
+  .wf-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: none;
   }
 
   .wf-name {

@@ -34,6 +34,8 @@ export const ICON_NAMES = {
   back: "back",
   chevron: "chevron",
   plus: "plus",
+  play: "play",
+  check: "check",
 } as const;
 
 export type IconName = (typeof ICON_NAMES)[keyof typeof ICON_NAMES];
