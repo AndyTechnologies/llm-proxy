@@ -20,7 +20,7 @@
 
 - [x] **U01 (PHASE 1)** Design tokens + App shell + Navegación + Routing. `styles/tokens.css` + refactor `global.css` (quitar #F095C8) + `layouts/AppLayout.astro` (Sidebar/Topbar/Main/StatusBar) + `svelte/navigation/*` (Sidebar, Topbar, StatusBar, CommandPalette Ctrl/Cmd+K) + rutas placeholder (Overview), `/workflows[/name]`, `/models[/id|catalog|downloads]`, `/providers[/kind]`, `/executions`, `/api`, `/runtime`, `/settings`, `/about`; `lib/api/config.ts` mínimo (`getApiOrigin`/`getWsOrigin`); mount temporal de WorkflowEditor existente en `/workflows/[name]` (sin romper su funcionalidad; index deja de hardcodear qwen2.5-coder-3b-instruct/Q4_K_M/32768). ✅ commit `16b0871` — gate verde (typecheck ✓, lint ✓, 462 tests ✓, build:frontend ✓ 12 páginas). Extras: `lib/navigation.ts` (registro de nav + isRouteActive), `lib/ui-state.ts`, `lib/api/config.test.ts`, helpers `svelte/common/*` (Button/Icon/IconButton/StatusDot/EmptyState). Fixes post-agente: imports relativos en `executions/index.astro`, path de `package.json` raíz en `AppLayout.astro` y `about.astro`.
 - [x] **U02 (PHASE 2)** API layer tipado + básicos. ✅ commit `120c66d` — `lib/api/{http,types,health,models,workflows,runtime,index}.ts` + tests (26 pass) sobre la superficie real. `ApiError {status,code,message,details?}` + `request()` con fetch inyectable; `ErrorEnvelope` del backend mapeado verbatim (`unauthorized`, `model_not_found`, etc.). **No existe endpoint de providers en el backend real → NO se creó cliente de providers** (U09 mostrará "Coming from backend"). `runtime.status()` = health + sonda 401 ⇒ authEnabled. Hallazgos del writer: `bun test` root no colecta frontend (correr `bun test ./frontend/src/lib/api/*.test.ts`); typecheck root no cubre frontend (verificación TS = lint + tests path-scoped + astro build). Fix post-entrega: `ExecutionLogRow.error`/`ms` tipados `string|null` (el backend incluye la clave con null).
-- [ ] **U03 (PHASE 3)** Overview (capabilities, modelos activos, workflows recientes, estado runtime, quick actions; métricas reales, placeholders "—" sin inventar).
+- [x] **U03 (PHASE 3)** Overview. ✅ commit `a4260c6` — `lib/overview.ts` (mapa puro + 6 tests), `svelte/overview/{Overview,StatusCard}.svelte` (island `client:load`, Promise.allSettled, auto-refresh 10s con guard de stale, estados honestos "—"/Unavailable+Retry), quick actions como anchors semánticos; `index.astro` monta el dashboard. **Fix defecto U02:** `RuntimeStatusOptions` estaba referenciado pero indefinido (invisible a los gates porque **frontend no tiene tsconfig** — astro build no typechecks; hardening pendiente para U14). Caveat: en build estático, links `/workflows/<name>` solo renderizan `demo` hasta que U04 amplíe `getStaticPaths`.
 - [ ] **U04 (PHASE 4)** Workflow library (lista CRUD + controles run/logs desde `/api/workflows`).
 - [ ] **U05 (PHASE 5)** Workflow editor foundation: FlowEditor + 14 custom nodes + WorkflowEdge + NodePalette/paneles base sobre @xyflow/svelte; taxonomía única `frontend/src/lib/workflow-nodes.ts` + `src/orchestrator/graph.ts`.
 - [ ] **U06 (PHASE 6)** Workflow semantics: inspector (config por tipo), AST lógico, Loop/Fan/Join, validateGraph() integrado, serialización YAML canónico (PUT /api/workflows/:name).
@@ -31,7 +31,7 @@
 - [ ] **U11 (PHASE 11)** API Playground (POST /v1/* con auth capturada del entorno del server, no credenciales).
 - [ ] **U12 (PHASE 12)** Runtime (health/puerto/versión, estado auth, ws indicator).
 - [ ] **U13 (PHASE 13)** Settings + About.
-- [ ] **U14 (PHASE 14)** a11y (WCAG AA, focus, reduced motion), responsive (240/64/drawer), performance (lazy islands), tests de UI restantes, hardening.
+- [ ] **U14 (PHASE 14)** a11y (WCAG AA, focus, reduced motion), responsive (240/64/drawer), performance (lazy islands), tests de UI restantes, hardening. **PENDIENTE CLAVE: dar cobertura de tipos a frontend** (NO hay `frontend/tsconfig.json`; `astro build` no typechecks → defectos tipo invisibles; opción: `astro check`/`@astrojs/check` + script `typecheck:frontend`, evaluar deps nuevas primero).
 
 **Acceptance criteria (por fase):** `bun run typecheck && bun run lint && bun test && bun run build:frontend` verdes; UI dev habla con backend real vía proxy; ningún endpoint ficticio; copia en inglés consistente; tokens aplicados sin excepciones #F095C8.
 
@@ -39,4 +39,4 @@
 
 **Resolved mode:** TDD no configurado explícito en proyecto; checks por tarea: `bun run typecheck`, `bun run lint`, `bun test`, `bun run build:frontend`.
 
-**Progress/next step:** U01 ✅, U02 ✅. Siguiente: U03 (Overview: cards de estado reales + quick actions).
+**Progress/next step:** U01 ✅, U02 ✅, U03 ✅. Siguiente: U04 (Workflow library: lista CRUD + run/logs desde `api.workflows`).
