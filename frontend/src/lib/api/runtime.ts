@@ -26,6 +26,14 @@ export interface RuntimeStatus {
   authEnabled: boolean;
 }
 
+/** Forwarded transport options (DI seam: origin/fetch/signal/timeout). */
+export interface RuntimeStatusOptions {
+  origin?: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 /**
  * Probe the runtime: health first, then (when reachable) the auth gate via
  * the models branch. Never throws — always resolves to a status object.

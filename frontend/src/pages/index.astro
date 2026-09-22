@@ -1,38 +1,25 @@
 ---
 import AppLayout from "../layouts/AppLayout.astro";
+import Overview from "../svelte/overview/Overview.svelte";
 
 /**
- * Overview — console landing page. Phase 1 renders the shell only: the
- * metric cards show "—" until the API client (phase 3) wires real values.
+ * Overview — console landing page. The live dashboard island gathers real
+ * values through the typed API clients (runtime health, model registry,
+ * workflow store) and refreshes every 10 seconds. It never invents metrics:
+ * unavailable values render as "—"/"Unavailable" with an honest reason.
  */
-const METRIC_CARDS = [
-  { label: "Active models", hint: "Activated local models" },
-  { label: "Workflows", hint: "Stored workflow definitions" },
-  { label: "Executions", hint: "Recent workflow runs" },
-  { label: "Runtime", hint: "Backend health and version" },
-];
 ---
 
 <AppLayout title="Overview">
   <header class="page-head">
     <h1>Overview</h1>
     <p>
-      Runtime state summary. Metric values come from the backend API once the
-      typed client connects — until then each card reads "—".
+      Live runtime summary — backend endpoint, model registry state and recent
+      workflows, refreshed automatically from the /api surface.
     </p>
   </header>
 
-  <div class="metric-grid">
-    {
-      METRIC_CARDS.map((card) => (
-        <article class="metric-card">
-          <span class="metric-value" aria-label="Unavailable">—</span>
-          <span class="metric-label">{card.label}</span>
-          <span class="metric-hint">{card.hint}</span>
-        </article>
-      ))
-    }
-  </div>
+  <Overview client:load />
 </AppLayout>
 
 <style>
@@ -46,40 +33,5 @@ const METRIC_CARDS = [
     margin: 0 0 var(--space-6);
     color: var(--secondary);
     max-width: 64ch;
-  }
-
-  .metric-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--space-4);
-  }
-
-  .metric-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    padding: var(--space-5);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
-    background: var(--card);
-  }
-
-  .metric-value {
-    font-size: 2rem;
-    font-weight: 700;
-    line-height: 1.1;
-    font-variant-numeric: tabular-nums;
-    color: var(--text);
-  }
-
-  .metric-label {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text);
-  }
-
-  .metric-hint {
-    font-size: 0.75rem;
-    color: var(--secondary);
   }
 </style>
