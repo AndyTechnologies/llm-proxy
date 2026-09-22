@@ -1,0 +1,41 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import RuntimePanel from "../../svelte/runtime/RuntimePanel.svelte";
+import pkg from "../../../../package.json";
+
+/**
+ * Runtime — backend health, endpoints, auth gate, websocket handshake and
+ * version. The island owns all live data through the typed API client (no
+ * server-side fetch here): GET /api/health (timed), the runtime auth probe
+ * and a one-shot WS /ws connection probe. Values the browser cannot observe
+ * (server env like the listening port) are never invented — the page shows
+ * the client-side origin and marks the rest as coming from the backend.
+ * Version comes from the root package.json at build time.
+ */
+---
+
+<AppLayout title="Runtime" breadcrumb={["Runtime"]}>
+  <header class="page-head">
+    <h1>Runtime</h1>
+    <p>
+      Backend health, the endpoints this console talks to, the auth gate and
+      a live WebSocket handshake probe — all against the real surface.
+    </p>
+  </header>
+
+  <RuntimePanel client:load name={pkg.name} version={pkg.version} />
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+</style>
