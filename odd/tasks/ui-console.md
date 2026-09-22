@@ -39,6 +39,8 @@
 
 **Resolved mode:** TDD no configurado explícito en proyecto; checks por tarea: `bun run typecheck`, `bun run lint`, `bun test`, `bun run build:frontend`.
 
-**Progress/next step:** U01 ✅, U02 ✅, U03 ✅, U04 ✅, U05 ✅, U06 ✅. Siguiente: U07 (Workflow execution: run HTTP + live WS /ws en RunPanel; executions desde logs).
+**Delivery (decidido 2026-09-22 por usuario):** `feature-branch-chain`. Tracker = `feat/ui-console` (acumula integración final). Al abrir PRs: PR #1 con base = tracker (rama child `ui-console/slice-1`), PRs hijos con base = rama del PR anterior (`ui-console/slice-N` contra `slice-(N-1)`); solo el tracker mergea a main. Cargar skills `chained-pr` + `work-unit-commits` + `branch-pr` por registry ANTES de planear/crear PRs.
+
+**Progress/next step:** U01 ✅, U02 ✅, U03 ✅, U04 ✅, U05 ✅, U06 ✅. En curso: U07 (Workflow execution).
 
 **buildings/new-workflow (seam U05 → U06/U07, anotado 2026-09-22):** el editor U05 es lectura + edición del modelo de canvas solamente: `FlowEditor.svelte` carga el workflow vía API client, convierte a FlowNode/FlowEdge y NO persiste. `flowToGraph` emite el id de placeholder `"workflow"` (el nombre real se antepone al guardar). Guardar (U07) = `flowToGraph` → `serializeGraphToYaml` → `PUT /api/workflows/:name` con el YAML canónico; validar antes con `validateGraph()` del backend (autoridad). El slot `condition` (AST opaque en `FlowNodeData`) y `params` (pipeline) se preservan por fidelidad de round-trip pero no tienen UI de edición aún (U06). `start`/`end` no se pueden borrar ni desconectar del flujo por ahora; `llm_call` exige `model` + `mode` en el backend (la tarjeta marca `model` "unset"). No se inventaron endpoints: el editor lee `GET /api/workflows/:name`; no existe guardado de UI todavía, solo el enlace `buildings/new-workflow`.
