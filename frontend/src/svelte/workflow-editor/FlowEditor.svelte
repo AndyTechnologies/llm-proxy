@@ -8,11 +8,13 @@
     SvelteFlow,
   } from "@xyflow/svelte";
   import "@xyflow/svelte/dist/style.css";
-  import { ApiError, getWorkflow } from "../../lib/api/index.js";
+  import { ApiError, getWorkflow, listModels, saveWorkflow } from "../../lib/api/index.js";
   import {
     graphToFlow,
     nodeGroupOf,
     parseWorkflowYamlToGraph,
+    patchNodeData,
+    serializeGraphToYaml,
     uniqueEdgeId,
     type CanvasApi,
     type FlowEdge,
@@ -26,6 +28,7 @@
     type GraphPipeline,
     type NodeType,
   } from "../../lib/workflow-nodes.js";
+  import { validateWorkflow } from "../../lib/workflow-validate.js";
   import Button from "../common/Button.svelte";
   import EmptyState from "../common/EmptyState.svelte";
   import CanvasCommands from "./CanvasCommands.svelte";
@@ -39,11 +42,13 @@
   import FlowNodeOutput from "./nodes/FlowNodeOutput.svelte";
 
   /**
-   * Workflow editor island (U05): reads a stored workflow through the typed
-   * API client, converts it to canvas shape, and hosts the SvelteFlow
-   * surface (canvas + palette + inspector) plus the shared node components.
-   * Purely read/visual for now: adding nodes, connecting and deleting work
-   * on the canvas model only — persistence lands in U07.
+   * Workflow editor island (U05 + U06): reads a stored workflow through the
+   * typed API client, converts it to canvas shape, and hosts the SvelteFlow
+   * surface (canvas + palette + inspector). U06 adds editing: the inspector
+   * writes canvas state immediately; SAVE is explicit (button or Ctrl/Cmd+S),
+   * gated by a client-side structural mirror (`validateWorkflow`) with the
+   * backend as the authority (its 400 error envelope is shown verbatim).
+   * Positions never dirty the graph JSON — geometry is not persisted.
    */
 
   const nodeTypes = {
@@ -80,6 +85,16 @@
   let canvasApi = $state<CanvasApi | null>(null);
   let hostEl: HTMLDivElement | undefined = $state();
 
+  /** Last persisted version from the store (null → never saved this session). */
+  let savedVersion = $state<number | null>(null);
+  /** Semantic JSON snapshot of the last saved/loaded graph (drag ≠ dirty). */
+  let savedGraphJson = $state<string | null>(null);
+  let saving = $state(false);
+  let saveFlash = $state<string | null>(null);
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  let errorsPanel = $state<{ title: string; items: string[] } | null>(null);
+  let knownModelIds = $state<string[]>([]);
+
   /** `initialGraph` is applied exactly once and never again (non-reactive). */
   let seeded = false;
 
@@ -89,6 +104,22 @@
   const emptyCanvas = $derived(status === "ready" && flowNodes.length === 0);
   const loading = $derived(status === "idle" || status === "loading");
 
+  /** Canvas → engine graph with the real workflow identity stamped in. */
+  function snapshotGraph(): string {
+    const graph = flowToGraph(flowNodes, flowEdges);
+    const name = workflowName ?? "workflow";
+    graph.id = name;
+    graph.name = name;
+    return JSON.stringify(graph);
+  }
+
+  /** Unsaved = the current canvas semantics differ from the last saved state. */
+  const dirty = $derived(savedGraphJson !== null && snapshotGraph() !== savedGraphJson);
+
+  const canSave = $derived(
+    status === "ready" && dirty && !saving && workflowName !== null,
+  );
+
   $effect(() => {
     if (workflowName === null) return;
     void loadWorkflow(workflowName);
@@ -97,10 +128,38 @@
   $effect(() => {
     if (workflowName !== null || initialGraph === undefined || seeded) return;
     seeded = true;
-    seedFromGraph(initialGraph);
+    seedFromGraph(initialGraph, null);
   });
 
-  function seedFromGraph(graph: GraphPipeline): void {
+  /** Best-effort local-registry model ids for the inspector datalist. */
+  $effect(() => {
+    if (status !== "ready") return;
+    let cancelled = false;
+    void listModels()
+      .then((rows) => {
+        if (!cancelled) knownModelIds = rows.map((row) => row.id);
+      })
+      .catch(() => {
+        if (!cancelled) knownModelIds = [];
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  /** Ctrl/Cmd+S saves explicitly — the ONLY implicit affordance, never auto-save. */
+  $effect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void save();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  function seedFromGraph(graph: GraphPipeline, version: number | null): void {
     const converted = graphToFlow(graph);
     flowNodes = converted.nodes;
     flowEdges = converted.edges;
@@ -108,11 +167,15 @@
     errorMessage = "";
     status = "ready";
     fitQueued += 1;
+    savedVersion = version;
+    savedGraphJson = snapshotGraph();
+    errorsPanel = null;
   }
 
   async function loadWorkflow(name: string): Promise<void> {
     status = "loading";
     errorMessage = "";
+    errorsPanel = null;
     try {
       const record = await getWorkflow(name);
       const parsed = parseWorkflowYamlToGraph(record.yaml);
@@ -121,7 +184,7 @@
         errorMessage = parsed.error;
         return;
       }
-      seedFromGraph(parsed.graph);
+      seedFromGraph(parsed.graph, record.version);
     } catch (err) {
       status = "error";
       errorMessage =
@@ -190,6 +253,80 @@
   }): void {
     selectedId = nodes[0]?.id ?? null;
   }
+
+  /**
+   * start/end are undeletable: strip them from the delete set (keyboard and
+   * button deletion both flow through onBeforeDelete).
+   */
+  function onBeforeDelete({
+    nodes,
+    edges,
+  }: {
+    nodes: FlowNode[];
+    edges: FlowEdge[];
+  }): { nodes: FlowNode[]; edges: FlowEdge[] } {
+    const deletable = nodes.filter(
+      (node) => node.data.wNodeType !== "start" && node.data.wNodeType !== "end",
+    );
+    return { nodes: deletable, edges };
+  }
+
+  function updateNode(id: string, patch: Partial<FlowNodeData>): void {
+    flowNodes = patchNodeData(flowNodes, id, patch);
+  }
+
+  /** Format a save failure from the ApiError envelope (verbatim backend text). */
+  function formatSaveError(err: unknown): { title: string; items: string[] } {
+    if (err instanceof ApiError) {
+      const items = Array.isArray(err.errors) ? err.errors.map(String) : [];
+      return { title: err.message, items };
+    }
+    return {
+      title: "Save failed",
+      items: [err instanceof Error ? err.message : "unknown error"],
+    };
+  }
+
+  function flash(text: string): void {
+    saveFlash = text;
+    if (flashTimer !== undefined) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      saveFlash = null;
+    }, 3000);
+  }
+
+  /**
+   * Explicit save: structural mirror first (errors SHOWN BEFORE the request),
+   * then serialize → PUT with the real workflow name stamped on the doc, and
+   * surface the backend's own 400 envelope verbatim when it disagrees.
+   */
+  async function save(): Promise<void> {
+    if (workflowName === null || saving || status !== "ready") return;
+    const graph = flowToGraph(flowNodes, flowEdges);
+    graph.id = workflowName;
+    graph.name = workflowName;
+    const check = validateWorkflow(
+      graph,
+      knownModelIds.length > 0 ? { knownModels: knownModelIds } : {},
+    );
+    if (!check.valid) {
+      errorsPanel = { title: `Workflow "${workflowName}" does not validate`, items: check.errors };
+      return;
+    }
+    saving = true;
+    errorsPanel = null;
+    try {
+      const yaml = serializeGraphToYaml(graph);
+      const result = await saveWorkflow(workflowName, yaml);
+      savedVersion = result.version;
+      savedGraphJson = snapshotGraph();
+      flash(`Saved v${result.version}`);
+    } catch (err) {
+      errorsPanel = formatSaveError(err);
+    } finally {
+      saving = false;
+    }
+  }
 </script>
 
 <div class="wf-layout" data-testid="workflow-flow-editor">
@@ -200,6 +337,35 @@
       </EmptyState>
     </div>
   {:else}
+    <div class="wf-toolbar">
+      <div class="wf-toolbar-left">
+        <span class="wf-name">{workflowName ?? "Unnamed workflow"}</span>
+        <code class="wf-version">v{savedVersion ?? "—"}</code>
+        {#if dirty}
+          <span class="wf-dirty" aria-live="polite">Unsaved changes</span>
+        {/if}
+        {#if saveFlash !== null}
+          <span class="wf-flash" aria-live="polite">{saveFlash}</span>
+        {/if}
+      </div>
+      <Button variant="primary" disabled={!canSave} onclick={() => void save()}>
+        {saving ? "Saving…" : "Save"}
+      </Button>
+    </div>
+
+    {#if errorsPanel !== null}
+      <div class="wf-errors" role="alert" aria-label="Save errors">
+        <h3 class="wf-errors-title">{errorsPanel.title}</h3>
+        {#if errorsPanel.items.length > 0}
+          <ul class="wf-errors-list">
+            {#each errorsPanel.items as item (item)}
+              <li><code>{item}</code></li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
+
     <div class="wf-canvas" bind:this={hostEl} aria-label="Workflow canvas">
       {#if loading}
         <div class="wf-skeleton" aria-hidden="true">
@@ -215,6 +381,7 @@
           {nodeTypes}
           onconnect={onConnect}
           onselectionchange={onSelectionChange}
+          onbeforedelete={onBeforeDelete}
           {defaultEdgeOptions}
           defaultMarkerColor={null}
           minZoom={0.25}
@@ -239,7 +406,12 @@
     </div>
     <aside class="wf-rail">
       <NodePalette onAdd={addNode} />
-      <Inspector node={selectedNode} />
+      <Inspector
+        node={selectedNode}
+        onUpdate={updateNode}
+        canvasNodes={flowNodes}
+        knownModelIds={knownModelIds}
+      />
     </aside>
   {/if}
 </div>
@@ -248,9 +420,99 @@
   .wf-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 280px;
+    grid-template-rows: auto auto minmax(0, 1fr);
     gap: var(--space-3);
     height: 100%;
     min-height: 460px;
+  }
+
+  .wf-toolbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    min-height: 36px;
+  }
+
+  .wf-toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .wf-name {
+    font-size: 0.92rem;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .wf-version {
+    flex: none;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--code);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+  }
+
+  .wf-dirty {
+    flex: none;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--accent-subtle);
+    color: var(--accent-hover);
+    font-size: 0.7rem;
+    font-weight: 600;
+  }
+
+  .wf-flash {
+    flex: none;
+    color: var(--success);
+    font-size: 0.74rem;
+  }
+
+  .wf-errors {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-control);
+    background: var(--code);
+  }
+
+  .wf-errors-title {
+    margin: 0;
+    color: var(--danger);
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .wf-errors-list {
+    margin: 0;
+    padding-left: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .wf-errors-list li {
+    color: var(--secondary);
+    font-size: 0.76rem;
+    line-height: 1.5;
+  }
+
+  .wf-errors-list code {
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
   }
 
   .wf-canvas {
@@ -356,7 +618,7 @@
   @media (max-width: 1080px) {
     .wf-layout {
       grid-template-columns: 1fr;
-      grid-template-rows: minmax(420px, 55vh) auto;
+      grid-template-rows: auto auto minmax(420px, 55vh) auto;
     }
 
     .wf-rail {

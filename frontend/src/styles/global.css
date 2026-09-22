@@ -70,7 +70,7 @@ pre {
 /* ---------------------------------------------------------------------------
  * SvelteFlow ships light-theme defaults; remap its accent --xy-* variables
  * to the Gentle-AI tokens so every canvas blends with the shell. Components
- * may refine node/control styling locally (see WorkflowEditor.svelte).
+ * may refine node/control styling locally (see workflow-editor/FlowEditor.svelte).
  */
 .svelte-flow {
   --xy-handle-background-color: var(--accent);

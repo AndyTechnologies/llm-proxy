@@ -368,6 +368,24 @@ export function serializeGraphToYaml(graph: GraphPipeline): string {
   return serializeWorkflowGraph(graph, null);
 }
 
+// ── Inspector seam (U06) ─────────────────────────────────────────────────────
+
+/**
+ * Immutably patch one canvas node's DATA (fields, opaque slots) while
+ * preserving its id, group type and position. Returns a new array — the
+ * inspector's write seam into `bind:nodes` — so a Select→Reset or Undo never
+ * has to restore geometry.
+ */
+export function patchNodeData(
+  nodes: readonly FlowNode[],
+  id: string,
+  patch: Partial<FlowNodeData>,
+): FlowNode[] {
+  return nodes.map((node) =>
+    node.id === id ? { ...node, data: { ...node.data, ...patch } } : node,
+  );
+}
+
 // ── Display helpers (shared by node components and the inspector) ────────────
 
 /** Human-readable one-line rendering of a SAFE AST expression. */

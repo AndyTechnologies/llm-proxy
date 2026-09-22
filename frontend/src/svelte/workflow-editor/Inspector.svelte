@@ -1,52 +1,250 @@
 <script lang="ts">
-  import { astSummary, type FlowNode, type FlowNodeData } from "../../lib/workflow-flow.js";
-  import { formatValue, nodeTypeDef } from "../../lib/workflow-nodes.js";
+  import {
+    parseConditionSource,
+    renderConditionSource,
+  } from "../../lib/workflow-condition.js";
+  import { nodeTypeDef } from "../../lib/workflow-nodes.js";
   import type { NodeFieldDef } from "../../lib/workflow-nodes.js";
+  import type { FlowNode, FlowNodeData } from "../../lib/workflow-flow.js";
+  import { sanitizeAst } from "../../../../src/orchestrator/graph.js";
 
   /**
-   * Read-only inspector panel (U05) for the selected canvas node: identity,
-   * taxonomy description, the same summary lines the card shows, and the
-   * full per-type field surface from the taxonomy (values or "—"). Editable
-   * forms arrive in U06; this establishes the panel seam.
+   * Editable inspector panel (U06): per-type form for the selected canvas
+   * node. Writes are IMMEDIATE canvas updates through `onUpdate(id, patch)`
+   * — nothing auto-saves; persistence is the explicit Save in FlowEditor.
+   *
+   * Layout per taxonomy:
+   *   - start/end/output        → read-only summary (structural nodes)
+   *   - fan/join                → connection-driven guidance (edges only)
+   *   - llm_call                → generic fields; model gets a local-registry
+   *                               datalist; on_429 / tool_calls_route get
+   *                               target warnings (NOT blockers)
+   *   - condition / router      → canonical condition source editor (grammar
+   *                               mirrors the backend SAFE AST; valid input
+   *                               writes the opaque AST slot)
+   *   - loop                    → iterations number + body multi-select
+   *                               (existing node ids, start/end excluded)
+   *   - pipeline                → pipeline name + editable params key/value rows
+   *   - rag_local / memory /
+   *     embeddings / data.code  → generic fields (k, convId, text, code)
    */
 
-  let { node }: { node: FlowNode | null } = $props();
+  let {
+    node,
+    onUpdate,
+    canvasNodes,
+    knownModelIds,
+  }: {
+    node: FlowNode | null;
+    onUpdate: (id: string, patch: Partial<FlowNodeData>) => void;
+    canvasNodes: readonly FlowNode[];
+    knownModelIds: readonly string[];
+  } = $props();
 
-  const entry = $derived(node === null ? null : nodeTypeDef(node.data.wNodeType));
-  const lines = $derived(node === null ? [] : summaryLines(node.data));
+  const entry = $derived(node === null ? null : workflowNodeTypes(node.data.wNodeType));
+  const readOnlyType = $derived(
+    node !== null &&
+      (node.data.wNodeType === "start" ||
+        node.data.wNodeType === "end" ||
+        node.data.wNodeType === "output"),
+  );
+  const connectionDriven = $derived(
+    node !== null &&
+      (node.data.wNodeType === "fan" || node.data.wNodeType === "join"),
+  );
 
-  function summaryLines(data: FlowNodeData): { key: string; value: string }[] {
-    const out: { key: string; value: string }[] = [];
-    if (data.wNodeType === "condition" || data.wNodeType === "router") {
-      out.push({
-        key: "condition",
-        value: data.condition !== undefined ? astSummary(data.condition) : "unset",
-      });
-      return out;
-    }
-    if (data.wNodeType === "pipeline" && data.params !== undefined) {
-      for (const [key, value] of Object.entries(data.params)) {
-        out.push({ key, value });
+  // ── Generic field rendering ────────────────────────────────────────────────
+
+  /** The primitive value an input should show for a field ("", "2", …). */
+  function displayValue(field: NodeFieldDef): string {
+    if (node === null) return "";
+    const value = node.data.values[field.key];
+    if (value === undefined) return "";
+    if (typeof value === "string") return value;
+    return String(value);
+  }
+
+  /** Is there a current (non-empty) value for this field? */
+  function hasValue(field: NodeFieldDef): boolean {
+    if (node === null) return false;
+    const value = node.data.values[field.key];
+    return value !== undefined && value !== "";
+  }
+
+  /** Engine-required fields gain a hint when unset. */
+  function requiredNote(field: NodeFieldDef): boolean {
+    return node?.data.wNodeType === "llm_call" && field.key === "model";
+  }
+
+  /**
+   * Convert raw input text to the value shape the field's kind admits — the
+   * UI twin of `sanitizeFieldValue`. Empty/invalid → undefined → the key is
+   * dropped from values (same "unknown/dropped" admission as the backend).
+   */
+  function cleanFieldValue(
+    field: NodeFieldDef,
+    raw: string,
+  ): string | number | boolean | undefined {
+    switch (field.kind) {
+      case "toggle":
+        return undefined; // handled by writeToggle
+      case "number": {
+        if (raw === "") return undefined;
+        const num = Number(raw);
+        return Number.isFinite(num) ? num : undefined;
       }
-      return out;
+      case "tokens": {
+        if (raw === "") return undefined;
+        const num = Number(raw);
+        return Number.isFinite(num) ? num : raw;
+      }
+      case "select":
+        return field.options?.includes(raw) ? raw : undefined;
+      case "textarea":
+      case "text":
+      case "code":
+        return raw === "" ? undefined : raw;
     }
-    return out;
   }
 
-  function fieldValue(field: NodeFieldDef, data: FlowNodeData): string {
-    if (field.key === "condition") {
-      return data.condition !== undefined ? astSummary(data.condition) : "unset";
+  /** Generic-kind write: sanitize to the admission shape, then persist. */
+  function writeField(field: NodeFieldDef, raw: string): void {
+    if (node === null) return;
+    const values = { ...node.data.values };
+    const cleaned = cleanFieldValue(field, raw);
+    if (cleaned === undefined) delete values[field.key];
+    else values[field.key] = cleaned;
+    onUpdate(node.id, { values });
+  }
+
+  function writeToggle(field: NodeFieldDef, checked: boolean): void {
+    if (node === null) return;
+    const values = { ...node.data.values };
+    if (!checked) delete values[field.key];
+    else values[field.key] = checked;
+    onUpdate(node.id, { values });
+  }
+
+  /** Input id for label association (unique per selected node). */
+  function fieldInputId(field: NodeFieldDef): string {
+    return node === null ? field.key : `wf-${node.id}-${field.key}`;
+  }
+
+  /** Warning (not blocker) for route targets referencing unknown ids. */
+  function targetNote(field: NodeFieldDef): string | null {
+    if (node === null) return null;
+    const value = node.data.values[field.key];
+    if (typeof value !== "string" || value === "") return null;
+    if (canvasNodes.some((other) => other.id === value)) return null;
+    return `"${value}" is not an existing node id — saved graphs require a real target.`;
+  }
+
+  // ── Loop body multi-select ─────────────────────────────────────────────────
+
+  const bodyCandidates = $derived(
+    node === null
+      ? []
+      : canvasNodes.filter(
+          (other) =>
+            other.id !== node.id &&
+            other.data.wNodeType !== "start" &&
+            other.data.wNodeType !== "end",
+        ),
+  );
+
+  const bodySelection = $derived(
+    node !== null && Array.isArray(node.data.values.body)
+      ? (node.data.values.body as string[])
+      : [],
+  );
+
+  function toggleBodyMember(memberId: string): void {
+    if (node === null) return;
+    const current = Array.isArray(node.data.values.body) ? [...node.data.values.body] : [];
+    const idx = current.indexOf(memberId);
+    if (idx >= 0) current.splice(idx, 1);
+    else current.push(memberId);
+    onUpdate(node.id, { values: { ...node.data.values, body: current } });
+  }
+
+  // ── Condition source editor (condition / router) ───────────────────────────
+
+  const conditionActive = $derived(
+    node !== null &&
+      (node.data.wNodeType === "condition" || node.data.wNodeType === "router"),
+  );
+
+  /** Local draft so invalid typing is never clobbered by the canonical form. */
+  let conditionDraft = $state("");
+
+  /** Re-sync the draft whenever the node (or its stored AST) changes. */
+  $effect(() => {
+    if (!conditionActive) return;
+    conditionDraft =
+      node!.data.condition !== undefined ? renderConditionSource(node!.data.condition) : "";
+  });
+
+  const conditionError = $derived.by(() => {
+    if (!conditionActive || conditionDraft.trim() === "") return null;
+    const parsed = parseConditionSource(conditionDraft);
+    return parsed.ok ? null : parsed.error;
+  });
+
+  function onConditionInput(event: Event): void {
+    if (node === null || !conditionActive) return;
+    const draft = (event.currentTarget as HTMLTextAreaElement).value;
+    conditionDraft = draft;
+    if (draft.trim() === "") {
+      onUpdate(node.id, { condition: undefined });
+      return;
     }
-    return formatValue(field.kind, data.values[field.key]);
+    const parsed = parseConditionSource(draft);
+    if (!parsed.ok) return;
+    if (sanitizeAst(parsed.expr) === null) return; // backend authority gate
+    onUpdate(node.id, { condition: parsed.expr });
   }
 
-  /** Engine-required fields render a "required" hint when unset. */
-  function isRequired(field: NodeFieldDef, data: FlowNodeData): boolean {
-    return data.wNodeType === "llm_call" && field.key === "model";
+  // ── Pipeline params editor ─────────────────────────────────────────────────
+
+  interface ParamRow {
+    key: string;
+    value: string;
   }
 
-  function hasOpaqueSlots(data: FlowNodeData): boolean {
-    return data.condition !== undefined || data.params !== undefined;
+  let paramsRows = $state<ParamRow[]>([]);
+
+  $effect(() => {
+    const params = node?.data.params;
+    const keys = params !== undefined ? Object.keys(params) : [];
+    paramsRows =
+      keys.length === 0
+        ? [{ key: "", value: "" }]
+        : keys.map((key) => ({ key, value: params[key] }));
+  });
+
+  function pushParams(rows: readonly ParamRow[]): void {
+    if (node === null) return;
+    const params: Record<string, string> = {};
+    for (const row of rows) {
+      if (row.key.trim() !== "") params[row.key.trim()] = row.value;
+    }
+    onUpdate(node.id, { params });
+  }
+
+  function writeParam(row: ParamRow, patch: Partial<ParamRow>): void {
+    const rows = paramsRows.map((r) => (r === row ? { ...r, ...patch } : r));
+    paramsRows = rows;
+    pushParams(rows);
+  }
+
+  function addParamRow(): void {
+    paramsRows = [...paramsRows, { key: "", value: "" }];
+  }
+
+  function removeParamRow(row: ParamRow): void {
+    const rows = paramsRows.filter((r) => r !== row);
+    paramsRows = rows.length === 0 ? [{ key: "", value: "" }] : rows;
+    pushParams(rows);
   }
 </script>
 
@@ -54,7 +252,7 @@
   <h2 class="panel-title">Inspector</h2>
 
   {#if node === null}
-    <p class="inspector-empty">Select a node to inspect its fields.</p>
+    <p class="inspector-empty">Select a node to edit its fields.</p>
   {:else if entry === null}
     <p class="inspector-empty">Unknown node type.</p>
   {:else}
@@ -68,46 +266,211 @@
     <p class="inspector-desc">{entry.description}</p>
     <code class="inspector-node-id">{node.id}</code>
 
-    {#if lines.length > 0}
-      <section class="inspector-section" aria-label="Summary">
-        <h3 class="inspector-sub">Summary</h3>
-        <dl class="inspector-rows">
-          {#each lines as line (line.key)}
-            <div class="inspector-row">
-              <dt>{line.key}</dt>
-              <dd>{line.value}</dd>
-            </div>
-          {/each}
-        </dl>
+    {#if readOnlyType}
+      <section class="inspector-section" aria-label="Fields">
+        <h3 class="inspector-sub">No editable fields</h3>
+        <p class="inspector-muted">This node is structural — the graph engine reads it as-is.</p>
       </section>
-    {/if}
-
-    <section class="inspector-section" aria-label="Fields">
-      <h3 class="inspector-sub">
-        {entry.fields.length > 0 || hasOpaqueSlots(node.data) ? "Fields" : "No fields"}
-      </h3>
-      {#if entry.fields.length > 0 || hasOpaqueSlots(node.data)}
-        <dl class="inspector-rows">
+    {:else if connectionDriven}
+      <section class="inspector-section" aria-label="Connections">
+        <h3 class="inspector-sub">Connection-driven</h3>
+        <p class="inspector-muted">
+          {node.data.wNodeType === "fan"
+            ? "Branches are the edges leaving this node — connect several targets to fan out in parallel."
+            : "Merge happens through incoming edges — connect branch outputs here before the graph continues."}
+        </p>
+      </section>
+    {:else}
+      {#if node.data.wNodeType === "condition" || node.data.wNodeType === "router"}
+        <section class="inspector-section" aria-label="Condition">
+          <h3 class="inspector-sub">Condition</h3>
+          <label class="field-label" for={`wf-${node.id}-condition`}>Expression</label>
+          <textarea
+            id={`wf-${node.id}-condition`}
+            class="field-input field-code"
+            rows={4}
+            spellcheck="false"
+            value={conditionDraft}
+            oninput={onConditionInput}
+          ></textarea>
+          {#if conditionError !== null}
+            <p class="field-error" role="alert">{conditionError}</p>
+          {:else if conditionDraft.trim() !== ""}
+            <p class="field-note field-note-ok" aria-live="polite">Expression accepted by the engine.</p>
+          {/if}
+          <p class="field-hint">
+            Operators: exists(field), not(…), all(…), any(…), field ==/!=/&lt;/&lt;=/&gt;/&gt;= value.
+            Fields: lastResponse.status, lastResponse.content, error, variables.*.
+            Values: numbers, "strings", true/false/null.
+          </p>
+        </section>
+      {:else if node.data.wNodeType === "loop"}
+        <section class="inspector-section" aria-label="Iterations">
+          <h3 class="inspector-sub">Iterations</h3>
           {#each entry.fields as field (field.key)}
-            {#if field.key !== "condition" || node.data.condition !== undefined}
-              <div class="inspector-row">
-                <dt>{field.label}</dt>
-                <dd class:unset={!isRequired(field, node.data) && fieldValue(field, node.data) === "—"}>
-                  {fieldValue(field, node.data)}
-                  {#if isRequired(field, node.data) && fieldValue(field, node.data) === "—"}
-                    <span class="required-note">required</span>
-                  {/if}
-                </dd>
+            {#if field.key === "iterations"}
+              <div class="field">
+                <label class="field-label" for={fieldInputId(field)}>{field.label}</label>
+                <input
+                  id={fieldInputId(field)}
+                  class="field-input"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={displayValue(field)}
+                  oninput={(event) => writeField(field, (event.currentTarget as HTMLInputElement).value)}
+                />
               </div>
             {/if}
           {/each}
-        </dl>
+        </section>
+        <section class="inspector-section" aria-label="Body">
+          <h3 class="inspector-sub">Body</h3>
+          {#if bodyCandidates.length === 0}
+            <p class="inspector-muted">Add other nodes to the canvas to fill the loop body.</p>
+          {:else}
+            <ul class="body-list">
+              {#each bodyCandidates as other (other.id)}
+                <li>
+                  <label class="body-option">
+                    <input
+                      type="checkbox"
+                      checked={bodySelection.includes(other.id)}
+                      onchange={() => toggleBodyMember(other.id)}
+                    />
+                    <span class="body-option-id">{other.id}</span>
+                    <code class="body-option-type">{other.data.wNodeType}</code>
+                  </label>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+      {:else if node.data.wNodeType === "pipeline"}
+        <section class="inspector-section" aria-label="Pipeline">
+          <h3 class="inspector-sub">Pipeline</h3>
+          {#each entry.fields as field (field.key)}
+            {#if field.key === "pipeline"}
+              <div class="field">
+                <label class="field-label" for={fieldInputId(field)}>{field.label}</label>
+                <input
+                  id={fieldInputId(field)}
+                  class="field-input"
+                  type="text"
+                  placeholder={field.placeholder}
+                  value={displayValue(field)}
+                  oninput={(event) => writeField(field, (event.currentTarget as HTMLInputElement).value)}
+                />
+              </div>
+            {/if}
+          {/each}
+          <h3 class="inspector-sub inspector-sub-gap">Params</h3>
+          {#each paramsRows as row, i (i)}
+            <div class="param-row">
+              <input
+                class="field-input field-input-key"
+                type="text"
+                placeholder="key"
+                aria-label="Parameter key"
+                value={row.key}
+                oninput={(event) => writeParam(row, { key: (event.currentTarget as HTMLInputElement).value })}
+              />
+              <input
+                class="field-input"
+                type="text"
+                placeholder="value"
+                aria-label="Parameter value"
+                value={row.value}
+                oninput={(event) => writeParam(row, { value: (event.currentTarget as HTMLInputElement).value })}
+              />
+              <button
+                class="param-remove"
+                type="button"
+                aria-label={`Remove parameter ${row.key === "" ? "" : row.key}`}
+                onclick={() => removeParamRow(row)}
+              >
+                ×
+              </button>
+            </div>
+          {/each}
+          <button class="param-add" type="button" onclick={addParamRow}>Add parameter</button>
+        </section>
       {:else}
-        <p class="inspector-muted">This node type has no editable fields.</p>
+        <section class="inspector-section" aria-label="Fields">
+          <h3 class="inspector-sub">Fields</h3>
+          {#each entry.fields as field (field.key)}
+            <div class="field">
+              <label class="field-label" for={fieldInputId(field)}>
+                {field.label}
+                {#if requiredNote(field) && !hasValue(field)}
+                  <span class="required-note">required</span>
+                {/if}
+              </label>
+
+              {#if field.kind === "select"}
+                <select
+                  id={fieldInputId(field)}
+                  class="field-input"
+                  value={displayValue(field)}
+                  onchange={(event) => writeField(field, (event.currentTarget as HTMLSelectElement).value)}
+                >
+                  <option value="">Unset</option>
+                  {#each field.options ?? [] as option (option)}
+                    <option value={option}>{option}</option>
+                  {/each}
+                </select>
+              {:else if field.kind === "toggle"}
+                <input
+                  id={fieldInputId(field)}
+                  class="field-toggle"
+                  type="checkbox"
+                  checked={node.data.values[field.key] === true}
+                  onchange={(event) => writeToggle(field, (event.currentTarget as HTMLInputElement).checked)}
+                />
+              {:else if field.kind === "textarea" || field.kind === "code"}
+                <textarea
+                  id={fieldInputId(field)}
+                  class="field-input"
+                  class:field-code={field.kind === "code"}
+                  rows={field.kind === "code" ? 6 : 3}
+                  spellcheck={field.kind !== "code"}
+                  placeholder={field.placeholder}
+                  value={displayValue(field)}
+                  oninput={(event) => writeField(field, (event.currentTarget as HTMLTextAreaElement).value)}
+                ></textarea>
+              {:else}
+                <input
+                  id={fieldInputId(field)}
+                  class="field-input"
+                  type={field.kind === "number" ? "number" : "text"}
+                  step={field.kind === "number" ? "any" : undefined}
+                  inputmode={field.kind === "tokens" ? "decimal" : undefined}
+                  placeholder={field.placeholder}
+                  value={displayValue(field)}
+                  list={field.key === "model" ? "wf-model-suggestions" : undefined}
+                  oninput={(event) => writeField(field, (event.currentTarget as HTMLInputElement).value)}
+                />
+              {/if}
+
+              {#if field.key === "model"}
+                <p class="field-hint">Local registry ids ({knownModelIds.length} {knownModelIds.length === 1 ? "model" : "models"}).</p>
+              {/if}
+              {#if (field.key === "on_429" || field.key === "tool_calls_route") && targetNote(field) !== null}
+                <p class="field-warning" role="note">{targetNote(field)}</p>
+              {/if}
+            </div>
+          {/each}
+        </section>
       {/if}
-    </section>
+    {/if}
   {/if}
 </aside>
+
+<datalist id="wf-model-suggestions">
+  {#each knownModelIds as id (id)}
+    <option value={id}></option>
+  {/each}
+</datalist>
 
 <style>
   .panel-title {
@@ -199,50 +562,175 @@
     color: var(--muted);
   }
 
-  .inspector-rows {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    margin: 0;
-  }
-
-  .inspector-row {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
-  }
-
-  .inspector-row dt {
-    flex: none;
-    min-width: 96px;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-  }
-
-  .inspector-row dd {
-    margin: 0;
-    min-width: 0;
-    overflow-wrap: anywhere;
-    color: var(--secondary);
-    font-family: var(--font-mono);
-    font-size: 0.76rem;
-  }
-
-  .inspector-row dd.unset {
-    color: var(--muted);
-  }
-
-  .required-note {
-    color: var(--danger);
-    font-size: 0.66rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+  .inspector-sub-gap {
+    margin-top: var(--space-2);
   }
 
   .inspector-muted {
     margin: 0;
     color: var(--muted);
     font-size: 0.78rem;
+    line-height: 1.5;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .field-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--secondary);
+    font-size: 0.74rem;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .required-note {
+    color: var(--danger);
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .field-input {
+    width: 100%;
+    min-width: 0;
+    padding: var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--code);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    box-sizing: border-box;
+  }
+
+  .field-input::placeholder {
+    color: var(--muted);
+  }
+
+  select.field-input {
+    appearance: none;
+  }
+
+  .field-code {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    resize: vertical;
+  }
+
+  .field-hint {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.7rem;
+    line-height: 1.5;
+  }
+
+  .field-warning {
+    margin: 0;
+    color: var(--danger);
+    font-size: 0.7rem;
+    line-height: 1.5;
+  }
+
+  .field-error {
+    margin: 0;
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    line-height: 1.45;
+  }
+
+  .field-note-ok {
+    color: var(--success);
+  }
+
+  .body-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .body-option {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--code);
+    cursor: pointer;
+  }
+
+  .body-option-id {
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .body-option-type {
+    margin-left: auto;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+  }
+
+  .param-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: var(--space-2);
+    align-items: center;
+  }
+
+  .field-input-key {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+  }
+
+  .param-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--code);
+    color: var(--secondary);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .param-remove:hover {
+    color: var(--danger);
+    border-color: var(--border-hover);
+  }
+
+  .param-add {
+    align-self: flex-start;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--card);
+    color: var(--secondary);
+    font-size: 0.74rem;
+    cursor: pointer;
+  }
+
+  .param-add:hover {
+    color: var(--text);
+    border-color: var(--border-hover);
   }
 </style>

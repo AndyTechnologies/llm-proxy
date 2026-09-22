@@ -7,6 +7,7 @@ import {
   nodeGroupOf,
   nodeSummaryLines,
   parseWorkflowYamlToGraph,
+  patchNodeData,
   serializeGraphToYaml,
   uniqueEdgeId,
   type FlowNode,
@@ -410,5 +411,132 @@ describe("display helpers", () => {
     ]);
 
     expect(nodeSummaryLines({ wNodeType: "start", label: "Start", values: {} })).toEqual([]);
+  });
+});
+
+describe("U06 — patchNodeData + full-corpus round-trip", () => {
+  /**
+   * The backend YAML corpus (workflow-yaml.test.ts) exercised every node type
+   * and field; this is its canvas twin — graphToFlow → flowToGraph must
+   * deep-equal the graph (up to the flowToGraph id placeholder), proving the
+   * inspector's edits never lose a field the engine would keep.
+   */
+  const corpus: GraphPipeline = {
+    id: "corpus",
+    name: "corpus",
+    nodes: [
+      { id: "start", type: "start" },
+      {
+        id: "llm",
+        type: "llm_call",
+        model: "SmolLM3",
+        provider: "openai",
+        mode: "refine",
+        ctx: 4096,
+        system: "You are brief.",
+        assistant: "Understood.",
+        user: "Reserved.",
+        on_429: "fallback",
+        tool_calls_route: "router",
+        parallel: true,
+      },
+      {
+        id: "cond",
+        type: "condition",
+        condition: {
+          op: "logical",
+          and: true,
+          args: [
+            { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
+            { op: "exists", field: "lastResponse.content" },
+          ],
+        },
+      },
+      {
+        id: "router",
+        type: "router",
+        condition: { op: "compare", field: "variables.attempt", op2: "<", value: 3 },
+      },
+      { id: "fan", type: "fan", parallel: true },
+      { id: "join", type: "join" },
+      { id: "loop", type: "loop", body: ["fan", "llm"], iterations: 3 },
+      { id: "fallback", type: "llm_call", model: "tiny" },
+      {
+        id: "pipeline",
+        type: "pipeline",
+        pipeline: "summary",
+        params: { topic: "io", depth: "2" },
+      },
+      { id: "rag", type: "rag_local", k: 4 },
+      { id: "code", type: "data.code", code: "return ctx.last" },
+      { id: "mem", type: "memory", convId: "chat-1" },
+      { id: "emb", type: "embeddings", text: "explicit text" },
+      { id: "out", type: "output" },
+      { id: "end", type: "end" },
+    ],
+    edges: [
+      { from: "start", to: "llm" },
+      { from: "llm", to: "cond" },
+      { from: "cond", to: "router", guard: "true" },
+      { from: "cond", to: "fan", guard: "false" },
+      { from: "router", to: "fan" },
+      { from: "fan", to: "join" },
+      { from: "join", to: "loop" },
+      { from: "loop", to: "pipeline" },
+      { from: "pipeline", to: "rag" },
+      { from: "rag", to: "code" },
+      { from: "code", to: "mem" },
+      { from: "mem", to: "emb" },
+      { from: "emb", to: "out" },
+      { from: "out", to: "end" },
+    ],
+  };
+
+  test("full 14-type corpus round-trips through canvas and back", () => {
+    const converted = graphToFlow(corpus);
+    expect(converted.nodes).toHaveLength(corpus.nodes.length);
+    const back = flowToGraph(converted.nodes, converted.edges);
+    expect(back).toEqual({ id: "workflow", nodes: corpus.nodes, edges: corpus.edges });
+    // Reproducing the canvas from the round-tripped graph is stable too.
+    expect(graphToFlow(back)).toEqual(converted);
+  });
+
+  test("full corpus survives the YAML serializer (parse(serialize) deep-equals)", () => {
+    const yaml = serializeGraphToYaml(corpus);
+    const reparsed = parseWorkflowYamlToGraph(yaml);
+    expect(reparsed.ok).toBe(true);
+    if (!reparsed.ok) return;
+    expect(reparsed.graph).toEqual(corpus);
+  });
+
+  test("patchNodeData immutably patches only the targeted node's data", () => {
+    const { nodes } = graphToFlow(corpus);
+    const patched = patchNodeData(nodes, "llm", { values: { ...nodes[1]!.data.values, mode: "generate" } });
+
+    expect(patched).not.toBe(nodes);
+    const target = patched.find((n) => n.id === "llm")!;
+    expect(target.data.values.mode).toBe("generate");
+    expect(target.position).toEqual(nodes.find((n) => n.id === "llm")!.position);
+    expect(target.type).toBe("wf-llm");
+    // Untouched nodes are the same object references (structural sharing).
+    expect(patched.find((n) => n.id === "end")).toBe(nodes.find((n) => n.id === "end"));
+    // The source array is unchanged.
+    expect(nodes.find((n) => n.id === "llm")!.data.values.mode).toBe("refine");
+  });
+
+  test("patchNodeData can write opaque slots (condition AST)", () => {
+    const { nodes } = graphToFlow(corpus);
+    const expr = { op: "exists", field: "error" } as const;
+    const patched = patchNodeData(nodes, "cond", { condition: expr });
+    expect(patched.find((n) => n.id === "cond")!.data.condition).toEqual(expr);
+    // And the patched canvas serializes through flowToGraph with that slot.
+    const back = flowToGraph(patched, []);
+    expect(back.nodes.find((n) => n.id === "cond")!.condition).toEqual(expr);
+  });
+
+  test("patchNodeData on an unknown id returns an equal array", () => {
+    const { nodes } = graphToFlow(corpus);
+    const patched = patchNodeData(nodes, "ghost", { label: "x" });
+    expect(patched).toEqual(nodes);
   });
 });
