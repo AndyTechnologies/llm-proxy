@@ -4,9 +4,5 @@ import EmptyState from "../../svelte/common/EmptyState.svelte";
 ---
 
 <AppLayout title="Providers" breadcrumb={["Providers"]}>
-  <EmptyState
-    icon="providers"
-    title="Provider connections"
-    description="External providers (openai, anthropic, openrouter) and their fallback links appear here. Data comes from the backend providers API — not available yet, the typed client connects in a later phase."
-  />
+  <EmptyState icon="providers" title="Coming from backend" description="External providers (openai, anthropic, openrouter) plug in behind one Provider contract on the server. Kind, base URL and fallback links live in the backend providers table; keys are stored in the keychain, never exposed to the frontend, and a provider without a stored key is marked misconfigured and refuses calls. The public API does not expose provider rows yet, so there is nothing to render here." />
 </AppLayout>
