@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
-   * Workflow designer (Task 6.7, workflow-editor spec): palette sidebar,
-   * SvelteFlow canvas, live validation, Inline cycle rejection, and
-   * YAML import/export. All graph logic lives in the pure helpers
-   * (frontend/src/lib/workflow-nodes.ts) and is unit-tested there.
+   * Workflow designer demo (U04): palette sidebar, SvelteFlow canvas, live
+   * validation, inline cycle rejection, and YAML import/export. All graph
+   * logic lives in the pure demo helpers (frontend/src/lib/workflow-nodes-demo.ts).
+   * ORPHANED since U05 — the page route renders `FlowEditor`; this shell is
+   * kept on disk only as a design reference and will be removed.
    */
   import { SvelteFlow } from "@xyflow/svelte";
   import type { Connection } from "@xyflow/svelte";
@@ -18,8 +19,8 @@
     validateEditorGraph,
     wouldCreateCycle,
     yamlToEditor,
-  } from "../lib/workflow-nodes.js";
-  import type { EditorNode, FlowEdge } from "../lib/workflow-nodes.js";
+  } from "../lib/workflow-nodes-demo.js";
+  import type { EditorNode, FlowEdge } from "../lib/workflow-nodes-demo.js";
 
   let flowName = $state("demo");
   let nodes = $state<EditorNode[]>([]);

@@ -1,13 +1,13 @@
 ---
 import AppLayout from "../../layouts/AppLayout.astro";
 import Icon from "../../svelte/common/Icon.svelte";
-import WorkflowEditor from "../../svelte/WorkflowEditor.svelte";
+import FlowEditor from "../../svelte/workflow-editor/FlowEditor.svelte";
 
 /**
- * Workflow editor route. The editor component is mounted unchanged (same
- * props and loading pattern as the old single-page shell: no props,
- * client:load). "demo" is the editor's built-in default session name — the
- * exact names served by the backend workflow store arrive in a later phase.
+ * Workflow editor route (U05). The island loads the named workflow through
+ * the typed API client and renders the SvelteFlow surface — demo is the only
+ * statically prerendered name; other stored names hydrate client-side the
+ * same way once the real store surfaces them.
  */
 export function getStaticPaths() {
   return [{ params: { name: "demo" } }];
@@ -28,7 +28,7 @@ const workflowName = name ?? "demo";
     </div>
 
     <div class="editor-host" data-testid="workflow-editor-host">
-      <WorkflowEditor client:load />
+      <FlowEditor workflowName={workflowName} client:load />
     </div>
   </div>
 </AppLayout>
@@ -77,7 +77,7 @@ const workflowName = name ?? "demo";
   }
 
   /* Let the editor's own grid fill the host panel. */
-  .editor-host :global(.editor) {
+  .editor-host :global(.wf-layout) {
     height: 100%;
   }
 </style>

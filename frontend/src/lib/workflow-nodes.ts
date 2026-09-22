@@ -1,257 +1,382 @@
 /**
- * Editor node palette + pure graph helpers (Task 6.7, workflow-editor spec).
+ * Single frontend node taxonomy (U05) — the mirror of `src/orchestrator/graph.ts`.
  *
- * Pure functions only — no DOM, no stores — so the Svelte canvas stays thin
- * and the palette/cycle/validation logic is unit-tested with `bun test`
- * (relative imports, no Vite alias, so the same file runs in both runners).
+ * `graph.ts` is the authoritative contract: this module re-exports its
+ * `NodeType` union and `NODE_TYPES` registry (one source of truth) and adds
+ * the UI-facing surface the visual editor needs:
+ *
+ *   - `WORKFLOW_NODE_TYPES` — 14 palette entries (ordered for the palette)
+ *     with label, category, description, a token-key color and the per-type
+ *     field definitions. Fields ONLY come from `GraphNode` semantics — no
+ *     invented node fields.
+ *   - value sanitization (`sanitizeNodeFields`) — enforces the "unknown
+ *     fields are dropped" rule the backend parser applies, so the editor can
+ *     never serialize a field the engine would drop.
+ *   - id / handle helpers used by the canvas and the palette.
+ *
+ * Pure functions only — no DOM, no Svelte, no stores — so the same module
+ * runs under `bun test` and in the Astro build.
  */
-import type { GraphEdge, GraphNode, GraphPipeline, NodeType } from "../../../src/orchestrator/graph.js";
-import { NODE_TYPES, validateGraph } from "../../../src/orchestrator/graph.js";
-import { parseWorkflowGraph, serializeWorkflowGraph } from "../../../src/orchestrator/workflow-yaml.js";
+import {
+  NODE_TYPES,
+  type GraphNode,
+  type NodeType,
+} from "../../../src/orchestrator/graph.js";
 
-/** A node on the canvas: the engine node + canvas position + display label. */
-export interface EditorNode extends GraphNode {
-  position: { x: number; y: number };
-  data: { label: string };
-}
+// The taxonomy IDs ARE the engine registry — re-export verbatim instead of
+// duplicating a list that could drift.
+export { NODE_TYPES } from "../../../src/orchestrator/graph.js";
+export type {
+  AstExpr,
+  GraphEdge,
+  GraphNode,
+  GraphPipeline,
+  NodeType,
+} from "../../../src/orchestrator/graph.js";
 
-/** An edge on the canvas (xyflow shape), carrying the engine `guard`. */
-export interface FlowEdge {
-  id: string;
-  source: string;
-  target: string;
-  guard?: "true" | "false";
-}
+/** Palette category grouping (palette order: flow → llm → data → integration → output). */
+export type NodeCategory = "flow" | "llm" | "data" | "integration" | "output";
 
-/** Canvas node with the engine's edge shape (for cycle/validation checks). */
-export interface EditorGraph {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
+export const CATEGORY_LABELS: Record<NodeCategory, string> = {
+  flow: "Flow",
+  llm: "LLM",
+  data: "Data",
+  integration: "Integration",
+  output: "Output",
+};
 
-export interface PaletteEntry {
-  type: NodeType;
+/** Palette group order (flow → llm → data → integration → output). */
+export const CATEGORY_ORDER: readonly NodeCategory[] = [
+  "flow",
+  "llm",
+  "data",
+  "integration",
+  "output",
+];
+
+/** Field input kinds the inspector forms (U06) will render. */
+export type FieldKind =
+  | "text"
+  | "select"
+  | "number"
+  | "textarea"
+  | "code"
+  | "tokens"
+  | "toggle";
+
+/** Token-key color for a node type chip — resolved to `var(--<key>)` in CSS. */
+export type ColorTokenKey = "accent" | "secondary" | "success";
+
+/** One editable field of a node type, bound to a `GraphNode` field key. */
+export interface NodeFieldDef {
+  /** The GraphNode field key this input reads/writes. */
+  key: string;
   label: string;
-  description: string;
-  defaults: Omit<GraphNode, "id" | "type">;
+  kind: FieldKind;
+  /** Valid selections when kind === "select". */
+  options?: readonly string[];
+  placeholder?: string;
 }
 
-/** The full node taxonomy as a palette (≥ 10 types, per the spec). */
-export const PALETTE: readonly PaletteEntry[] = [
+/** Full taxonomy entry for one node type. */
+export interface WorkflowNodeTypeDef {
+  id: NodeType;
+  label: string;
+  category: NodeCategory;
+  description: string;
+  /** Token key for the node color chip (CSS `var(--<token>)`). */
+  color: ColorTokenKey;
+  /** UI field surface — a subset of GraphNode semantics for this type. */
+  fields: readonly NodeFieldDef[];
+  /** Canvas defaults for click-to-add (GraphNode fields only). */
+  defaults: Partial<GraphNode>;
+}
+
+/**
+ * Per-type UI field definitions. `condition` and `params` are GraphNode
+ * fields of non-primitive shape (SAFE AST / param map); they travel in the
+ * opaque `FlowNodeData.condition` / `.params` slots rather than in
+ * `NodeFieldValues`, and their `kind` here ("code") only documents that U06
+ * renders them as structured editors. `rag_local`/`embeddings` expose no
+ * `model` — GraphNode defines no such field (the runtime default applies),
+ * so adding one would invent a field the backend parser drops.
+ */
+export const WORKFLOW_NODE_TYPES: readonly WorkflowNodeTypeDef[] = [
   {
-    type: "start",
+    id: "start",
     label: "Start",
+    category: "flow",
     description: "Graph entry — exactly one per workflow",
+    color: "success",
+    fields: [],
     defaults: {},
   },
   {
-    type: "end",
+    id: "end",
     label: "End",
+    category: "flow",
     description: "Graph exit — the last response becomes the completion",
+    color: "secondary",
+    fields: [],
     defaults: {},
   },
   {
-    type: "llm_call",
+    id: "llm_call",
     label: "LLM call",
+    category: "llm",
     description: "Generate with a model (mode: generate/refine/passthrough)",
-    defaults: { model: "llama", mode: "generate" },
+    color: "accent",
+    fields: [
+      { key: "model", label: "Model", kind: "text", placeholder: "Model id" },
+      { key: "mode", label: "Mode", kind: "select", options: ["generate", "refine", "passthrough"] },
+      { key: "provider", label: "Provider", kind: "text", placeholder: "Optional override" },
+      { key: "ctx", label: "Context", kind: "tokens", placeholder: "Token limit" },
+      { key: "system", label: "System", kind: "textarea", placeholder: "System scaffold" },
+      { key: "assistant", label: "Assistant", kind: "textarea", placeholder: "Assistant scaffold" },
+      { key: "user", label: "User", kind: "textarea", placeholder: "Reserved — user scaffold" },
+      { key: "on_429", label: "On 429", kind: "text", placeholder: "Target node id" },
+      { key: "tool_calls_route", label: "Tool-calls route", kind: "text", placeholder: "Target node id" },
+    ],
+    defaults: { mode: "generate" },
   },
   {
-    type: "condition",
+    id: "condition",
     label: "Condition",
+    category: "flow",
     description: "Guard expression selecting true/false branches",
+    color: "accent",
+    fields: [{ key: "condition", label: "Condition", kind: "code", placeholder: "Safe AST expression" }],
     defaults: { condition: { op: "exists", field: "lastResponse.content" } },
   },
   {
-    type: "loop",
+    id: "loop",
     label: "Loop",
+    category: "flow",
     description: "Repeat a body of nodes",
+    color: "accent",
+    fields: [
+      { key: "body", label: "Body", kind: "textarea", placeholder: "Body node ids, one per line" },
+      { key: "iterations", label: "Iterations", kind: "number" },
+    ],
     defaults: { body: [], iterations: 1 },
   },
   {
-    type: "fan",
+    id: "fan",
     label: "Fan",
+    category: "flow",
     description: "Fan out branches in parallel",
+    color: "accent",
+    fields: [],
     defaults: { parallel: true },
   },
   {
-    type: "join",
+    id: "join",
     label: "Join",
+    category: "flow",
     description: "Merge branch results before continuing",
+    color: "accent",
+    fields: [],
     defaults: {},
   },
   {
-    type: "pipeline",
+    id: "pipeline",
     label: "Pipeline",
+    category: "integration",
     description: "Compose another stored workflow",
+    color: "accent",
+    fields: [{ key: "pipeline", label: "Pipeline", kind: "text", placeholder: "Stored workflow name" }],
     defaults: { pipeline: "" },
   },
   {
-    type: "rag_local",
+    id: "rag_local",
     label: "RAG (local)",
+    category: "data",
     description: "Local retrieval over chunked documents",
+    color: "secondary",
+    fields: [{ key: "k", label: "Top-k", kind: "number", placeholder: "4" }],
     defaults: { k: 4 },
   },
   {
-    type: "data.code",
+    id: "data.code",
     label: "Data (code)",
+    category: "data",
     description: "Sandboxed script step",
-    defaults: { code: "// sandboxed step\n" },
+    color: "secondary",
+    fields: [{ key: "code", label: "Code", kind: "code", placeholder: "Sandboxed script" }],
+    defaults: { code: "" },
   },
   {
-    type: "memory",
+    id: "memory",
     label: "Memory",
+    category: "data",
     description: "Conversation memory scope",
+    color: "secondary",
+    fields: [{ key: "convId", label: "Conversation id", kind: "text", placeholder: "Optional scope id" }],
     defaults: {},
   },
   {
-    type: "embeddings",
+    id: "embeddings",
     label: "Embeddings",
+    category: "data",
     description: "Embed the last response (or an explicit text)",
+    color: "secondary",
+    fields: [{ key: "text", label: "Text", kind: "textarea", placeholder: "Defaults to last response" }],
     defaults: {},
   },
   {
-    type: "router",
+    id: "router",
     label: "Router",
+    category: "flow",
     description: "Route by a comparison (e.g. status or content)",
-    defaults: {
-      condition: { op: "compare", field: "lastResponse.status", op2: "==", value: 200 },
-    },
+    color: "accent",
+    fields: [{ key: "condition", label: "Condition", kind: "code", placeholder: "Safe AST expression" }],
+    defaults: { condition: { op: "compare", field: "lastResponse.status", op2: "==", value: 200 } },
   },
   {
-    type: "output",
+    id: "output",
     label: "Output",
+    category: "output",
     description: "Emit an explicit output from the graph",
+    color: "secondary",
+    fields: [],
     defaults: {},
   },
 ];
 
-/** The palette covers the taxonomy exactly (palette completeness gate). */
-export function paletteCoversTaxonomy(): boolean {
-  return (
-    PALETTE.length >= 10 &&
-    PALETTE.every((entry) => NODE_TYPES.includes(entry.type)) &&
-    NODE_TYPES.every((type) => PALETTE.some((entry) => entry.type === type))
-  );
+/** Guard: is this string a real engine node type? */
+export function nodeTypeExists(id: string): id is NodeType {
+  return (NODE_TYPES as readonly string[]).includes(id);
 }
 
-export function paletteFor(type: NodeType): PaletteEntry {
-  const entry = PALETTE.find((e) => e.type === type);
-  if (entry === undefined) throw new Error(`no palette entry for node type "${type}"`);
+/** Taxonomy entry for a type (throws on unknown ids — invariant helper). */
+export function nodeTypeDef(type: NodeType): WorkflowNodeTypeDef {
+  const entry = WORKFLOW_NODE_TYPES.find((e) => e.id === type);
+  if (entry === undefined) throw new Error(`unknown node type "${type}"`);
   return entry;
 }
 
-/** Build one canvas node from the palette; ids increment per type. */
-export function makeEditorNode(
-  type: NodeType,
-  counter: Map<string, number>,
-  position: { x: number; y: number },
-): EditorNode {
-  const entry = paletteFor(type);
-  const n = (counter.get(type) ?? 0) + 1;
-  counter.set(type, n);
-  const base = entry.defaults as GraphNode;
-  return {
-    id: `${type}-${n}`,
-    type,
-    ...base,
-    position,
-    data: { label: entry.label },
-  };
+/** Palette category of a node type. */
+export function nodeCategory(type: NodeType): NodeCategory {
+  return nodeTypeDef(type).category;
 }
 
-export function flowEdgeFrom(edge: GraphEdge): FlowEdge {
-  return {
-    id: `${edge.from}->${edge.to}`,
-    source: edge.from,
-    target: edge.to,
-    ...(edge.guard !== undefined ? { guard: edge.guard } : {}),
-  };
+/** Human label of a node type. */
+export function nodeLabel(type: NodeType): string {
+  return nodeTypeDef(type).label;
 }
 
-export function graphEdgeFrom(edge: FlowEdge): GraphEdge {
-  return {
-    from: edge.source,
-    to: edge.target,
-    ...(edge.guard !== undefined ? { guard: edge.guard } : {}),
-  };
+/** Canvas defaults of a node type (click-to-add seeds from here). */
+export function nodeDefaults(type: NodeType): Partial<GraphNode> {
+  return nodeTypeDef(type).defaults;
 }
 
-/** True when adding the edge `from → to` would close a cycle. */
-export function wouldCreateCycle(
-  graph: { nodes: GraphNode[]; edges: GraphEdge[] },
-  from: string,
-  to: string,
-): boolean {
-  if (from === to) return true;
-  const out = new Map<string, string[]>();
-  for (const edge of graph.edges) {
-    const list = out.get(edge.from) ?? [];
-    list.push(edge.to);
-    out.set(edge.from, list);
-  }
-  // BFS from the target; reaching the source means the new edge closes a loop.
-  const seen = new Set<string>([to]);
-  const queue = [to];
-  while (queue.length > 0) {
-    const current = queue.shift() as string;
-    for (const next of out.get(current) ?? []) {
-      if (next === from) return true;
-      if (!seen.has(next)) {
-        seen.add(next);
-        queue.push(next);
+/**
+ * Canvas handle semantics, matching the backend edge model: an edge flows
+ * node → node, so `start` has no incoming (target) handle and `end` has no
+ * outgoing (source) handle; every other type gets both.
+ */
+export function hasTargetHandle(type: NodeType): boolean {
+  return type !== "start";
+}
+
+export function hasSourceHandle(type: NodeType): boolean {
+  return type !== "end";
+}
+
+/**
+ * Sparse per-node field values on the canvas — primitives only, keyed by
+ * GraphNode field names. `condition`/`params` live in the opaque
+ * `FlowNodeData` slots instead (see workflow-flow.ts).
+ */
+export type NodeFieldValues = Record<
+  string,
+  string | number | string[] | boolean | undefined
+>;
+
+/** Keep only the primitive part of a field value that fits its kind. */
+function sanitizeFieldValue(
+  field: NodeFieldDef,
+  raw: unknown,
+): string | number | string[] | boolean | undefined {
+  switch (field.kind) {
+    case "toggle":
+      return typeof raw === "boolean" ? raw : undefined;
+    case "number":
+      return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
+    case "tokens":
+      // GraphNode.ctx is number | string (the engine passes it through).
+      if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+      return typeof raw === "string" && raw.trim() !== "" ? raw : undefined;
+    case "select":
+      return typeof raw === "string" && field.options?.includes(raw) ? raw : undefined;
+    case "textarea":
+      // `body` is the one textarea-shaped field whose value IS a string[].
+      if (Array.isArray(raw)) {
+        return field.key === "body"
+          ? raw.filter((item): item is string => typeof item === "string")
+          : undefined;
       }
-    }
+      return typeof raw === "string" ? raw : undefined;
+    case "text":
+    case "code":
+      return typeof raw === "string" ? raw : undefined;
   }
-  return false;
 }
 
-/** Engine validation over the current canvas (missing fields, structure). */
-export function validateEditorGraph(nodes: GraphNode[], edges: GraphEdge[]): string[] {
-  const graph: GraphPipeline = { id: "workflow", nodes, edges };
-  return validateGraph(graph, {}).errors;
+/**
+ * Whitelist a NodeFieldValues record against the taxonomy + the universal
+ * `parallel` flag (a real GraphNode field the backend keeps on every node),
+ * dropping unknown keys and type-invalid values — the same "unknown fields
+ * are dropped, known fields type-checked" admission the backend parser runs.
+ */
+export function sanitizeNodeFields(
+  type: NodeType,
+  values: NodeFieldValues,
+): NodeFieldValues {
+  const def = nodeTypeDef(type);
+  const out: NodeFieldValues = {};
+  if (values.parallel !== undefined) {
+    if (typeof values.parallel === "boolean") out.parallel = values.parallel;
+  }
+  for (const field of def.fields) {
+    if (field.key === "condition") continue; // opaque AST slot, not a primitive
+    const raw = values[field.key];
+    if (raw === undefined) continue;
+    const cleaned = sanitizeFieldValue(field, raw);
+    if (cleaned !== undefined) out[field.key] = cleaned;
+  }
+  return out;
 }
 
-/** Export the canvas to the workflow YAML doc (positions/labels stripped). */
-export function editorToYaml(
-  nodes: EditorNode[],
-  edges: FlowEdge[],
-  name: string,
+/**
+ * Fresh canvas id for a type: kebab form of the type id plus a numeric
+ * suffix when the base is taken (deduped against `taken`). Stable for a
+ * given input set — no randomness.
+ */
+export function makeNodeId(type: NodeType, taken: ReadonlySet<string>): string {
+  const base = type.replace("_", "-").replace(".", "-");
+  let candidate = base;
+  let suffix = 2;
+  while (taken.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+/** Render a primitive field value for display (never throws on odd shapes). */
+export function formatValue(
+  kind: FieldKind,
+  value: unknown,
 ): string {
-  const cleanNodes = nodes.map(({ position: _position, data: _data, ...rest }) => rest as GraphNode);
-  return serializeWorkflowGraph(
-    {
-      id: "workflow",
-      name,
-      nodes: cleanNodes,
-      edges: edges.map(graphEdgeFrom),
-    },
-    null,
-  );
-}
-
-export type YAMLImportResult =
-  | { ok: true; name: string; nodes: EditorNode[]; edges: FlowEdge[] }
-  | { ok: false; error: string };
-
-/** Import a workflow YAML doc onto the canvas (flow-down layout). */
-export function yamlToEditor(source: string): YAMLImportResult {
-  let doc: ReturnType<typeof parseWorkflowGraph>;
-  try {
-    doc = parseWorkflowGraph(source);
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  if (value === undefined || value === null || value === "") return "—";
+  if (kind === "number" || kind === "tokens") {
+    return typeof value === "number" ? String(value) : String(value);
   }
-  const graph = doc.graph;
-  const nodes: EditorNode[] = graph.nodes.map((node, index) => ({
-    ...node,
-    position: { x: 40 + index * 240, y: 120 },
-    data: { label: paletteFor(node.type).label },
-  }));
-  return {
-    ok: true,
-    name: graph.name ?? graph.id,
-    nodes,
-    edges: graph.edges.map(flowEdgeFrom),
-  };
+  if (kind === "toggle") return value === true ? "on" : "off";
+  if (Array.isArray(value)) {
+    return value.length === 0 ? "—" : value.join(", ");
+  }
+  if (typeof value === "string") return value;
+  return String(value);
 }
