@@ -122,7 +122,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         section: "observe",
       },
       {
-        href: "/api",
+        href: "/playground",
         label: "API",
         description: "OpenAI-compatible playground",
         icon: "api",

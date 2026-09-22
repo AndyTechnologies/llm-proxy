@@ -25,8 +25,10 @@ const FRAME_SEPARATOR = /\r?\n\r?\n/;
  * Extract the concatenated `data:` field payloads of a single SSE frame.
  * One leading space after the colon is stripped (SSE field-value rule);
  * frames with no `data:` field (comments, event/retry fields) are ignored.
+ * Exported for the /v1 stream client, which parses the same wire frames
+ * (U11) — the semantics stay in this single module.
  */
-function dataField(frame: string): string | null {
+export function dataField(frame: string): string | null {
   const lines: string[] = [];
   for (const line of frame.split(/\r?\n/)) {
     const trimmed = line.trimEnd();

@@ -9,6 +9,7 @@
  *   models.ts     — /api/models hub surface.
  *   workflows.ts  — /api/workflows CRUD + run + logs.
  *   runtime.ts    — combined runtime status probe.
+ *   v1.ts         — /v1/chat/completions (JSON + OpenAI-wire SSE).
  */
 
 export * from "./config.js";
@@ -18,3 +19,4 @@ export * from "./health.js";
 export * from "./models.js";
 export * from "./workflows.js";
 export * from "./runtime.js";
+export * from "./v1.js";

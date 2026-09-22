@@ -1,0 +1,45 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import Playground from "../../svelte/playground/Playground.svelte";
+
+/**
+ * API playground (U11) — exercise POST /v1/chat/completions against the real
+ * wire. The island owns all data: typed v1 client (JSON + OpenAI-wire SSE),
+ * model suggestions from the real /api/models + /api/workflows surfaces
+ * (non-authoritative — external adapter ids resolve server-side). The console
+ * never sends credentials; when WEAVELLM_AUTH is on the server answers /v1
+ * with its 401 envelope and the playground shows it verbatim.
+ */
+---
+
+<AppLayout title="API playground" breadcrumb={["API playground"]}>
+  <header class="page-head">
+    <h1>API playground</h1>
+    <p>
+      POST /v1/chat/completions against the real wire — JSON for
+      non-streaming, OpenAI-wire SSE with a terminal <code>[DONE]</code> for
+      stream. Responses render verbatim; no derived metrics.
+    </p>
+  </header>
+
+  <Playground client:load />
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+
+  .page-head code {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+  }
+</style>
