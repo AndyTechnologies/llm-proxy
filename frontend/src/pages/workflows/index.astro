@@ -1,12 +1,37 @@
 ---
 import AppLayout from "../../layouts/AppLayout.astro";
-import EmptyState from "../../svelte/common/EmptyState.svelte";
+import WorkflowsList from "../../svelte/workflows/WorkflowsList.svelte";
+
+/**
+ * Workflow library — the list island owns all data: it talks to the real
+ * /api/workflows surface through the typed client (no server-side fetch
+ * here), and reports loading/error/empty states honestly. The count lives in
+ * the island, so this page renders only the heading shell.
+ */
 ---
 
 <AppLayout title="Workflows" breadcrumb={["Workflows"]}>
-  <EmptyState
-    icon="workflows"
-    title="Workflow library"
-    description="Stored workflow definitions and their run controls appear here. Data comes from the backend workflow API — not available yet, the typed client connects in a later phase."
-  />
+  <header class="page-head">
+    <h1>Workflows</h1>
+    <p>
+      Stored workflow definitions with run, log and delete controls — powered
+      by the backend workflow API.
+    </p>
+  </header>
+
+  <WorkflowsList client:load />
 </AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+</style>
