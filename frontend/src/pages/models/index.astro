@@ -1,12 +1,37 @@
 ---
 import AppLayout from "../../layouts/AppLayout.astro";
-import EmptyState from "../../svelte/common/EmptyState.svelte";
+import ModelsRegistry from "../../svelte/models/ModelsRegistry.svelte";
+
+/**
+ * Models registry — the island owns all data: it talks to the real
+ * /api/models surface through the typed client (auth-gated on the backend),
+ * and reports loading/error/empty states honestly. This page renders only
+ * the heading shell.
+ */
 ---
 
 <AppLayout title="Models" breadcrumb={["Models"]}>
-  <EmptyState
-    icon="models"
-    title="Model registry"
-    description="Local models and their activation state appear here. Data comes from the backend models API — not available yet, the typed client connects in a later phase."
-  />
+  <header class="page-head">
+    <h1>Models</h1>
+    <p>
+      The managed llama-server registry — activation state, PID and port come
+      directly from the backend models API.
+    </p>
+  </header>
+
+  <ModelsRegistry client:load />
 </AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+</style>
