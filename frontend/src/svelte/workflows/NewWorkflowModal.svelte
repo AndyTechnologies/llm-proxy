@@ -12,6 +12,7 @@
   import { ApiError, saveWorkflow } from "../../lib/api/index.js";
   import Button from "../common/Button.svelte";
   import IconButton from "../common/IconButton.svelte";
+  import { trapFocus } from "../../lib/focus-trap.js";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -76,8 +77,9 @@ edges:
     return null;
   }
 
-  // Dialog wiring: capture focus, move it to the name field, close on Escape.
-  // Focus restoration happens in close(), while the dialog is still mounted.
+  // Dialog wiring: capture focus, move it to the name field, keep Tab inside
+  // the dialog, close on Escape. Focus restoration happens in close(), while
+  // the dialog is still mounted.
   $effect(() => {
     lastFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -89,7 +91,11 @@ edges:
       }
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const release = dialogEl === undefined ? undefined : trapFocus(dialogEl);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      release?.();
+    };
   });
 
   function close(): void {

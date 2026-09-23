@@ -4,13 +4,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { ApiError } from "./http.js";
+import { ApiError, type FetchLike } from "./http.js";
 import { getHealth } from "./health.js";
 
 function jsonBody(
   body: unknown,
   status = 200,
-): typeof fetch {
+): FetchLike {
   return async () =>
     new Response(JSON.stringify(body), {
       status,

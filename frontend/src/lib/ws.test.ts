@@ -83,12 +83,17 @@ function connect(
 
 async function openAndBind(
   workflow = "demo",
-): Promise<{ socket: WorkflowSocket; fake: FakeWebSocket; events: WorkflowWsEvent[] }> {
+): Promise<{
+  socket: WorkflowSocket;
+  fake: FakeWebSocket;
+  events: WorkflowWsEvent[];
+  closes: number[];
+}> {
   const state = connect(workflow);
   state.fake.open();
   expect(state.fake.sent).toEqual([BIND(workflow)]);
   state.fake.receive(JSON.stringify({ type: "status", workflow, state: "bound" }));
-  await expect(state.socket.ready).resolves.toBe(true);
+  expect(await state.socket.ready).toBe(true);
   return state;
 }
 
@@ -132,7 +137,7 @@ describe("connectWorkflowSocket", () => {
     expect(fake.sent).toEqual([BIND("demo")]); // still only the bind
     expect(events).toEqual([]);
     fake.receive(JSON.stringify({ type: "status", workflow: "demo", state: "bound" }));
-    await expect(socket.ready).resolves.toBe(true);
+    expect(await socket.ready).toBe(true);
     expect(fake.sent).toContain(RUN(USER)); // flushed after bound
   });
 
@@ -146,7 +151,7 @@ describe("connectWorkflowSocket", () => {
     fake.receive(
       JSON.stringify({ type: "error", workflow: null, error: 'unknown workflow "ghost"' }),
     );
-    await expect(socket.ready).resolves.toBe(false);
+    expect(await socket.ready).toBe(false);
     expect(events.some((e) => e.type === "error" && e.error.includes("run requested before"))).toBe(
       true,
     );
@@ -199,7 +204,7 @@ describe("connectWorkflowSocket", () => {
     const { socket, fake } = connect("demo");
     socket.ready.then(() => undefined);
     fake.serverClose();
-    await expect(socket.ready).resolves.toBe(false);
+    expect(await socket.ready).toBe(false);
   });
 
   test("a full ok run forwards running → token → ok unchanged", async () => {
@@ -239,6 +244,6 @@ describe("connectWorkflowSocket", () => {
       nodeId: "llm-1",
       error: "boom",
     });
-    await expect(socket.ready).resolves.toBe(true); // already settled at bind
+    expect(await socket.ready).toBe(true); // already settled at bind
   });
 });

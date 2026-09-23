@@ -24,7 +24,7 @@
  */
 
 import { getApiOrigin } from "./config.js";
-import { ApiError } from "./http.js";
+import { ApiError, type FetchLike } from "./http.js";
 import { dataField, decodeTokenData } from "../sse.js";
 
 export type V1Role = "system" | "user" | "assistant";
@@ -107,7 +107,7 @@ export interface V1ClientOptions {
   /** Override the API origin (defaults to getApiOrigin()). */
   origin?: string;
   /** Inject a fetch implementation (tests). Defaults to global fetch. */
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   /** Abort the request. */
   signal?: AbortSignal;
   /**

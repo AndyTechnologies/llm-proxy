@@ -12,7 +12,11 @@ export const NAV_SECTIONS = {
   system: "System",
 } as const;
 
-export type NavSection = (typeof NAV_SECTIONS)[keyof typeof NAV_SECTIONS];
+/**
+ * Stable section id (a key of NAV_SECTIONS) — display labels live in
+ * NAV_SECTIONS itself (`NAV_SECTIONS[section]`), so ids stay lowercase.
+ */
+export type NavSection = keyof typeof NAV_SECTIONS;
 
 /** Inline SVG icon names (geometry lives in svelte/common/Icon.svelte). */
 export const ICON_NAMES = {

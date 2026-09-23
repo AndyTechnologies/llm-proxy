@@ -11,31 +11,44 @@ import {
   isConditionSourceValid,
   parseConditionSource,
   renderConditionSource,
+  type ConditionParseResult,
 } from "./workflow-condition.js";
+
+/** Narrow a parse result to its ok branch (throws with the failure reason). */
+function expectOk(result: ConditionParseResult): AstExpr {
+  if (!result.ok) throw new Error(`expected ok parse, got: ${result.error}`);
+  return result.expr;
+}
+
+/** Narrow a parse result to its failure branch (throws when the parse succeeded). */
+function expectFail(result: ConditionParseResult): string {
+  if (result.ok) throw new Error("expected a parse failure, but the source parsed");
+  return result.error;
+}
 
 function render(source: string): string {
   const parsed = parseConditionSource(source);
   expect(parsed.ok).toBe(true);
-  return renderConditionSource(parsed.expr);
+  return renderConditionSource(expectOk(parsed));
 }
 
 describe("parseConditionSource", () => {
   test("parses exists on a context field", () => {
     const parsed = parseConditionSource("exists(lastResponse.content)");
     expect(parsed.ok).toBe(true);
-    expect(parsed.expr).toEqual({ op: "exists", field: "lastResponse.content" });
+    expect(expectOk(parsed)).toEqual({ op: "exists", field: "lastResponse.content" });
   });
 
   test("parses not(...) with nested expressions", () => {
     const parsed = parseConditionSource("not(exists(error))");
     expect(parsed.ok).toBe(true);
-    expect(parsed.expr).toEqual({ op: "not", child: { op: "exists", field: "error" } });
+    expect(expectOk(parsed)).toEqual({ op: "not", child: { op: "exists", field: "error" } });
   });
 
   test("parses all(...) and any(...) with multiple args", () => {
     const all = parseConditionSource("all(lastResponse.status >= 200, exists(variables.step))");
     expect(all.ok).toBe(true);
-    expect(all.expr).toEqual({
+    expect(expectOk(all)).toEqual({
       op: "logical",
       and: true,
       args: [
@@ -46,7 +59,7 @@ describe("parseConditionSource", () => {
 
     const any = parseConditionSource("any(lastResponse.status == 200, lastResponse.status == 429)");
     expect(any.ok).toBe(true);
-    expect(any.expr).toEqual({
+    expect(expectOk(any)).toEqual({
       op: "logical",
       and: false,
       args: [
@@ -61,7 +74,7 @@ describe("parseConditionSource", () => {
     for (const op of ops) {
       const parsed = parseConditionSource(`variables.count ${op} 3`);
       expect(parsed.ok).toBe(true);
-      expect(parsed.expr).toEqual({
+      expect(expectOk(parsed)).toEqual({
         op: "compare",
         field: "variables.count",
         op2: op,
@@ -81,7 +94,7 @@ describe("parseConditionSource", () => {
     for (const [source, expected] of strings) {
       const parsed = parseConditionSource(source);
       expect(parsed.ok).toBe(true);
-      expect(parsed.expr).toEqual(expected);
+      expect(expectOk(parsed)).toEqual(expected);
     }
   });
 
@@ -114,15 +127,16 @@ describe("parseConditionSource", () => {
       const source = renderConditionSource(expr);
       const parsed = parseConditionSource(source);
       expect(parsed.ok, `parse "${source}"`).toBe(true);
-      expect(sanitizeAst(parsed.expr)).not.toBeNull();
-      expect(renderConditionSource(parsed.expr)).toBe(source);
+      const ok = expectOk(parsed);
+      expect(sanitizeAst(ok)).not.toBeNull();
+      expect(renderConditionSource(ok)).toBe(source);
     }
   });
 
   test("rejects empty input", () => {
     const parsed = parseConditionSource("");
     expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain("expected an expression");
+    expect(expectFail(parsed)).toContain("expected an expression");
   });
 
   test("rejects unsafe fields", () => {
@@ -140,15 +154,15 @@ describe("parseConditionSource", () => {
   test("rejects malformed expressions with position", () => {
     const trailing = parseConditionSource("exists(lastResponse.content) garbage");
     expect(trailing.ok).toBe(false);
-    expect(trailing.error).toContain("trailing input");
+    expect(expectFail(trailing)).toContain("trailing input");
 
     const unclosed = parseConditionSource("any( exists(lastResponse.content) ");
     expect(unclosed.ok).toBe(false);
-    expect(unclosed.error).toContain("expected");
+    expect(expectFail(unclosed)).toContain("expected");
 
     const missingValue = parseConditionSource("lastResponse.status >=");
     expect(missingValue.ok).toBe(false);
-    expect(missingValue.error).toContain("value");
+    expect(expectFail(missingValue)).toContain("value");
   });
 });
 

@@ -14,12 +14,13 @@ import {
   workflowLogs,
 } from "./workflows.js";
 import type { ExecutionLogRow, WorkflowWithYaml } from "./types.js";
+import type { FetchLike } from "./http.js";
 
 function jsonBody(
   body: unknown,
   status = 200,
   headers: Record<string, string> = { "content-type": "application/json" },
-): typeof fetch {
+): FetchLike {
   return async () =>
     new Response(JSON.stringify(body), { status, headers });
 }
@@ -93,7 +94,7 @@ describe("workflows surface", () => {
 
   test("workflowLogs() returns execution history rows", async () => {
     const rows: ExecutionLogRow[] = [
-      { id: "e1", workflowId: "summary", status: "ok", startedAt: "2024-01-01T00:00:00Z", ms: 12 },
+      { id: "e1", workflowId: "summary", status: "ok", error: null, startedAt: "2024-01-01T00:00:00Z", ms: 12 },
     ];
     const result = await workflowLogs("summary", {
       origin: "http://test",

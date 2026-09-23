@@ -9,6 +9,7 @@
   import { ApiError, deleteWorkflow, listWorkflows } from "../../lib/api/index.js";
   import type { WorkflowRecord } from "../../lib/api/index.js";
   import { formatUpdatedAt, workflowRow } from "../../lib/workflows-ui.js";
+  import { trapFocus } from "../../lib/focus-trap.js";
   import Button from "../common/Button.svelte";
   import EmptyState from "../common/EmptyState.svelte";
   import IconButton from "../common/IconButton.svelte";
@@ -170,8 +171,9 @@
     modalName = "";
   }
 
-  // Focus moves into the delete dialog on open; Escape cancels; focus returns
-  // to the trigger on close (cancelDelete / confirmDelete).
+  // Focus moves into the delete dialog on open, Tab stays inside it, Escape
+  // cancels; focus returns to the trigger on close (cancelDelete /
+  // confirmDelete).
   $effect(() => {
     if (modal !== MODAL_KINDS.delete) return;
     deleteFocus =
@@ -184,7 +186,11 @@
       }
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const release = deleteDialogEl === undefined ? undefined : trapFocus(deleteDialogEl);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      release?.();
+    };
   });
 </script>
 

@@ -158,7 +158,7 @@ describe("validateWorkflow — structure", () => {
   });
 
   test("known model existence is checked only when a set is provided", () => {
-    const nodes = [
+    const nodes: GraphNode[] = [
       { id: "start", type: "start" },
       { id: "llm", type: "llm_call", model: "nope" },
       { id: "end", type: "end" },

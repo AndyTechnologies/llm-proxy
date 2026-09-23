@@ -124,7 +124,7 @@ describe("runOutcomeContent", () => {
   });
 
   test("an empty completion text is preserved, not nulled", () => {
-    const empty = {
+    const empty: RunWorkflowResult = {
       ...sampleCompletion(),
       choices: [
         { index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" },

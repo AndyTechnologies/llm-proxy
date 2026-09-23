@@ -6,14 +6,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { ApiError, request } from "./http.js";
+import { ApiError, request, type FetchLike } from "./http.js";
 
 /** Fake fetch returning a canned Response for a single call. */
 function jsonBody(
   body: unknown,
   status = 200,
   headers: Record<string, string> = { "content-type": "application/json" },
-): typeof fetch {
+): FetchLike {
   return async () => new Response(JSON.stringify(body), { status, headers });
 }
 
@@ -56,9 +56,9 @@ describe("request()", () => {
   });
 
   test("throws ApiError(0, network_error) on transport failure", async () => {
-    const fetchImpl = (async () => {
+    const fetchImpl: FetchLike = async () => {
       throw new TypeError("fetch failed");
-    }) as typeof fetch;
+    };
 
     const caught = await request<unknown>("/api/health", {
       origin: "http://test",

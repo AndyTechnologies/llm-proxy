@@ -1,6 +1,7 @@
 <script lang="ts">
   import { get } from "svelte/store";
   import Icon from "../common/Icon.svelte";
+  import { trapFocus } from "../../lib/focus-trap.js";
   import { NAV_ITEMS } from "../../lib/navigation.js";
   import { commandPaletteOpen } from "../../lib/ui-state.js";
 
@@ -13,6 +14,7 @@
   let activeIndex = $state(0);
   let inputEl = $state<HTMLInputElement>();
   let listEl = $state<HTMLUListElement>();
+  let dialogEl = $state<HTMLDivElement>();
   let lastFocused: HTMLElement | null = null;
 
   const filtered = $derived(
@@ -42,11 +44,13 @@
     open = next;
   });
 
-  // Focus the input on open, restore the trigger's focus on close.
+  // Focus the input on open, restore the trigger's focus on close, and keep
+  // Tab inside the palette while it is open (dialog focus containment).
   $effect(() => {
     if (open) {
       requestAnimationFrame(() => inputEl?.focus());
-      return;
+      const dialog = dialogEl;
+      return dialog === undefined ? undefined : trapFocus(dialog);
     }
     lastFocused?.focus();
     lastFocused = null;
@@ -107,6 +111,7 @@
       role="dialog"
       aria-modal="true"
       aria-label="Quick navigation"
+      bind:this={dialogEl}
       onclick={(event) => event.stopPropagation()}
     >
       <div class="palette-input-row">

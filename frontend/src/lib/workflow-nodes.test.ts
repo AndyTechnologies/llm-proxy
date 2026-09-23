@@ -11,7 +11,7 @@ import {
   nodeTypeExists,
   sanitizeNodeFields,
 } from "./workflow-nodes.js";
-import type { FieldKind, NodeFieldValues } from "./workflow-nodes.js";
+import type { FieldKind } from "./workflow-nodes.js";
 
 /** Runtime mirror of GraphNode fields (kept in sync with src/orchestrator/graph.ts). */
 const GRAPH_NODE_KEYS = new Set([
@@ -41,7 +41,7 @@ const GRAPH_NODE_KEYS = new Set([
 describe("WORKFLOW_NODE_TYPES taxonomy", () => {
   test("covers every engine node type exactly once", () => {
     const ids = WORKFLOW_NODE_TYPES.map((entry) => entry.id);
-    expect(ids).toEqual(NODE_TYPES);
+    expect(ids).toEqual([...NODE_TYPES]);
     expect(new Set(ids).size).toBe(NODE_TYPES.length);
   });
 
@@ -215,7 +215,7 @@ describe("sanitizeNodeFields", () => {
   test("condition key is opaque and never admitted into primitives", () => {
     const out = sanitizeNodeFields("condition", {
       condition: { op: "exists", field: "lastResponse.content" },
-    } as NodeFieldValues);
+    });
     expect(out).toEqual({});
   });
 });

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { get } from "svelte/store";
   import Icon from "../common/Icon.svelte";
-  import { NAV_GROUPS, isRouteActive } from "../../lib/navigation.js";
+  import { NAV_GROUPS, NAV_SECTIONS, isRouteActive } from "../../lib/navigation.js";
   import { sidebarDrawerOpen } from "../../lib/ui-state.js";
 
   let { current }: { current: string } = $props();
@@ -41,7 +41,7 @@
   <nav class="nav">
     {#each NAV_GROUPS as group (group.section)}
       <div class="nav-group">
-        <span class="nav-group-label">{group.section}</span>
+        <span class="nav-group-label">{NAV_SECTIONS[group.section]}</span>
         <ul class="nav-list">
           {#each group.items as item (item.href)}
             <li>

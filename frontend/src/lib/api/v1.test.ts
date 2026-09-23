@@ -15,8 +15,8 @@ import {
   splitSSEFrames,
   v1ErrorFrom,
 } from "./v1.js";
-import type { ChatStreamHandlers, V1ChatRequest, V1StreamEvent } from "./v1.js";
-import { ApiError } from "./http.js";
+import type { ChatStreamHandlers, V1ChatRequest, V1Completion, V1StreamEvent } from "./v1.js";
+import { ApiError, type FetchLike } from "./http.js";
 
 const encoder = new TextEncoder();
 
@@ -30,12 +30,12 @@ function jsonResponse(
   body: unknown,
   status = 200,
   headers: Record<string, string> = { "content-type": "application/json" },
-): typeof fetch {
+): FetchLike {
   return async () => new Response(JSON.stringify(body), { status, headers });
 }
 
 /** Fake fetch returning an SSE body built from raw text chunks. */
-function sseResponse(chunks: string[]): typeof fetch {
+function sseResponse(chunks: string[]): FetchLike {
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
@@ -47,19 +47,19 @@ function sseResponse(chunks: string[]): typeof fetch {
 }
 
 /** Capture the RequestInit a fetch impl receives (header/body assertions). */
-function captureFetch(): { fetchImpl: typeof fetch; calls: Array<{ url: string; init: RequestInit }> } {
+function captureFetch(): { fetchImpl: FetchLike; calls: Array<{ url: string; init: RequestInit }> } {
   const calls: Array<{ url: string; init: RequestInit }> = [];
-  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+  const fetchImpl: FetchLike = async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} });
-    return jsonResponse({ ok: true })();
-  }) as typeof fetch;
+    return jsonResponse({ ok: true })("http://test");
+  };
   return { fetchImpl, calls };
 }
 
 async function collectStream(
   body: V1ChatRequest,
   handlers: ChatStreamHandlers,
-  fetchImpl: typeof fetch,
+  fetchImpl: FetchLike,
 ): Promise<V1StreamEvent[]> {
   const events: V1StreamEvent[] = [];
   for await (const event of chatCompletionStream(body, handlers, {
@@ -71,7 +71,7 @@ async function collectStream(
   return events;
 }
 
-const COMPLETION = {
+const COMPLETION: V1Completion = {
   id: "cmpl-1",
   object: "chat.completion",
   created: 1710000000,
@@ -212,12 +212,12 @@ describe("chatCompletion()", () => {
     const controller = new AbortController();
     controller.abort();
     // Realistic browser fetch: an already-aborted signal rejects immediately.
-    const signalAwareFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const signalAwareFetch: FetchLike = async (_url: string | URL | Request, init?: RequestInit) => {
       if (init?.signal?.aborted === true) {
         throw new DOMException("The operation was aborted.", "AbortError");
       }
       return new Response("", { status: 200 });
-    }) as typeof fetch;
+    };
     const err = await chatCompletion(REQUEST, {
       origin: "http://test",
       fetchImpl: signalAwareFetch,
@@ -337,8 +337,8 @@ describe("chatCompletionStream()", () => {
         await pendingRead;
       },
     });
-    const fetchImpl = (async () =>
-      new Response(stream, { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    const fetchImpl: FetchLike = async () =>
+      new Response(stream, { headers: { "content-type": "text/event-stream" } });
 
     let doneCalled = false;
     const events: V1StreamEvent[] = [];

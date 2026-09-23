@@ -10,7 +10,7 @@
  *   POST   /api/models/:id/deactivate → {state:"disabled"} | 404
  */
 
-import { request } from "./http.js";
+import { request, type FetchLike } from "./http.js";
 import type {
   ActivateModelResponse,
   DeactivateModelResponse,
@@ -19,7 +19,7 @@ import type {
 
 export interface ModelOptions {
   origin?: string;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   signal?: AbortSignal;
   timeoutMs?: number;
 }

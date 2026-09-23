@@ -14,7 +14,7 @@
  * the http layer's rawBody path, exactly like the backend reads req.text().
  */
 
-import { request } from "./http.js";
+import { request, type FetchLike } from "./http.js";
 import type {
   ExecutionLogRow,
   RunWorkflowResult,
@@ -25,7 +25,7 @@ import type {
 
 export interface WorkflowOptions {
   origin?: string;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   signal?: AbortSignal;
   timeoutMs?: number;
 }

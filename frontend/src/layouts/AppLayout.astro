@@ -31,10 +31,15 @@ const documentTitle = `${breadcrumb[breadcrumb.length - 1] ?? title} · WeaveLLM
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
 
-    <Sidebar client:load current={currentPath} />
+    {/*
+      Chrome hydrates lazily: these islands render their interactive shell
+      server-side and hydrate when the browser is idle. Page content islands
+      keep client:load so their data loads without waiting on idle.
+    */}
+    <Sidebar client:idle current={currentPath} />
 
     <div class="shell">
-      <Topbar client:load breadcrumb={breadcrumb} origin={origin} />
+      <Topbar client:idle breadcrumb={breadcrumb} origin={origin} />
 
       <main class="main" id="main" tabindex={-1}>
         <slot />
@@ -43,7 +48,7 @@ const documentTitle = `${breadcrumb[breadcrumb.length - 1] ?? title} · WeaveLLM
       <StatusBar origin={origin} version={pkg.version} />
     </div>
 
-    <CommandPalette client:load />
+    <CommandPalette client:idle />
   </body>
 </html>
 

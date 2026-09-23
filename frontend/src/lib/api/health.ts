@@ -5,12 +5,12 @@
  *   console polls freely at boot and on the status bar).
  */
 
-import { request } from "./http.js";
+import { request, type FetchLike } from "./http.js";
 import type { HealthStatus } from "./types.js";
 
 export interface HealthOptions {
   origin?: string;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   signal?: AbortSignal;
   timeoutMs?: number;
 }

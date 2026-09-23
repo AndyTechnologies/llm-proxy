@@ -134,7 +134,7 @@ export function connectWorkflowSocket(options: WorkflowSocketOptions): WorkflowS
   const ready = new Promise<boolean>((resolve) => {
     resolveReady = resolve;
   });
-  const queued: WorkflowChatMessage[] = [];
+  const queued: WorkflowChatMessage[][] = [];
 
   function emit(event: WorkflowWsEvent): void {
     options.onEvent(event);

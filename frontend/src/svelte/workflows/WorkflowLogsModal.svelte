@@ -10,6 +10,7 @@
   import Button from "../common/Button.svelte";
   import IconButton from "../common/IconButton.svelte";
   import StatusDot from "../common/StatusDot.svelte";
+  import { trapFocus } from "../../lib/focus-trap.js";
 
   let {
     name,
@@ -60,8 +61,9 @@
     void load();
   });
 
-  // Dialog wiring: capture focus, move it into the dialog, close on Escape.
-  // Focus restoration happens in close(), while the dialog is still mounted.
+  // Dialog wiring: capture focus, move it into the dialog, keep Tab inside it,
+  // close on Escape. Focus restoration happens in close(), while the dialog
+  // is still mounted.
   $effect(() => {
     lastFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -73,7 +75,11 @@
       }
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const release = dialogEl === undefined ? undefined : trapFocus(dialogEl);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      release?.();
+    };
   });
 
   function close(): void {

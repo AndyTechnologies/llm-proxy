@@ -315,20 +315,20 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return Object.values(value).every((item) => typeof item === "string");
 }
 
-/** Canvas nodes/edges → engine graph (whitelist admission, single id/type cast). */
+/** Canvas nodes/edges → engine graph (whitelist admission, no casts). */
 export function flowToGraph(nodes: FlowNode[], edges: FlowEdge[]): GraphPipeline {
   const graphNodes: GraphNode[] = nodes.map((node) => {
     const type = node.data.wNodeType;
     const values = sanitizeNodeFields(type, node.data.values);
-    const record: Record<string, unknown> = { id: node.id, type };
-    for (const key of Object.keys(values)) record[key] = values[key];
+    const graphNode: GraphNode = { id: node.id, type };
+    Object.assign(graphNode, values);
     if ((type === "condition" || type === "router") && isAstExpr(node.data.condition)) {
-      record.condition = node.data.condition;
+      graphNode.condition = node.data.condition;
     }
     if (type === "pipeline" && isStringRecord(node.data.params)) {
-      record.params = node.data.params;
+      graphNode.params = node.data.params;
     }
-    return record as GraphNode;
+    return graphNode;
   });
 
   const graphEdges: GraphEdge[] = edges.map((edge) => {

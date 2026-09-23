@@ -11,14 +11,14 @@ import {
   getModel,
   listModels,
 } from "./models.js";
-import { ApiError } from "./http.js";
+import { ApiError, type FetchLike } from "./http.js";
 import type { ModelStatus } from "./types.js";
 
 function jsonBody(
   body: unknown,
   status = 200,
   headers: Record<string, string> = { "content-type": "application/json" },
-): typeof fetch {
+): FetchLike {
   return async () =>
     new Response(JSON.stringify(body), { status, headers });
 }

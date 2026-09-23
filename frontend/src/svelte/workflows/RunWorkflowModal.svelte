@@ -9,6 +9,7 @@
   import { runOutcomeContent } from "../../lib/workflows-ui.js";
   import Button from "../common/Button.svelte";
   import IconButton from "../common/IconButton.svelte";
+  import { trapFocus } from "../../lib/focus-trap.js";
 
   let {
     name,
@@ -36,8 +37,8 @@
   }
 
   // Mount-time wiring: capture the trigger focus, move focus into the dialog,
-  // close on Escape. Focus restoration happens in close(), while the dialog
-  // is still mounted; the cleanup only unregisters the key listener.
+  // keep Tab inside it, close on Escape. Focus restoration happens in close(),
+  // while the dialog is still mounted; the cleanup only unregisters listeners.
   $effect(() => {
     lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     requestAnimationFrame(() => dialogEl?.focus());
@@ -48,7 +49,11 @@
       }
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const release = dialogEl === undefined ? undefined : trapFocus(dialogEl);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      release?.();
+    };
   });
 
   function close(): void {

@@ -13,7 +13,7 @@
  */
 
 import { getHealth } from "./health.js";
-import { request } from "./http.js";
+import { request, type FetchLike } from "./http.js";
 import { ApiError } from "./http.js";
 import type { HealthStatus } from "./types.js";
 
@@ -29,7 +29,7 @@ export interface RuntimeStatus {
 /** Forwarded transport options (DI seam: origin/fetch/signal/timeout). */
 export interface RuntimeStatusOptions {
   origin?: string;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   signal?: AbortSignal;
   timeoutMs?: number;
 }

@@ -10,15 +10,16 @@
 
 import { expect, test } from "bun:test";
 import { runtimeStatus } from "./runtime.js";
+import type { FetchLike } from "./http.js";
 
 function jsonBody(
   body: unknown,
   status = 200,
-): typeof fetch {
+): FetchLike {
   return async () => new Response(JSON.stringify(body), { status });
 }
 
-function failingFetch(): typeof fetch {
+function failingFetch(): FetchLike {
   return async () => {
     throw new TypeError("fetch failed");
   };
@@ -39,13 +40,13 @@ test("returns reachable=true plus health when the backend answers", async () => 
 test("sets authEnabled=true when the models branch is 401-gated", async () => {
   // Real backend behaviour: /api/health is open (200), only /api/models
   // is auth-gated (401) — so the probe must route by URL.
-  const routedFetch = (async (url: string | URL | Request) => {
+  const routedFetch: FetchLike = async (url: string | URL | Request) => {
     const path = String(url);
     if (path.endsWith("/api/health")) {
       return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
     }
     return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
-  }) as typeof fetch;
+  };
 
   const result = await runtimeStatus({
     ...opts,

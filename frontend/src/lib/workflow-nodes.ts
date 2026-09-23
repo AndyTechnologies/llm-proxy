@@ -324,14 +324,16 @@ function sanitizeFieldValue(
 }
 
 /**
- * Whitelist a NodeFieldValues record against the taxonomy + the universal
+ * Whitelist a raw field-values record against the taxonomy + the universal
  * `parallel` flag (a real GraphNode field the backend keeps on every node),
  * dropping unknown keys and type-invalid values — the same "unknown fields
  * are dropped, known fields type-checked" admission the backend parser runs.
+ * Input is deliberately `Record<string, unknown>` (admission boundary);
+ * the OUTPUT is always a clean `NodeFieldValues`.
  */
 export function sanitizeNodeFields(
   type: NodeType,
-  values: NodeFieldValues,
+  values: Record<string, unknown>,
 ): NodeFieldValues {
   const def = nodeTypeDef(type);
   const out: NodeFieldValues = {};

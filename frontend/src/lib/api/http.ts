@@ -19,6 +19,17 @@ import type { ApiErrorEnvelope } from "./types.js";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
 
+/**
+ * Minimal fetch contract the transport actually uses: input + init →
+ * Response promise. Deliberately narrower than `typeof fetch` (which also
+ * carries `preconnect` and stricter RequestInfo typing) so tests can inject
+ * plain async functions without casts; the global `fetch` satisfies it.
+ */
+export type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
 export interface RequestOptions {
   method?: HttpMethod;
   /** JSON body (mutually exclusive with rawBody). */
@@ -30,7 +41,7 @@ export interface RequestOptions {
   /** Override the API origin (defaults to getApiOrigin()). */
   origin?: string;
   /** Inject a fetch implementation (tests). Defaults to global fetch. */
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   /** Abort the request. */
   signal?: AbortSignal;
   /** Timeout in ms (default 10_000). */
