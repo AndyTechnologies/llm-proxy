@@ -1,37 +1,37 @@
 ---
-// WeaveLLM shell: static SPA hosting Svelte islands.
-import ModelBadge from "../svelte/ModelBadge.svelte";
-import WorkflowEditor from "../svelte/WorkflowEditor.svelte";
-import "../styles/global.css";
+import AppLayout from "../layouts/AppLayout.astro";
+import Overview from "../svelte/overview/Overview.svelte";
+
+/**
+ * Overview — console landing page. The live dashboard island gathers real
+ * values through the typed API clients (runtime health, model registry,
+ * workflow store) and refreshes every 10 seconds. It never invents metrics:
+ * unavailable values render as "—"/"Unavailable" with an honest reason.
+ */
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WeaveLLM</title>
-  </head>
-  <body>
-    <header class="app-header">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <h1>WeaveLLM</h1>
-      <span class="tagline">Local model runtime</span>
-    </header>
-    <main class="app-main">
-      <section class="panel" aria-label="Local models">
-        <h2>Local models</h2>
-        <ModelBadge
-          client:load
-          name="qwen2.5-coder-3b-instruct"
-          quant="Q4_K_M"
-          ctx={32768}
-        />
-      </section>
-      <section class="panel" aria-label="Workflow editor">
-        <h2>Workflow editor</h2>
-        <WorkflowEditor client:load />
-      </section>
-    </main>
-  </body>
-</html>
+<AppLayout title="Overview">
+  <header class="page-head">
+    <h1>Overview</h1>
+    <p>
+      Live runtime summary — backend endpoint, model registry state and recent
+      workflows, refreshed automatically from the /api surface.
+    </p>
+  </header>
+
+  <Overview client:load />
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+</style>

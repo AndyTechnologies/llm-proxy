@@ -1,0 +1,22 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import EmptyState from "../../svelte/common/EmptyState.svelte";
+
+/**
+ * Provider kind details for the three contract kinds (openai | anthropic |
+ * openrouter). These are real kinds from the backend provider registry —
+ * static pages render the honest "Coming from backend" state because the
+ * public API does not expose provider rows. Unknown slugs 404 in production.
+ */
+export function getStaticPaths() {
+  const kinds = ["openai", "anthropic", "openrouter"];
+  return kinds.map((kind) => ({ params: { kind } }));
+}
+
+const { kind } = Astro.params;
+const providerKind = kind ?? "unknown";
+---
+
+<AppLayout title={providerKind} breadcrumb={["Providers", providerKind]}>
+  <EmptyState icon="providers" title="Coming from backend" description={`${providerKind} configuration, key state and fallback links appear here once the backend exposes provider rows. Keys are never sent to this interface — they live in the server keychain (scope provider:${providerKind}).`} />
+</AppLayout>

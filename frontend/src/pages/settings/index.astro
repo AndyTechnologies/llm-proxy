@@ -1,0 +1,39 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import SettingsPanel from "../../svelte/settings/Settings.svelte";
+
+/**
+ * Settings — read-only console settings. There is no settings API on the
+ * backend (server config is environment-driven: WEAVELLM_HOST/PORT/AUTH/
+ * APP_DATA), so this page never mutates anything and shows no forms. The
+ * island probes the auth gate live through the typed API client and marks
+ * server-owned configuration (host/port/app-data/store) honestly as coming
+ * from the backend — the public API does not expose those values.
+ */
+---
+
+<AppLayout title="Settings" breadcrumb={["Settings"]}>
+  <header class="page-head">
+    <h1>Settings</h1>
+    <p>
+      Read-only: the auth gate is probed live, and server-owned configuration
+      is shown honestly. Nothing here mutates the server.
+    </p>
+  </header>
+
+  <SettingsPanel client:load />
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+</style>

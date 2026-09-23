@@ -1,0 +1,40 @@
+---
+import AppLayout from "../layouts/AppLayout.astro";
+import Playground from "../svelte/playground/Playground.svelte";
+
+/**
+ * /api — legacy alias of the API playground (U11): the canonical route is
+ * /playground (nav points there); this URL keeps working so existing
+ * bookmarks and deep links never 404. Same island, same wire surface.
+ */
+---
+
+<AppLayout title="API" breadcrumb={["API"]}>
+  <header class="page-head">
+    <h1>API playground</h1>
+    <p>
+      Exercise POST /v1/chat/completions against the real wire. The canonical
+      route is <a href="/playground">/playground</a>.
+    </p>
+  </header>
+
+  <Playground client:load />
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+
+  .page-head a {
+    color: var(--accent-hover);
+  }
+</style>

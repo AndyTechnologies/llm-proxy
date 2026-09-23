@@ -1,0 +1,115 @@
+---
+import "../styles/global.css";
+import pkg from "../../../package.json";
+import Sidebar from "../svelte/navigation/Sidebar.svelte";
+import Topbar from "../svelte/navigation/Topbar.svelte";
+import StatusBar from "../svelte/navigation/StatusBar.svelte";
+import CommandPalette from "../svelte/navigation/CommandPalette.svelte";
+import { getApiOrigin } from "../lib/api/config.js";
+
+interface Props {
+  /** Page title, used as the breadcrumb terminal and document title. */
+  title: string;
+  /** Optional full breadcrumb trail; defaults to the page title alone. */
+  breadcrumb?: string[];
+}
+
+const { title, breadcrumb = [title] } = Astro.props;
+const origin = getApiOrigin();
+const currentPath = Astro.url.pathname;
+const documentTitle = `${breadcrumb[breadcrumb.length - 1] ?? title} · WeaveLLM`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>{documentTitle}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    {/*
+      Chrome hydrates lazily: these islands render their interactive shell
+      server-side and hydrate when the browser is idle. Page content islands
+      keep client:load so their data loads without waiting on idle.
+    */}
+    <Sidebar client:idle current={currentPath} />
+
+    <div class="shell">
+      <Topbar client:idle breadcrumb={breadcrumb} origin={origin} />
+
+      <main class="main" id="main" tabindex={-1}>
+        <slot />
+      </main>
+
+      <StatusBar origin={origin} version={pkg.version} />
+    </div>
+
+    <CommandPalette client:idle />
+  </body>
+</html>
+
+<style>
+  .skip-link {
+    position: fixed;
+    top: var(--space-3);
+    left: var(--space-3);
+    z-index: 100;
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--card);
+    color: var(--text);
+    transform: translateY(-300%);
+    transition: transform 150ms ease;
+  }
+
+  .skip-link:focus {
+    transform: translateY(0);
+  }
+
+  /* Main column clears the fixed sidebar (240px, 64px rail, then drawer). */
+  .shell {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    margin-left: 240px;
+  }
+
+  .main {
+    flex: 1;
+    width: 100%;
+    max-width: 1152px;
+    margin-inline: auto;
+    padding: var(--space-6);
+  }
+
+  @media (min-width: 768px) and (max-width: 1023px) {
+    .shell {
+      margin-left: 64px;
+    }
+
+    .main {
+      padding: var(--space-5);
+    }
+  }
+
+  @media (max-width: 767px) {
+    .shell {
+      margin-left: 0;
+    }
+
+    .main {
+      padding: var(--space-4);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skip-link {
+      transition: none;
+    }
+  }
+</style>

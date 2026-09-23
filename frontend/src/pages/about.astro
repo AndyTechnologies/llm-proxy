@@ -1,0 +1,182 @@
+---
+import AppLayout from "../layouts/AppLayout.astro";
+import pkg from "../../../package.json";
+
+/**
+ * About — static build-time facts, nothing invented. Package metadata
+ * (name/version/license/homepage) comes from the root package.json at
+ * build time; the stack lines are the actual runtime facts of the project.
+ * The console is admin-only and stores no credentials.
+ */
+
+const packageRows = [
+  { label: "Package name", value: pkg.name },
+  { label: "Version", value: `v${pkg.version}` },
+  { label: "License", value: pkg.license },
+];
+
+const stackRows = [
+  {
+    label: "Runtime",
+    value: "Bun ≥ 1.4",
+    note: "Server, build tooling and tests run on Bun — not Node.",
+  },
+  {
+    label: "Language",
+    value: "TypeScript strict",
+    note: "No implicit any; ESM with explicit .js imports.",
+  },
+  {
+    label: "Frontend",
+    value: "Astro 7 static + Svelte 5 islands",
+    note: "Static shell with hydrated islands; no SPA router.",
+  },
+  {
+    label: "Backend",
+    value: "llama.cpp via llama-server",
+    note: "Managed local backend behind an OpenAI-compatible proxy.",
+  },
+];
+---
+
+<AppLayout title="About" breadcrumb={["About"]}>
+  <header class="page-head">
+    <h1>About</h1>
+    <p>
+      WeaveLLM — a local AI desktop runtime: managed llama.cpp backend,
+      visual workflow editor, model management and an OpenAI-compatible
+      proxy. Everything on this page is build-time package data or the
+      actual stack — nothing is simulated.
+    </p>
+  </header>
+
+  <section class="about-grid" aria-label="Package, stack and console">
+    <article class="about-card">
+      <h2 class="card-label">Package</h2>
+      <div class="rows">
+        {packageRows.map((row) => (
+          <div class="row">
+            <p class="row-label">{row.label}</p>
+            <p class="row-value">{row.value}</p>
+          </div>
+        ))}
+        <div class="row">
+          <p class="row-label">Homepage</p>
+          <a class="row-value row-link" href={pkg.homepage} target="_blank" rel="noopener">
+            {pkg.homepage}
+          </a>
+        </div>
+      </div>
+    </article>
+
+    <article class="about-card">
+      <h2 class="card-label">Stack</h2>
+      <div class="rows">
+        {stackRows.map((row) => (
+          <div class="row">
+            <p class="row-label">{row.label}</p>
+            <p class="row-value">{row.value}</p>
+            <p class="row-note">{row.note}</p>
+          </div>
+        ))}
+      </div>
+    </article>
+
+    <article class="about-card">
+      <h2 class="card-label">Admin console</h2>
+      <p class="about-note">
+        This console is admin-only and stores no credentials. The auth gate
+        (WEAVELLM_AUTH) and provider keys live server-side; the console only
+        probes the real backend surface and never simulates data.
+      </p>
+    </article>
+  </section>
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+
+  .about-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: var(--space-4);
+    align-items: start;
+  }
+
+  .about-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    background: var(--card);
+  }
+
+  .card-label {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--secondary);
+  }
+
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .row-label {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+
+  .row-value {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    word-break: break-word;
+  }
+
+  .row-note {
+    margin: 0;
+    color: var(--secondary);
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .row-link {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .row-link:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+  }
+
+  .about-note {
+    margin: 0;
+    color: var(--secondary);
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+</style>

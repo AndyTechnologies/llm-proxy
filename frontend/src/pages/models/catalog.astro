@@ -1,0 +1,32 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import EmptyState from "../../svelte/common/EmptyState.svelte";
+
+/**
+ * Model catalog. Honest state: there is NO catalog endpoint in the public
+ * /api surface (verified against src/routes/api.ts + src/app/server.ts — the
+ * backend exposes only /api/health, /api/models and /api/workflows). The
+ * catalog source (src/catalog/) is backend-internal, so this section shows
+ * the "Coming from backend" state instead of inventing an endpoint or data.
+ */
+---
+
+<AppLayout title="Model catalog" breadcrumb={["Models", "Model catalog"]}>
+  <header class="page-head">
+    <h1>Model catalog</h1>
+  </header>
+
+  <EmptyState
+    icon="catalog"
+    title="Coming from backend"
+    description="Model discovery and gosh downloads are not exposed through the public API yet."
+  />
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-6);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+</style>

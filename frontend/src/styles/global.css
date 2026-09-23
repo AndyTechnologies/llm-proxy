@@ -1,75 +1,97 @@
-:root {
-  --bg: #09090b;
-  --bg-card: #111113;
-  --bg-code: #18181c;
-  --border: #ffffff12;
-  --border-hover: #F095C859;
-  --text: #fafafa;
-  --text-muted: #a1a1aa;
-  --text-tertiary: #52525b;
-  --accent: #F095C8;
-  --accent-hover: #FFB1DD;
-  --accent-soft: rgba(240, 149, 200, 0.15);
-  --success: #B4E7C7;
-  --danger: #FF718F;
-  --surface: var(--bg-card);        /* legacy alias for card surfaces */
-  --muted: var(--text-tertiary);    /* legacy alias for tertiary text */
+@import "./tokens.css";
+
+/* ---------------------------------------------------------------------------
+ * Base reset + typography. Layout/component styles live next to their
+ * components; this file only sets the document foundation and token-driven
+ * global utilities.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
-* {
-  box-sizing: border-box;
+html {
+  background: var(--bg);
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
+  min-height: 100vh;
   background: var(--bg);
   color: var(--text);
-  font-family: Inter, system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
-.app-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
+h1,
+h2,
+h3,
+h4 {
+  margin: 0 0 var(--space-2);
+  line-height: 1.25;
+  font-weight: 600;
 }
 
-.brand-mark {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--accent);
+p {
+  margin: 0 0 var(--space-3);
 }
 
-.app-header h1 {
-  font-size: 1.25rem;
-  margin: 0;
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
+code,
+kbd,
+pre {
+  font-family: var(--font-mono);
+}
+
+/* Visible keyboard focus everywhere, without outlines on mouse users */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent-subtle);
   color: var(--text);
 }
 
-.tagline {
-  color: var(--text-muted);
-  font-size: 0.85rem;
+/* ---------------------------------------------------------------------------
+ * SvelteFlow ships light-theme defaults; remap its accent --xy-* variables
+ * to the Gentle-AI tokens so every canvas blends with the shell. Components
+ * may refine node/control styling locally (see workflow-editor/FlowEditor.svelte).
+ */
+.svelte-flow {
+  --xy-handle-background-color: var(--accent);
+  --xy-handle-border-color: var(--card);
+  --xy-edge-stroke-selected: var(--accent);
+  --xy-connectionline-stroke: var(--accent);
+  --xy-selection-background-color: var(--accent-subtle);
+  --xy-minimap-background-color: var(--code);
+  --xy-minimap-mask-background-color: var(--bg);
 }
 
-.app-main {
-  padding: 24px;
-  display: grid;
-  gap: 24px;
-}
-
-.panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 16px 20px;
-}
-
-.panel h2 {
-  margin-top: 0;
-  font-size: 0.95rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
+/* ---------------------------------------------------------------------------
+ * Motion — reduced-motion users get instant state changes.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

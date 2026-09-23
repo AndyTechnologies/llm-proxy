@@ -1,0 +1,39 @@
+---
+import AppLayout from "../../layouts/AppLayout.astro";
+import ExecutionsList from "../../svelte/executions/ExecutionsList.svelte";
+
+/**
+ * Executions — per-workflow run history. The island owns all data: it talks
+ * to the real /api/workflows and /api/workflows/:name/logs surface through
+ * the typed client (no server-side fetch here) and reports loading/error/
+ * empty states honestly. There is no global executions endpoint, so the page
+ * aggregates per-workflow logs it actually fetches — never invented totals.
+ */
+---
+
+<AppLayout title="Executions" breadcrumb={["Executions"]}>
+  <header class="page-head">
+    <h1>Executions</h1>
+    <p>
+      Per-workflow run history straight from the backend logs — latest run up
+      front, full history on expand. No auto-refresh: a completed run is
+      immutable, so data refreshes on demand.
+    </p>
+  </header>
+
+  <ExecutionsList client:load />
+</AppLayout>
+
+<style>
+  .page-head h1 {
+    margin: 0 0 var(--space-2);
+    font-size: 1.5rem;
+    font-weight: 700;
+  }
+
+  .page-head p {
+    margin: 0 0 var(--space-6);
+    color: var(--secondary);
+    max-width: 64ch;
+  }
+</style>
