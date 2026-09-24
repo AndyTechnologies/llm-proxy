@@ -84,6 +84,15 @@
   entries cleaned), config-load spec rewritten to env-driven reality, `openspec/config.yaml`
   architecture line fixed. Final gates: `bun run typecheck` ✓, `bun run lint` ✓,
   `bun test` ✓ (462 pass / 0 fail across 42 files).
+- RDD: `gentle-ai review assess` returned `medium` (executable_change: .gitignore) with
+  `review_due: slice_budget_reached`; preflight STATUS then returned
+  `stop(rdd_disabled)` — RDD is OFF for this clone. No review started (user-owned switch;
+  never reactivated by the orchestrator). Delivery follows ordinary repository policy and
+  reports `disabled/unmanaged`, no fabricated approval.
+- DELIVERY (user chose "Un solo PR"): pushed `docs/docs-overhaul`, PR opened →
+  **https://github.com/AndyTechnologies/llm-proxy/pull/51** (base master, size:exception for
+  docs). PR holds commits 93f09f2 (WU1), ba8434b (WU2), 79fa3e8 (WU3), plus this tracking
+  record. Feature CLOSED from the orchestrator's side; merge is the user's decision.
 
 ## Next step
 
