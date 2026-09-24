@@ -23,31 +23,35 @@ behind one `Provider` contract.
 
 ```bash
 bun install            # install dependencies
-bun run dev            # backend (watch) + astro dev in parallel (dev proxy)
+bun run dev            # backend (watch) + astro dev in parallel, shared terminal
 bun run dev:frontend   # astro dev --root frontend
 bun run build          # bundle to dist/
 bun run build:frontend # astro build --root frontend
 bun run build:binary   # compile to dist/weavellm
 bun run build:binaries # all platform binaries (scripts/build-binaries.ts)
-bun start              # build the UI, then run the server serving it
+bun start              # build the UI, then run the Electrobun desktop bundle
+                       # via hutch (scripts/start-desktop.ts, --env=dev)
 bun test               # run tests (bun:test)
-bun run typecheck      # tsc --noEmit
+bun run typecheck      # tsc --noEmit (backend only)
+bun run typecheck:frontend  # astro check --root frontend
 bun run lint           # eslint
 bun run format         # eslint --fix
 ```
 
-Verify with `bun run typecheck && bun run lint && bun test` after any change.
+Verify with `bun run typecheck && bun run typecheck:frontend && bun run lint && bun test` after any change.
 
 ## Architecture map
 
 ```
 src/main.ts        boot: appData → SQLite → config → secrets → providers →
-                   workflows → server → background update check
+                   local hub (preflight/restoreActive) → workflows → server →
+                   background update check
 src/app/           server.ts (createWebServer, graceful shutdown / in-flight
                    drain), config.ts (env config), ws.ts (WsHub), update.ts,
                    startup.ts (cold-start budget), types.ts
-src/backend/       managed llama-server lifecycle: manager.ts
-                   (LlamaProcessManager), spawn-args.ts
+src/backend/       managed llama-server lifecycle: hub.ts (LocalBackendHub:
+                   preflight, restoreActive, activation, readiness gating),
+                   manager.ts (LlamaProcessManager), spawn-args.ts
 src/catalog/       GGUF model catalog + curated metadata
 src/db/            app-data SQLite schema (schema.ts), model config
 src/downloads/     gosh CLI model downloads (checksum-verified)
@@ -66,8 +70,10 @@ src/ui-svelte/     Svelte components shared with the renderer
 src/utils/         logging (logger.ts), ids, content extraction, GGUF,
                    sanitization
 frontend/          Astro 7 renderer shell (Svelte 5 islands, @xyflow/svelte
-                   WorkflowEditor) — desktop UI, not an SPA served by the
-                   proxy
+                   WorkflowEditor) — served COMPILED by the proxy
+                   (serveStaticUi from frontend/dist or WEAVELLM_UI_DIR) and
+                   dev-served via `bun run dev:frontend` (astro dev, proxies
+                   /api, /v1, /ws to the backend)
 scripts/           build binaries (build-binaries.ts)
 ```
 
@@ -95,35 +101,43 @@ Key contracts to respect:
   unmapped models get the OpenAI unknown-model 404 envelope. Streaming relays
   OpenAI-wire SSE with exactly one terminal `data: [DONE]` and aborts the
   upstream call on client disconnect.
-- **Boot wiring limitation (current):** `src/main.ts` passes
-  `localProvider: () => null`, `localModels: () => []`, and null
-  embedder/chunks/memory services. The managed llama-server is NOT wired into
-  the runtime yet; local ids answer the 404 envelope. External providers and
-  workflow/gateway models work. `src/backend/` + `src/providers/llama-server.ts`
-  implement the wiring; boot remains the integration point.
+- **Local backend wiring:** boot constructs a `LocalBackendHub`
+  (`src/backend/hub.ts`, `binary: config.llamaBin`) and runs `preflight()`
+  + `restoreActive()` BEFORE the HTTP server starts. `preflight()` enforces a
+  llama.cpp **b9908+** version floor (fail-fast with an actionable message); a
+  MISSING binary is a per-model error that does NOT block boot.
+  `restoreActive()` re-spawns previously-activated models from the
+  `models.active` column. `makeRuntimeServices` receives
+  `localProvider`/`localModels`/`embedder` from the hub — and
+  **`chunks: () => null`, `memory: () => null`** (RAG chunk/memory stores
+  remain unwired). Per-request readiness gating (`ensureReady`): lazy
+  re-spawn, concurrent requests join one spawn, up to 30 s, then **503** on
+  failure. Embeddings serve through `hub.embedder()` when a model is
+  designated via the `settings` table (`embedding_model` key); `/v1/embeddings`
+  answers the 404 envelope when none is configured.
 
 ## Configuration model
 
 - Runtime config is **environment-driven** (`src/app/config.ts`,
   `resolveAppConfig`): `WEAVELLM_HOST` (default `127.0.0.1`),
-  `WEAVELLM_PORT` (default `4317`), `WEAVELLM_AUTH` (`1`/`true` enables the
-  Bearer gate), `WEAVELLM_APP_DATA`. There is no config file loaded by the
-  app — no `CONFIG_FILE`, no `BEARER_TOKEN` env.
+  `WEAVELLM_PORT` (default `4317`, `0` = ephemeral, invalid → default),
+  `WEAVELLM_AUTH` (`1`/`true` enables the Bearer gate), `WEAVELLM_APP_DATA`,
+  `WEAVELLM_UI_DIR` (compiled UI override; else `frontend/dist` then bundled
+  `ui/`), `WEAVELLM_LLAMA_BIN` (llama-server path; default `llama` on PATH).
+  There is no config file loaded by the app.
 - Persistent state is SQLite at `<appData>/weavellm.db` (10 tables: `models`,
   `model_config`, `workflows`, `execution_log`, `providers`, `secrets`,
   `kv_memory`, `chunks`, `downloads`, `settings`). `providers` rows hold
   kinds/base URLs/fallbacks; `workflows` rows hold YAML node/edge graphs; the
-  gateway auth key is the keychain secret scoped `auth`.
+  gateway auth key is the keychain secret scoped `auth`. Model lifecycle state
+  lives in the `models.active` column (idempotent migration) and is driven by
+  the `/api/models/:id/activate|deactivate` routes.
 - A **workflow** is a DAG of `nodes` + `edges`: `start` → `llm_call`(s) →
   `end`, with `llm_call` modes `generate`/`refine`/`passthrough` and
   conditional routing (`on_429`, `tool_calls_route`). The full node taxonomy
   (14 types): `start`, `end`, `llm_call`, `condition`, `loop`, `fan`, `join`,
   `pipeline`, `rag_local`, `data.code`, `memory`, `embeddings`, `router`,
   `output`.
-- `config.example.yaml` is **stale** (pre-rewrite gateway: port 8090,
-  CONFIG_FILE, BEARER_TOKEN, dashboard SPA at `/ui`) — the runtime does not
-  load it. Treat only its workflow YAML section as a shape reference; do not
-  extend it as if it were the runtime contract.
 - Behavior is specified in `openspec/specs/<capability>/spec.md` (25
   capability specs); keep specs in sync with behavior.
 
@@ -137,9 +151,15 @@ Key contracts to respect:
 - **No inline eslint disables.** Use underscore-prefixed params (`_x`) for
   unused signature-parity arguments rather than disabling rules.
 - **Tests live next to code** (`manager.ts` → `manager.test.ts`), run with
-  `bun test`. Cover the SSE contract (terminal chunk, client-disconnect abort,
-  429 fallback, unknown-model 404), the /v1 dispatcher, the /api workflow
-  surface, the WS protocol, and the drain/shutdown paths.
+  `bun test` — `bunfig.toml` scopes discovery to `src/` (`[test] root =
+  "./src"`, 42 colocated files). Frontend colocated tests live under
+  `frontend/src/lib/` (24 files, plus `frontend/astro.config.test.ts`) and are
+  run by explicit path (`bun test frontend/src/lib`), together with
+  `bun run typecheck:frontend` — both are local gates today: CI currently runs
+  only lint, backend typecheck, and `bun run test`. Cover the SSE contract
+  (terminal chunk, client-disconnect abort, 429 fallback, unknown-model 404),
+  the /v1 dispatcher, the /api workflow surface, the WS protocol, and the
+  drain/shutdown paths.
 - Use **conventional commits**; keep commits small, cohesive units. Never add
   `Co-Authored-By` or AI attribution lines.
 
