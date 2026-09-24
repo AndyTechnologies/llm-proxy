@@ -4,8 +4,9 @@ context: |
   Tech stack: Bun.js v1.4.0 (runtime bun on PATH); TypeScript strict
     (tsconfig strict, all src/*.ts). Bun native features (Bun.serve, Bun.spawn,
     Bun.file().yaml(), built-in .env, bun build --compile). Replaces Node + tsx.
-  Architecture: LLM proxy orchestrating multi-model pipelines toward llama-swap/llama.cpp;
-    OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, /v1/models).
+  Architecture: local AI desktop runtime — managed llama.cpp backend (llama-server),
+    external providers, DAG workflow engine; OpenAI-compatible endpoints
+    (/v1/chat/completions, /v1/completions, /v1/models).
   Testing: bun test (workspace test runner). Strict TDD active. Linter: eslint
     (lint script). Formatter: eslint --fix . Type checker: tsc --noEmit.
   Style: ESM TypeScript; strict typing required; eslint enforces semi + no-unused-vars.

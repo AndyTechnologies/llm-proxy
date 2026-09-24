@@ -1,193 +1,162 @@
-# Config Load Specification
+# Runtime Configuration Specification
 
 ## Purpose
 
-Bun-native config loading with behavior parity to the dotenv/js-yaml loader: `CONFIG_FILE` honored, zod validation unchanged, `.env` precedence. Also covers runtime persistence: atomic writes, YAML round-trip re-serialization, defaults generation, and reload-on-apply.
+WeaveLLM is configured **exclusively through environment variables**. There is
+no config file: the runtime does not read `CONFIG_FILE`, `llm-proxy.config.yaml`,
+or any YAML/JSON config from disk (`resolveAppConfig` in `src/app/config.ts`
+builds the `AppConfig` from `process.env`). All six `WEAVELLM_*` variables have
+safe defaults so the app boots without any setup. Persistent state (provider
+rows, workflows, model config, secrets) is database- and keychain-backed, not
+config-file-backed.
+
+Bun's native `.env` auto-loading applies to the process; `WEAVELLM_*` values
+defined in `.env` feed the same resolution pipeline as exported shell variables.
 
 ## Requirements
 
-### Requirement: CONFIG_FILE env honored
+### Requirement: Environment-driven configuration with no config file
 
-The system MUST resolve the config path from the `CONFIG_FILE` env var, defaulting to `./llm-proxy.config.yaml`, resolved against the current working directory.
+The system SHALL load its runtime configuration from environment variables
+only, via `resolveAppConfig(env)`. It SHALL NOT load or require any
+configuration file — `CONFIG_FILE`, `llm-proxy.config.yaml`, and equivalent
+paths are dead concepts and MUST NOT be honored.
 
-#### Scenario: Default config path
+#### Scenario: Boot with no configuration provided
 
-- GIVEN no `CONFIG_FILE` is set
-- WHEN `loadGatewayConfig` runs
-- THEN `./llm-proxy.config.yaml` is read from the working directory
+- GIVEN no `WEAVELLM_*` variable is set
+- WHEN `resolveAppConfig` runs at boot
+- THEN the app binds `127.0.0.1:4317` with auth disabled, platform app-data, the
+  probed UI directory, and the `llama` binary from PATH
 
-#### Scenario: Custom path via CONFIG_FILE
+#### Scenario: No config file is read
 
-- GIVEN `CONFIG_FILE` points to another config path
-- WHEN the config loads
-- THEN that file is read and drives the typed config
+- GIVEN the repo root contains no config file
+- WHEN the app boots
+- THEN boot succeeds without any config-file lookup and with no warning about a
+  missing file
 
-### Requirement: Native YAML and JSON parsing
+### Requirement: WEAVELLM_HOST controls the bind address
 
-The system MUST parse config files at runtime with Bun APIs — `Bun.YAML.parse(await Bun.file(path).text())` for `.yaml`/`.yml`, JSON parsing for `.json`. Static/bundled YAML import is forbidden because it cannot honor a runtime `CONFIG_FILE`.
+The system SHALL bind the HTTP server to `WEAVELLM_HOST` when set, defaulting to
+`127.0.0.1` (loopback) for a local-first secure default.
 
-#### Scenario: YAML or JSON config parses
+#### Scenario: Custom bind host
 
-- GIVEN a valid `.yaml`, `.yml`, or `.json` config file
-- WHEN the loader reads it
-- THEN the raw record is returned as an object
+- GIVEN `WEAVELLM_HOST=0.0.0.0`
+- WHEN the server starts
+- THEN it listens on all interfaces
 
-#### Scenario: Non-object YAML rejected
+#### Scenario: Default loopback bind
 
-- GIVEN a YAML file whose top-level value is a scalar or null
-- WHEN the loader parses it
-- THEN loading fails with "Config file is not an object"
+- GIVEN no `WEAVELLM_HOST`
+- WHEN the server starts
+- THEN it binds `127.0.0.1`
 
-#### Scenario: Missing file fails clearly
+### Requirement: WEAVELLM_PORT selects the listen port
 
-- GIVEN `CONFIG_FILE` points to a path that does not exist
-- WHEN the loader resolves it
-- THEN loading fails with "Config file not found: <resolved path>"
+The system SHALL parse `WEAVELLM_PORT` as an integer in `0..65535` and bind that
+port. `0` selects an ephemeral port (the server reports the bound URL in logs).
+An unset, empty, non-numeric, negative, or out-of-range value SHALL fall back to
+the default `4317`.
 
-### Requirement: Zod schema validation preserved
+#### Scenario: Explicit port
 
-The system MUST validate the raw record with a zod schema that accepts `nodes`/`edges` graph format via `graphNodeSchema` and `graphEdgeSchema`. The `steps` array format SHALL be removed from the schema. `graphNodeSchema` SHALL validate fields: `id`, `type`, `model`, `mode` (generate/refine/passthrough, default generate for llm_call), `on_429` (optional), `tool_calls_route` (optional), `system`/`assistant`/`user` (optional), `pos` (optional object with `x`/`y`), `ctx` (optional), `condition` (recursive via `z.lazy` for condition nodes), `pipeline`/`params` (for pipeline nodes). `graphEdgeSchema` SHALL validate: `source`, `target`, `condition` (optional). Invalid config MUST fail with a zod error listing issue messages. Validation SHALL be re-applied on every apply before any persistence or registry reload.
+- GIVEN `WEAVELLM_PORT=8080`
+- WHEN the server starts
+- THEN it listens on port 8080
 
-#### Scenario: Valid graph config yields typed result
+#### Scenario: Ephemeral port
 
-- GIVEN a raw record with `nodes` and `edges` satisfying the graph schema
-- WHEN schema validation runs
-- THEN a typed `GatewayConfig` is returned with pipelines normalized
+- GIVEN `WEAVELLM_PORT=0`
+- WHEN the server starts
+- THEN the OS assigns a free port and the bound URL is logged
 
-#### Scenario: steps array fails validation
+#### Scenario: Invalid value falls back
 
-- GIVEN a raw record using `steps` instead of `nodes`/`edges`
-- WHEN schema validation runs
-- THEN validation fails indicating `steps` is not accepted
+- GIVEN `WEAVELLM_PORT=abc` or `WEAVELLM_PORT=70000`
+- WHEN `resolvePort` parses it
+- THEN the default `4317` is used instead of failing boot
 
-#### Scenario: Graph node with mode validates
+### Requirement: WEAVELLM_AUTH enables the Bearer gate
 
-- GIVEN a node with `type: "llm_call"`, `mode: "refine"`, and `on_429: "fallback"`
-- WHEN schema validation runs
-- THEN the node is accepted with all optional fields preserved
+The system SHALL enable the HTTP Bearer auth gate only when `WEAVELLM_AUTH`
+equals exactly `1` or `true` (case-sensitive). Any other value — including
+unset — SHALL leave auth disabled.
 
-#### Scenario: Recursive condition validates
+#### Scenario: Auth enabled
 
-- GIVEN a condition node with `condition: {op: "compare", ...}` (nested via `z.lazy`)
-- WHEN schema validation runs
-- THEN the recursive structure validates correctly
+- GIVEN `WEAVELLM_AUTH=1` (or `true`)
+- WHEN the server starts
+- THEN `/v1` and `/api` requests without a valid Bearer token are rejected
 
-#### Scenario: Apply is gated by re-validation
+#### Scenario: Auth disabled by default
 
-- GIVEN an operator applies a draft
-- WHEN the draft fails fresh schema validation
-- THEN the apply is rejected with `400` and nothing is persisted or reloaded
+- GIVEN no `WEAVELLM_AUTH` (or a value other than `1`/`true`)
+- WHEN the server starts
+- THEN no auth gate is applied
 
-### Requirement: .env precedence
+### Requirement: WEAVELLM_APP_DATA overrides the data directory
 
-The system MUST load environment variables with Bun's native precedence: `.env` < `.env.{NODE_ENV}` < `.env.local`, with values already exported in the process environment winning.
+The system SHALL use `WEAVELLM_APP_DATA` as the application data directory
+(SQLite database, logs, models) when set. When unset or empty, it SHALL use the
+platform app-data directory resolved at boot.
 
-#### Scenario: Env file values are loaded
+#### Scenario: Custom data directory
 
-- GIVEN a `.env` file defining `BEARER_TOKEN`
-- WHEN the gateway starts
-- THEN `process.env.BEARER_TOKEN` is set from the file
+- GIVEN `WEAVELLM_APP_DATA=/srv/weavellm`
+- WHEN the app boots
+- THEN SQLite and logs live under `/srv/weavellm`
 
-#### Scenario: Process environment wins
+### Requirement: WEAVELLM_UI_DIR overrides the compiled UI directory
 
-- GIVEN `BEARER_TOKEN` already exported in the shell
-- WHEN the gateway starts
-- THEN the exported value wins over the `.env` file value
+The system SHALL serve the compiled admin console from `WEAVELLM_UI_DIR` when
+set and non-empty, unconditionally. Otherwise it SHALL probe candidates in
+order — `<cwd>/frontend/dist`, then the bundled `ui/` directory — and use the
+first that contains an `index.html`; when none exists it SHALL fall back to
+`<cwd>/frontend/dist`.
 
-### Requirement: Atomic config write
+#### Scenario: Explicit UI directory wins
 
-The system MUST persist the full config atomically by writing to a temporary file in the same directory and renaming over the target. The persisted config MUST always be either the complete new content or the previous content, never a partially written mixture. The serialized graph nodes SHALL include `pos` fields (not stripped).
+- GIVEN `WEAVELLM_UI_DIR=/opt/ui`
+- WHEN the server starts
+- THEN `/` serves `index.html` from `/opt/ui` even when a dev build exists
 
-#### Scenario: Atomic save replaces the config without a partial window
+#### Scenario: Probing falls back to a dev build
 
-- GIVEN an operator applies an edit to the running config
-- WHEN the service persists it
-- THEN the bytes are written to a temp file and renamed atomically over `llm-proxy.config.yaml`
+- GIVEN no `WEAVELLM_UI_DIR` and `frontend/dist/index.html` present
+- WHEN `resolveUiDir` runs
+- THEN the dev build directory is used
 
-#### Scenario: Failed write leaves the prior config intact
+### Requirement: WEAVELLM_LLAMA_BIN selects the llama-server binary
 
-- GIVEN a write that aborts before the rename (e.g. disk error)
-- WHEN the save fails
-- THEN the original config file remains unchanged and an error envelope is returned
+The system SHALL use `WEAVELLM_LLAMA_BIN` as the `llama-server` binary path for
+the managed local backend. When unset or empty, it SHALL default to `llama`
+(resolved from PATH).
 
-### Requirement: YAML round-trip re-serialization
+#### Scenario: Custom binary path
 
-The system MUST re-serialize the whole validated config to YAML on save. Comments and original formatting SHALL be lost (accepted behavior), and the round-tripped config MUST remain schema-valid. The serialized output SHALL include `pos`, `ctx`, `mode`, `on_429`, `tool_calls_route`, and `condition` fields for each node.
+- GIVEN `WEAVELLM_LLAMA_BIN=/opt/llama/bin/llama-server`
+- WHEN the local backend preflights
+- THEN that binary is version-checked (**b9908+** floor) and spawned
 
-#### Scenario: Edited config round-trips to valid YAML
+#### Scenario: Default binary from PATH
 
-- GIVEN a config with a pipeline containing `pos`, `ctx`, `mode`, and `on_429` fields
-- WHEN it is validated and persisted
-- THEN the file is valid YAML, is readable by the loader, and stays schema-valid
+- GIVEN no `WEAVELLM_LLAMA_BIN`
+- WHEN the local backend preflights
+- THEN `llama` is resolved from PATH
 
-#### Scenario: pos is preserved in round-trip
+### Requirement: State is not stored in a config file
 
-- GIVEN a pipeline with node positions `{x: 100, y: 200}`
-- WHEN the config is saved and reloaded
-- THEN the node positions are preserved as `{x: 100, y: 200}`
+All mutable configuration — provider rows (kinds, base URLs, fallback links),
+workflow graphs, model configuration, activation state (`models.active`), and
+secrets — SHALL be persisted in the app SQLite database and the keychain-backed
+`SecretStore`, not in a config file. The gateway auth key SHALL be the keychain
+secret scoped `auth`; provider API keys SHALL be scoped `provider:<kind>`.
 
-#### Scenario: mode and ctx are preserved in round-trip
+#### Scenario: Providers and workflows survive without a config file
 
-- GIVEN a pipeline with a node having `mode: "refine"` and `ctx: {maxTokens: 1024}`
-- WHEN the config is saved and reloaded
-- THEN both `mode` and `ctx` fields are present with their original values
-
-### Requirement: Config defaults generation
-
-The system MUST generate a minimal valid config (`defaults.ts`) when no config file exists, scanning the models directory for `*.gguf`. The generated config MUST validate against the schema so the gateway can boot without manual YAML.
-
-#### Scenario: Missing config boots on generated defaults
-
-- GIVEN no `llm-proxy.config.yaml` and a `modelsDir` containing `m1.gguf`
-- WHEN the gateway boots
-- THEN a minimal valid config is generated listing `m1` as a candidate model and the gateway starts
-
-### Requirement: Reload path on apply
-
-An accepted apply MUST recompile and validate the new config and reload the mutable registry atomically. A rejected apply MUST roll back any partial change and return `400` with the normalized error envelope, writing nothing.
-
-#### Scenario: Valid apply reloads the registry
-
-- GIVEN an operator applies a valid new pipeline
-- WHEN the service persists and reloads
-- THEN the registry reflects the new pipeline and `pipeline:reloaded` is emitted over SSE
-
-#### Scenario: Invalid apply writes nothing
-
-- GIVEN an operator applies a draft that fails schema validation
-- WHEN the service processes it
-- THEN nothing is written to disk, the previous registry stays active, and a `400` `{error:{...}}` envelope is returned
-
-### Requirement: External providers config section
-
-The system MUST accept an optional top-level `providers` section in the config. Each entry SHALL validate as `{ baseURL: string (required), apiKey?: string, headers?: Record<string, string>, models: string[] (required, model ids the provider exposes) }`. A config without `providers` MUST default to `{}` and behave identically to today's gateway. `${ENV}` references in `apiKey` and `headers` values SHALL be interpolated from the process environment at load; a reference to an unset variable MUST fail loading with a clear error naming the variable. Schema validation for this section SHALL run on zod `^3.25.76` (bumped from `^3.23.8`) to satisfy the `@ai-sdk/openai-compatible` peer range.
-
-#### Scenario: Config without providers behaves unchanged
-
-- GIVEN a config with no `providers` section
-- WHEN the gateway loads it
-- THEN loading succeeds, `providers` is `{}`, and all existing behavior is unchanged
-
-#### Scenario: Valid providers section is typed
-
-- GIVEN a config with `providers.external-a` containing baseURL, apiKey, headers, and models
-- WHEN schema validation runs
-- THEN a typed config exposes the provider with its resolved models
-
-#### Scenario: Invalid provider entry fails validation
-
-- GIVEN a provider entry missing `baseURL` or `models`
-- WHEN schema validation runs
-- THEN loading fails with a zod error listing the issue
-
-#### Scenario: Env interpolation resolves at load
-
-- GIVEN `apiKey: "${EXTERNAL_API_KEY}"` with the variable exported
-- WHEN the config loads
-- THEN the typed config carries the resolved secret
-
-#### Scenario: Unset env reference fails load
-
-- GIVEN an `apiKey` referencing an unexported variable
-- WHEN the config loads
-- THEN loading fails with a clear error naming the variable
+- GIVEN providers and workflows were saved through the UI/API
+- WHEN the app restarts with no config file
+- THEN the saved providers and workflows are reloaded from SQLite and the
+  keychain exactly as before

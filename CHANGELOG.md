@@ -12,6 +12,9 @@ All notable changes to this project are documented in this file. The format is b
 - `/api/health` now includes a `localModels` field listing active+healthy local model IDs when the local backend is wired.
 - Dedicated embedding models: designating a model via the `settings` table (`embedding_model` key) spawns it with `--embeddings`, and `/v1/embeddings` serves vectors through the managed backend (404 preserved when no embedder is configured).
 - `WEAVELLM_LLAMA_BIN` environment variable to configure the `llama-server` binary path (defaults to `llama`).
+- Admin console (Astro 7 + Svelte 5) served by the app itself: overview dashboard, models registry with per-model activate/deactivate, providers (openai / anthropic / openrouter), workflow list and editor with a live WebSocket run panel and YAML save flow, executions with per-workflow logs, runtime status page, settings, API playground, and about pages.
+- Static UI served by the main server (`serveStaticUi` from `frontend/dist` or the `WEAVELLM_UI_DIR` override), replacing the dev-server-only renderer.
+- `typecheck:frontend` gate (`astro check --root frontend`) for frontend type safety, run locally before PRs (CI currently gates only lint, backend typecheck, and `bun run test`).
 
 ### Changed
 
